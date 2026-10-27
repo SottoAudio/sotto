@@ -94,6 +94,39 @@ class PoolTests(unittest.TestCase):
         finally:
             pool.stop()
 
+    def test_workers_can_run_the_delay_tracker(self):
+        # The delay tracker starts a helper process of its own, which daemon processes can't.
+        # (The first M2 bench run failed exactly here: both workers stopped at start.)
+        pool = W.Pool(["a", "b"], [P.Settings(mode="aec") for _ in range(2)], model=None, workers=2, track_delay=True)
+        try:
+            self.assertTrue(all(w.ready for w in pool.workers), [w.failed for w in pool.workers])
+            paced(pool, 50, lambda b: (np.zeros((2, 480)), np.zeros(480)))
+            self.assertTrue(pool.ok, pool.why)
+        finally:
+            pool.stop()
+        for w in pool.workers:
+            self.assertFalse(w.proc.is_alive())
+
+    def test_a_worker_that_cant_start_is_not_restarted_forever(self):
+        pool = W.Pool(["a", "b"], [P.Settings() for _ in range(2)], model=os.path.join(ROOT, "no-such-model"),
+                      workers=1, track_delay=False, ready_timeout=30)
+        try:
+            w = pool.workers[0]
+            self.assertFalse(w.ready)
+            self.assertTrue(w.failed)                                       # the reason, from the worker
+            t0 = time.time()
+            while not w.given_up and time.time() - t0 < 10:
+                time.sleep(0.1)
+            time.sleep(1.5)
+            self.assertTrue(w.given_up)
+            self.assertEqual(w.restarts, 0)
+            ok, why = pool.health()
+            self.assertFalse(ok)
+            self.assertIn("can't run", why)
+            self.assertEqual(sorted({i for i, _ in pool.drain_faults()}), [0, 1])     # both talkers to dry
+        finally:
+            pool.stop()
+
     @unittest.skipUnless(LIB and ADELAY, "plugin host library or the SDK's ADelay example not built")
     def test_insert_loads_in_the_worker_with_its_latency(self):
         s = P.Settings(mode="bypass", hpf_hz=0, insert={"path": ADELAY, "on": True})

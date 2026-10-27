@@ -21,6 +21,7 @@ to a control thread in the worker. Faults, state snapshots and log records come 
 A worker that dies is logged, its talkers are faulted (tripped to dry), and it is restarted;
 re-arming stays manual.
 """
+import atexit
 import itertools
 import logging
 import logging.handlers
@@ -225,9 +226,12 @@ class _Worker:
             t[:] = -1
         self.state = {}
         self.ready = False
+        self.ever_ready = False
         self.failed = None
         self.pid = None
         self.restarts = 0
+        self.restart_times = []
+        self.given_up = False
         self.proc = None
         self.start()
 
@@ -240,7 +244,9 @@ class _Worker:
         names = [self.pool.names[i] for i in self.rows]
         settings = [self.pool.settings[i] for i in self.rows]
         self.proc = ctx.Process(
-            target=_worker_main, name=f"sotto-worker-{self.wid + 1}", daemon=True,
+            # Not a daemon: the worker's delay tracker starts its own helper process, which Python
+            # forbids daemons. A worker still exits when Sotto does: its control pipe closes.
+            target=_worker_main, name=f"sotto-worker-{self.wid + 1}", daemon=False,
             args=(self.wid, names, settings, self.pool.model, self.shm.name, self.g, self.in_sem, self.out_sem,
                   child, self.pool.up, self.pool.track_delay))
         self.proc.start()
@@ -288,6 +294,8 @@ class Pool:
         self.listener.start()
         self.watchdog = threading.Thread(target=self._watch, name="workers-watchdog", daemon=True)
         self.watchdog.start()
+        self._stopped = False
+        atexit.register(self.stop)                       # workers aren't daemons: never leave them behind
         t0 = time.monotonic()
         while time.monotonic() - t0 < ready_timeout and not all(w.ready or w.failed for w in self.workers):
             time.sleep(0.05)
@@ -375,7 +383,7 @@ class Pool:
                 if kind == "log":
                     LOG.handle(payload)
                 elif kind == "ready" and w:
-                    w.ready, w.pid = True, payload.get("pid")
+                    w.ready, w.pid, w.ever_ready = True, payload.get("pid"), True
                 elif kind == "failed" and w:
                     w.failed = payload
                 elif kind == "state" and w:
@@ -393,20 +401,33 @@ class Pool:
                 LOG.exception("Could not handle a message from processing worker %s", wid)
 
     def _watch(self):
-        """Notices a worker that died, faults its talkers and starts it again."""
+        """Notices a worker that died, faults its talkers and starts it again. A worker that keeps
+        failing (3 times in a minute, or every time it starts) is left stopped: its talkers stay on
+        dry and processing stays unhealthy, so Sotto can't be armed until it's fixed."""
         while not self.stop_ev.wait(0.5):
             for w in getattr(self, "workers", []):
-                if w.proc is not None and not w.proc.is_alive() and not self.stop_ev.is_set():
-                    code = w.proc.exitcode
-                    LOG.error("Processing worker %d (talkers %s) stopped unexpectedly, exit code %s. Restarting it.",
-                              w.wid + 1, [i + 1 for i in w.rows], code)
-                    self.faults.extend((i, f"processing worker {w.wid + 1} stopped (exit code {code})") for i in w.rows)
-                    self.ok, self.why = False, f"processing worker {w.wid + 1} stopped"
-                    w.restarts += 1
-                    w.state = {}
-                    w.start()
-                    if self.last_apply is not None:      # give the new worker the current settings
-                        threading.Thread(target=self._reapply, args=(w,), daemon=True).start()
+                if w.given_up or w.proc is None or w.proc.is_alive() or self.stop_ev.is_set():
+                    continue
+                code = w.proc.exitcode
+                why = w.failed or f"exit code {code}"
+                self.faults.extend((i, f"processing worker {w.wid + 1} stopped ({why})") for i in w.rows)
+                now = time.monotonic()
+                w.restart_times = [t for t in w.restart_times if now - t < 60] + [now]
+                if len(w.restart_times) > 3 or (w.failed and not w.ever_ready):
+                    w.given_up = True
+                    self.ok, self.why = False, f"processing worker {w.wid + 1} can't run: {why}"
+                    LOG.critical("Processing worker %d (talkers %s) keeps stopping (%s). Not restarting it: those "
+                                 "talkers stay on dry and Sotto can't be armed. The traceback above says why.",
+                                 w.wid + 1, [i + 1 for i in w.rows], why)
+                    continue
+                LOG.error("Processing worker %d (talkers %s) stopped unexpectedly (%s). Restarting it.",
+                          w.wid + 1, [i + 1 for i in w.rows], why)
+                self.ok, self.why = False, f"processing worker {w.wid + 1} stopped"
+                w.restarts += 1
+                w.state = {}
+                w.start()
+                if self.last_apply is not None:          # give the new worker the current settings
+                    threading.Thread(target=self._reapply, args=(w,), daemon=True).start()
 
     last_apply = None
 
@@ -474,6 +495,9 @@ class Pool:
 
     # ------------------------------------------------------------ the rest
     def stop(self):
+        if self._stopped:
+            return
+        self._stopped = True
         self.stop_ev.set()
         for w in self.workers:
             try:

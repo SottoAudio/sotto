@@ -17,3 +17,8 @@ failsafe/bench_runs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Builds
+build/
+failsafe/build/
+failsafe/dist/

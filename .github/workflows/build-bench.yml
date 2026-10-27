@@ -1,66 +1,35 @@
 name: build Sotto Bench
 
-# Builds the double-click Sotto Bench app for Mac and Windows, starts each build against the
-# simulated Riedel frame to check it really runs, and publishes the latest main-branch build as
-# the "Sotto Bench (latest build)" pre-release.
+# Builds the double-click Sotto Bench app for Mac and Windows with the processing (echo canceller,
+# suppressor, DeepFilterNet3 speech model) and VST3 plugin inserts bundled in. Each build is
+# started against the simulated Riedel frame, given an operator profile with the VST3 SDK's
+# example plugin as its insert, and checked. The latest main-branch build is published as the
+# "Sotto Bench (latest build)" pre-release.
 
 on:
   push:
     branches: [main]
-    paths: ["failsafe/**", ".github/workflows/build-bench.yml"]
+    paths: ["failsafe/**", "prototype/cct/**", "prototype/tools/**", "engine/**", ".github/workflows/build-bench.yml"]
   pull_request:
-    paths: ["failsafe/**", ".github/workflows/build-bench.yml"]
+    paths: ["failsafe/**", "prototype/cct/**", "prototype/tools/**", "engine/**", ".github/workflows/build-bench.yml"]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  mac:
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install
-        run: python -m pip install --upgrade pip && pip install numpy sounddevice pyinstaller
-      - name: Build Sotto Bench.app
-        working-directory: failsafe
-        run: |
-          set -o pipefail
-          pyinstaller --noconfirm --windowed --name "Sotto Bench" \
-            --osx-bundle-identifier audio.sotto.bench \
-            --add-data "sotto_failsafe/console.html:sotto_failsafe" \
-            --add-data "sotto_failsafe/console_bench.html:sotto_failsafe" \
-            --add-data "sotto_failsafe/setup.html:sotto_failsafe" \
-            --collect-all sounddevice --collect-all _sounddevice_data \
-            sotto_bench.py > build.log 2>&1 || { echo "::error title=PyInstaller (mac)::$(tail -c 3000 build.log | tr '\n' ' ')"; exit 1; }
-          PLIST="dist/Sotto Bench.app/Contents/Info.plist"
-          plutil -insert NSMicrophoneUsageDescription -string "Sotto Bench listens to the talker, PROBE and listener channels from the virtual soundcard." "$PLIST"
-          plutil -replace CFBundleShortVersionString -string "0.1.0" "$PLIST"
-          codesign --force --deep -s - "dist/Sotto Bench.app"
-      - name: Smoke test (simulated frame)
-        working-directory: failsafe
-        run: |
-          "dist/Sotto Bench.app/Contents/MacOS/Sotto Bench" --simulate --no-browser --port 8790 > smoke.log 2>&1 &
-          for i in $(seq 1 40); do curl -sf http://127.0.0.1:8790/api/state > state.json && break; sleep 1; done
-          python -c "import json; s=json.load(open('state.json')); assert s['armed'] is False and s['solo']['ids'] == []; print('console up, disarmed, no solos:', s['health'])" \
-            || { echo "::error title=Smoke test (mac)::$(tail -c 3000 smoke.log | tr '\n' ' ')"; exit 1; }
-          curl -sf http://127.0.0.1:8790/ -o page.html && grep -q "<title>Sotto Console</title>" page.html || { echo "::error title=Smoke test::new console not served"; exit 1; }
-          curl -sf http://127.0.0.1:8790/bench > /dev/null || { echo "::error title=Smoke test::bench console not served"; exit 1; }
-          curl -sf -X POST http://127.0.0.1:8790/quit
-          sleep 2
-      - name: Zip
-        working-directory: failsafe/dist
-        run: ditto -c -k --keepParent "Sotto Bench.app" ../../Sotto-Bench-mac.zip
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Sotto-Bench-mac
-          path: Sotto-Bench-mac.zip
-
-  windows:
-    runs-on: windows-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            name: mac
+            sep: ":"
+          - os: windows-latest
+            name: windows
+            sep: ";"
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         shell: bash
@@ -70,38 +39,106 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install
-        run: python -m pip install --upgrade pip && pip install numpy sounddevice pyinstaller
-      - name: Build Sotto Bench.exe
+        run: python -m pip install --upgrade pip && pip install numpy scipy onnxruntime sounddevice pyinstaller
+
+      - name: Cache speech models
+        uses: actions/cache@v4
+        with:
+          path: prototype/models
+          key: dfn3-ll-${{ hashFiles('prototype/tools/get_models.py', 'prototype/tools/make_streaming.py', 'prototype/tools/make_batchable.py', 'prototype/tools/pb.py') }}
+      - name: Download and convert the speech model
+        run: python prototype/tools/get_models.py
+
+      - name: Build the plugin host (library, scanner, test plugin)
+        run: |
+          cmake -S engine/plugin-test -B build/plugin-test -DCMAKE_BUILD_TYPE=Release -DSOTTO_BUILD_SDK_EXAMPLES=ON > host.log 2>&1 \
+            && cmake --build build/plugin-test --config Release --target sotto-plugin-test sotto_vst3host adelay --parallel >> host.log 2>&1 \
+            || { echo "::error title=Plugin host (${{ matrix.name }})::$(grep -iE 'error' host.log | head -c 3000 | tr '\n' ' ')"; exit 1; }
+          LIB=$(find build/plugin-test -type f \( -name 'sotto_vst3host.dylib' -o -name 'sotto_vst3host.dll' \) | head -1)
+          EXE=$(find build/plugin-test -type f \( -name 'sotto-plugin-test' -o -name 'sotto-plugin-test.exe' \) | head -1)
+          PD=$(dirname "$(find build/plugin-test -type d -name adelay.vst3 | head -1)")
+          if [ "${{ matrix.name }}" = "windows" ]; then PLUG=$(cd "$PD" && pwd -W); else PLUG=$(cd "$PD" && pwd); fi
+          echo "LIB=$LIB" >> $GITHUB_ENV
+          echo "EXE=$EXE" >> $GITHUB_ENV
+          echo "PLUGDIR=$PLUG" >> $GITHUB_ENV
+          echo "lib $LIB, scanner $EXE, test plugin in $PLUG"
+
+      - name: Tests with the plugin host
+        run: |
+          export SOTTO_VST3HOST_DIR="$(dirname "$LIB")"
+          export SOTTO_EXTRA_VST3="$PLUGDIR"
+          python -m unittest tests.test_processing -v 2>&1 | tail -15
+
+      - name: Build the app
         working-directory: failsafe
         run: |
-          pyinstaller --noconfirm --name "Sotto Bench" \
-            --add-data "sotto_failsafe/console.html;sotto_failsafe" \
-            --add-data "sotto_failsafe/console_bench.html;sotto_failsafe" \
-            --add-data "sotto_failsafe/setup.html;sotto_failsafe" \
-            --collect-all sounddevice --collect-all _sounddevice_data \
-            sotto_bench.py > build.log 2>&1 || { echo "::error title=PyInstaller (windows)::$(tail -c 3000 build.log | tr '\n' ' ')"; exit 1; }
-      - name: Smoke test (simulated frame)
+          set -o pipefail
+          MODELS=../prototype/models/DeepFilterNet3_ll_stream_batch
+          ARGS=(--noconfirm --name "Sotto Bench" --paths ../prototype
+                --add-data "sotto_failsafe/console.html${{ matrix.sep }}sotto_failsafe"
+                --add-data "sotto_failsafe/console_bench.html${{ matrix.sep }}sotto_failsafe"
+                --add-data "sotto_failsafe/setup.html${{ matrix.sep }}sotto_failsafe"
+                --add-data "$MODELS${{ matrix.sep }}models/DeepFilterNet3_ll_stream_batch"
+                --add-binary "../$LIB${{ matrix.sep }}."
+                --add-binary "../$EXE${{ matrix.sep }}."
+                --hidden-import sotto_failsafe.processing --hidden-import sotto_failsafe.vst3
+                --hidden-import cct.aec --hidden-import cct.engine --hidden-import cct.stream_dfn --hidden-import cct.delay --hidden-import cct.denoise
+                --collect-all sounddevice --collect-all _sounddevice_data --collect-all onnxruntime)
+          if [ "${{ matrix.name }}" = "mac" ]; then ARGS+=(--windowed --osx-bundle-identifier audio.sotto.bench); fi
+          pyinstaller "${ARGS[@]}" sotto_bench.py > build.log 2>&1 || { echo "::error title=PyInstaller (${{ matrix.name }})::$(tail -c 3000 build.log | tr '\n' ' ')"; exit 1; }
+          if [ "${{ matrix.name }}" = "mac" ]; then
+            PLIST="dist/Sotto Bench.app/Contents/Info.plist"
+            plutil -insert NSMicrophoneUsageDescription -string "Sotto Bench listens to the talker, PGM and PROBE channels from the virtual soundcard." "$PLIST"
+            plutil -replace CFBundleShortVersionString -string "0.2.0" "$PLIST"
+            codesign --force --deep -s - "dist/Sotto Bench.app"
+            echo 'APP=dist/Sotto Bench.app/Contents/MacOS/Sotto Bench' >> $GITHUB_ENV
+          else
+            echo 'APP=dist/Sotto Bench/Sotto Bench.exe' >> $GITHUB_ENV
+          fi
+
+      - name: Smoke test (simulated frame, processing, a plugin insert)
         working-directory: failsafe
         run: |
-          "dist/Sotto Bench/Sotto Bench.exe" --simulate --no-browser --port 8790 > smoke.log 2>&1 &
+          export SOTTO_EXTRA_VST3="$PLUGDIR"
+          "$APP" --simulate --no-browser --port 8790 --project "$RUNNER_TEMP/project.json" > smoke.log 2>&1 &
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:8790/api/state > state.json && break; sleep 1; done
-          python -c "import json; s=json.load(open('state.json')); assert s['armed'] is False and s['solo']['ids'] == []; print('console up, disarmed, no solos:', s['health'])" \
-            || { echo "::error title=Smoke test (windows)::$(tail -c 3000 smoke.log | tr '\n' ' ')"; exit 1; }
-          curl -sf http://127.0.0.1:8790/ -o page.html && grep -q "<title>Sotto Console</title>" page.html || { echo "::error title=Smoke test::new console not served"; exit 1; }
-          curl -sf http://127.0.0.1:8790/bench > /dev/null || { echo "::error title=Smoke test::bench console not served"; exit 1; }
+          fail() { echo "::error title=Smoke test (${{ matrix.name }})::$1 $(tail -c 2000 smoke.log | tr '\n' ' ')"; exit 1; }
+          python -c "import json; s=json.load(open('state.json')); assert s['armed'] is False and s['solo']['ids'] == []; p=s['processing']; assert p['on'] and p['model'] and p['plugins_available'], p; print('console up, disarmed, processing on with the speech model')" || fail "state check failed:"
+          curl -sf http://127.0.0.1:8790/ -o page.html && grep -q "<title>Sotto Console</title>" page.html || fail "new console not served"
+          curl -sf http://127.0.0.1:8790/bench > /dev/null || fail "bench console not served"
+          curl -sf "http://127.0.0.1:8790/api/plugins" -o plugins.json || fail "plugin list failed"
+          python - <<'PY' || fail "plugin insert check failed:"
+          import json, time, urllib.request
+          plugs = json.load(open("plugins.json"))["plugins"]
+          path = [p["path"] for p in plugs if p["name"] == "ADelay"][0]
+          proj = {"proc": {"mode": "full", "supp": 12, "atten": 18, "hpf": 100, "tail": 256, "trim": 0},
+                  "ch": [{"name": "Talker 1", "op": "op1", "mode": "default", "used": True}],
+                  "operators": [{"id": "op1", "name": "Show caller", "mode": "default", "trim": 0, "ins": {"plugin": path, "on": True}}]}
+          req = urllib.request.Request("http://127.0.0.1:8790/api/project", data=json.dumps(proj).encode(), method="POST")
+          r = json.load(urllib.request.urlopen(req, timeout=30)); assert r["ok"] and not r.get("errors"), r
+          info = json.load(urllib.request.urlopen("http://127.0.0.1:8790/api/insert?talker=0", timeout=10))
+          assert info["loaded"] and info["name"] == "ADelay", info
+          time.sleep(1.0)
+          st = json.load(urllib.request.urlopen("http://127.0.0.1:8790/api/state", timeout=10))
+          t0 = st["processing"]["talkers"][0]
+          assert t0["name"] == "Show caller" and t0["insert"]["name"].endswith("ADelay"), t0
+          print("insert loaded in the built app:", t0["insert"], "| processing", st["processing"]["proc_ms"], "ms per block")
+          PY
           curl -sf -X POST http://127.0.0.1:8790/quit
           sleep 2
+
       - name: Zip
-        shell: pwsh
-        run: Compress-Archive -Path "failsafe/dist/Sotto Bench" -DestinationPath "Sotto-Bench-windows.zip"
+        run: |
+          if [ "${{ matrix.name }}" = "mac" ]; then (cd failsafe/dist && ditto -c -k --keepParent "Sotto Bench.app" ../../Sotto-Bench-mac.zip)
+          else (cd failsafe/dist && 7z a ../../Sotto-Bench-windows.zip "Sotto Bench" > /dev/null); fi
       - uses: actions/upload-artifact@v4
         with:
-          name: Sotto-Bench-windows
-          path: Sotto-Bench-windows.zip
+          name: Sotto-Bench-${{ matrix.name }}
+          path: Sotto-Bench-${{ matrix.name }}.zip
 
   release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [mac, windows]
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -117,5 +154,5 @@ jobs:
           gh release delete bench-latest --repo "$REPO" --yes --cleanup-tag || true
           gh release create bench-latest --repo "$REPO" --target "$GITHUB_SHA" --prerelease \
             --title "Sotto Bench (latest build)" \
-            --notes "Built automatically from main ($GITHUB_SHA). Not signed yet. On a Mac, the first time: right-click Sotto Bench, choose Open, then Open again (or System Settings, Privacy & Security, Open Anyway). Windows: if SmartScreen warns, choose More info, then Run anyway." \
+            --notes "Built automatically from main ($GITHUB_SHA). Includes processing (echo canceller, suppressor, DeepFilterNet3) and VST3 plugin inserts. Not signed yet. On a Mac, the first time: right-click Sotto Bench, choose Open, then Open again (or System Settings, Privacy & Security, Open Anyway). Windows: if SmartScreen warns, choose More info, then Run anyway." \
             dl/Sotto-Bench-mac/Sotto-Bench-mac.zip dl/Sotto-Bench-windows/Sotto-Bench-windows.zip

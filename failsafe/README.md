@@ -53,9 +53,30 @@ they're on. The analysis uses it the same way.
 The app opens Sotto's console: **Live** (inputs, channel tiles, macros, outputs, the phones bus)
 and **Settings**. It shows the bench tool's real state: arming, checks, faults, levels on every
 channel and the event log. Solos go to the headphone outputs. The macros (All to dry, Restore
-all) drive the real arming rules. Processing, operator profiles and plugin inserts are saved
-but have no effect in this build: the talkers pass straight through. Recording and fault timing
-are on the classic bench page (`/bench`, linked from Test without hardware).
+all) drive the real arming rules. Recording and fault timing are on the classic bench page
+(`/bench`, linked from Test without hardware).
+
+## Processing, operator profiles and plugin inserts
+
+Each talker runs through Sotto's processing before it goes back to the frame:
+
+- high-pass, then the echo canceller with PGM (input 62) as its reference;
+- the residual suppressor, then the speech model (DeepFilterNet3), run in one batch for every
+  talker on Full clean and skipped for the others;
+- the operator's **insert plugin** (any VST3, for example CEDAR Voxis), then the trim.
+
+The mode, suppression, speech-model limit, high-pass, echo tail and trim come from Settings ›
+Processing, overridden by the operator's profile. Profiles, inserts and their settings are saved
+by the app in `project.json` in its settings folder, so they survive a restart. An insert's
+controls are shown in Settings › Operators once its profile is on a channel. The plugin's own
+window doesn't open in this build.
+
+Timing: the chain needs 20 ms and runs on its own thread with one block (10 ms) of buffering, so
+about 30 ms plus the soundcard. The console shows how much of each 10 ms block it uses. If it
+falls three blocks behind, Sotto disarms and the frame goes to dry (latched, like any fault); a
+slower laptop can use Echo + noise for some talkers, which skips the speech model. One talker's
+problem (invalid audio, a diverging echo canceller, a failing plugin) trips only that talker to
+dry until it's re-armed. `--no-processing` gives the old straight-through bench.
 
 ## Arming
 

@@ -129,3 +129,100 @@ class StreamingDFN:
         co = co[..., 0] + 1j * co[..., 1]
         Y[: self.nb_df] = np.sum(self.hist.T * co, axis=1)
         return Y
+
+
+class BatchedDFN(StreamingDFN):
+    """All talkers through the speech model in one ONNX call per 10 ms frame (the batched model
+    from tools/make_batchable.py). Same maths as StreamingDFN, one row per talker; much cheaper
+    than one call per talker."""
+
+    def __init__(self, model_dir, n, threads=1):
+        self.n = int(n)
+        super().__init__(model_dir, threads=threads)
+
+    def reset(self):
+        n = self.n
+
+        def shape(s):
+            sh = list(s["shape"])
+            sh[1 if s["kind"] == "gru" else 0] = n          # GRU states carry the batch on axis 1
+            return sh
+        self.states = {m: {s["in"]: np.zeros(shape(s), np.float32) for s in self.meta[m]} for m in self.meta}
+        self.erb_state = np.tile(np.linspace(-60.0, -90.0, self.nb_erb), (n, 1))
+        self.unit_state = np.tile(np.linspace(0.001, 0.0001, self.nb_df), (n, 1))
+        self.hist = np.zeros((n, self.df_order, self.nb_df), dtype=np.complex128)
+        self.lsnr = np.zeros(n)
+
+    def reset_row(self, i):
+        """Clears one talker's model state (after that talker's input is reset)."""
+        for m in self.meta:
+            for s in self.meta[m]:
+                st = self.states[m][s["in"]]
+                if s["kind"] == "gru":
+                    st[:, i] = 0
+                else:
+                    st[i] = 0
+        self.erb_state[i] = np.linspace(-60.0, -90.0, self.nb_erb)
+        self.unit_state[i] = np.linspace(0.001, 0.0001, self.nb_df)
+        self.hist[i] = 0
+
+    def process_specs(self, X, rows=None):
+        """X: (n, n_fft//2+1) complex, one spectrum frame per talker. Returns enhanced frames.
+        rows: optional list of talker rows to run (the others keep their state and get X back),
+        so talkers that don't need the model don't cost anything."""
+        if rows is not None and len(rows) < self.n:
+            rows = list(rows)
+            Y = X.copy()
+            if not rows:
+                return Y
+            full = (self.states, self.erb_state, self.unit_state, self.hist, self.lsnr, self.n)
+            idx = np.array(rows)
+            sub_states = {m: {} for m in self.meta}
+            for m in self.meta:
+                for s_ in self.meta[m]:
+                    st = self.states[m][s_["in"]]
+                    sub_states[m][s_["in"]] = st[:, idx] if s_["kind"] == "gru" else st[idx]
+            self.states, self.n = sub_states, len(rows)
+            self.erb_state, self.unit_state, self.hist = full[1][idx], full[2][idx], full[3][idx]
+            try:
+                Ysub = self.process_specs(X[idx])
+            finally:
+                sub = (self.states, self.erb_state, self.unit_state, self.hist, self.lsnr)
+                self.states, self.erb_state, self.unit_state, self.hist, self.lsnr, self.n = full
+            for m in self.meta:
+                for s_ in self.meta[m]:
+                    k = s_["in"]
+                    if s_["kind"] == "gru":
+                        self.states[m][k][:, idx] = sub[0][m][k]
+                    else:
+                        self.states[m][k][idx] = sub[0][m][k]
+            self.erb_state[idx], self.unit_state[idx], self.hist[idx] = sub[1], sub[2], sub[3]
+            self.lsnr = np.array(self.lsnr, dtype=float)
+            self.lsnr[idx] = sub[4]
+            Y[idx] = Ysub
+            return Y
+        a = self.alpha
+        p = np.abs(X) ** 2
+        e = np.add.reduceat(p, self.edges[:-1], axis=1) / self.erb
+        e = 10 * np.log10(e + 1e-10)
+        self.erb_state = e * (1 - a) + self.erb_state * a
+        fe = ((e - self.erb_state) / 40.0).astype(np.float32)[:, None, None, :]
+        c = X[:, : self.nb_df]
+        self.unit_state = np.abs(c) * (1 - a) + self.unit_state * a
+        fc = c / np.sqrt(self.unit_state)
+        fsp = np.stack([fc.real, fc.imag], axis=1)[:, :, None, :].astype(np.float32)
+
+        enc = self._run("enc", {"feat_erb": fe, "feat_spec": fsp})
+        m = self._run("erb_dec", {k: enc[k] for k in ("emb", "e3", "e2", "e1", "e0")})["m"]
+        dfo = self._run("df_dec", {"emb": enc["emb"], "c0": enc["c0"]})
+        coefs = dfo["coefs"]
+        self.lsnr = np.asarray(enc["lsnr"]).reshape(self.n, -1)[:, 0].astype(float)
+
+        gains = np.repeat(m[:, 0, 0], self.erb, axis=1)
+        Y = X * gains
+        self.hist = np.roll(self.hist, -1, axis=1)
+        self.hist[:, -1] = X[:, : self.nb_df]
+        co = coefs[:, 0].reshape(self.n, self.nb_df, self.df_order, 2)
+        co = co[..., 0] + 1j * co[..., 1]
+        Y[:, : self.nb_df] = np.sum(np.transpose(self.hist, (0, 2, 1)) * co, axis=2)
+        return Y

@@ -23,13 +23,7 @@ DEFAULTS = {
 }
 
 
-def config_dir():
-    home = os.path.expanduser("~")
-    if sys.platform == "darwin":
-        return os.path.join(home, "Library", "Application Support", "Sotto Bench")
-    if os.name == "nt":
-        return os.path.join(os.environ.get("APPDATA", home), "Sotto Bench")
-    return os.path.join(home, ".config", "sotto-bench")
+from .app import config_dir  # noqa: E402,F811  (one settings folder for the launcher and the app)
 
 
 def runs_dir():

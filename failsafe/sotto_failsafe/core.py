@@ -70,6 +70,7 @@ class FailsafeCore:
         self.faults = {}
         self.pending_freeze_ms = 0
         self.health_why = ""
+        self.extra_health = None    # optional callable -> (ok, why): the processing engine's check
         self.log = []               # Event list, drained by the app
 
     @property
@@ -168,8 +169,10 @@ class FailsafeCore:
         self.log.append(Event(self.t, "faults_cleared", "", "console"))
 
     # ------------------------------------------------------------ audio
-    def process(self, indata, outdata, status=None):
-        """indata: (frames, n_in) float32; outdata: (frames, n_out) float32, written in place."""
+    def process(self, indata, outdata, status=None, returns=None, dry=None):
+        """indata: (frames, n_in) float32; outdata: (frames, n_out) float32, written in place.
+        returns/dry: optional (frames, n_talkers) processed and delay-matched dry signals from the
+        processing engine; without them each talker is passed straight through."""
         cfg = self.cfg
         frames = outdata.shape[0]
         t = self.t
@@ -196,6 +199,10 @@ class FailsafeCore:
                     break
         else:
             healthy, why = False, "starting up"
+        if healthy and self.extra_health is not None:
+            ok, w = self.extra_health()
+            if not ok:
+                healthy, why = False, w
         self.health_why = why
         self.arm.update_health(t, healthy, why)
         for e in self.arm.drain_events():
@@ -206,8 +213,13 @@ class FailsafeCore:
         silent_all = "silence_all" in self.faults
         mute_returns = "mute_returns" in self.faults
         for i, (ci, co) in enumerate(zip(cfg.talker_in, cfg.talker_out)):
-            sig = x[:, ci].copy()
-            self.levels["talkers"][i] = dbfs(np.sqrt(np.mean(sig ** 2)) + 1e-12)
+            self.levels["talkers"][i] = dbfs(np.sqrt(np.mean(x[:, ci] ** 2)) + 1e-12)
+            if returns is None:
+                sig = x[:, ci].copy()
+            elif self.arm.armed and not self.arm.talker_armed[i]:
+                sig = np.asarray(dry[:, i], dtype=np.float64)      # tripped: dry inside the app
+            else:
+                sig = np.asarray(returns[:, i], dtype=np.float64)
             mk = self.markers[i].block(frames)
             if cfg.marker_on:
                 sig = sig + mk

@@ -133,7 +133,7 @@ def run_setup(open_browser=True, start_error=None):
                          "; ".join(f"{x['index']}: {x['name']} ({x['inputs']}/{x['outputs']})" for x in d["devices"]))
                 self._send(200, json.dumps(d).encode())
             elif self.path == "/setup/config":
-                self._send(200, json.dumps({"config": load_config(), "runs_dir": runs_dir(), "start_error": start_error,
+                self._send(200, json.dumps({"config": load_config(), "defaults": DEFAULTS, "runs_dir": runs_dir(), "start_error": start_error,
                                             "last_crash": diagnostics.last_crash(),
                                             "log": diagnostics.log_path()}).encode())
             elif self.path.startswith("/setup/diagnostics"):

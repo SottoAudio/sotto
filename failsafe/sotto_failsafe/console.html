@@ -112,6 +112,7 @@ textarea{width:100%;resize:vertical;min-height:70px}
 .tsrc{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) minmax(0,1fr) auto;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}
 .tsrc:last-child{border-bottom:0}
 .tsrc .now{grid-column:1/-1;font-size:12px;color:var(--muted)}
+.ptab select{min-width:72px}.ptab input{min-width:160px}select.clash{border-color:var(--led-red,#d33);box-shadow:0 0 0 2px rgba(220,50,50,.25)}.subh{margin:14px 0 8px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 .pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}.pgrid label{display:flex;flex-direction:column;gap:4px;font-size:13px}
 .tsrc label{display:flex;gap:8px;align-items:center;margin:0}.tsrc label input{flex:1;min-width:80px}
 @media (max-width:640px){.tsrc{grid-template-columns:1fr 1fr}}
@@ -1181,11 +1182,11 @@ table.t tr.unused td{color:var(--muted)}
       ['OUT 61', 'HEARTBEAT', 'proposed', '1 kHz at −20 dBFS to the VOX 4-wire, only while armed.'], ['OUT 62', 'PROBE', 'proposed', '2 kHz, patched straight back to IN 61.'],
       ['OUT 63', 'Phones bus L', 'fixed', 'The solo mix. Silent when nothing is soloed.'], ['OUT 64', 'Phones bus R', 'fixed', 'Same mix, or the clean side in Split.']];
     return box('Talker channels', 'Each talker comes in on an input and goes back to the Riedel on the output with the same number. Channels 61 to 64 are kept for the system, so up to 60 talkers.',
-      row('Talker channels', `Uses DVS inputs and outputs 1–${n}. Unpatched channels stay on the list as spares.`,
-        `<input type="number" id="f-count" data-b="count" data-t="n" min="1" max="60" value="${n}" style="width:90px" ${APP ? 'disabled' : ''}><span class="muted">of 60</span><span class="seg">${[4, 8, 16, 32, 60].map(v => `<button data-act="count" data-v="${v}" aria-pressed="${n === v}" ${APP ? 'disabled' : ''}>${v}</button>`).join('')}</span>`) +
+      (APP ? '' : row('Talker channels', `Uses DVS inputs and outputs 1–${n}. Unpatched channels stay on the list as spares.`,
+        `<input type="number" id="f-count" data-b="count" data-t="n" min="1" max="60" value="${n}" style="width:90px" ${APP ? 'disabled' : ''}><span class="muted">of 60</span><span class="seg">${[4, 8, 16, 32, 60].map(v => `<button data-act="count" data-v="${v}" aria-pressed="${n === v}" ${APP ? 'disabled' : ''}>${v}</button>`).join('')}</span>`)) +
       `<div class="scroll" style="margin-top:10px"><table class="t"><thead><tr><th>Ch</th><th>Operator</th><th>Label</th><th>Patched</th><th>Position</th><th>Processing</th><th>Route</th></tr></thead><tbody>${rows}</tbody></table></div>`) +
-      box('System channels', 'These stay the same on every show, so the Dante routing never changes. PGM and headphones are fixed by you; PROBE and HEARTBEAT are a proposal until the frame test.',
-        `<div class="scroll"><table class="t"><thead><tr><th>Channel</th><th>Carries</th><th></th><th>Notes</th></tr></thead><tbody>${sys.map(([c, w, k, d]) => `<tr><td class="n">${c}</td><td><b>${w}</b></td><td><span class="pill ${k === 'fixed' ? 'info' : 'warn'}">${k}</span></td><td>${d}</td></tr>`).join('')}</tbody></table></div>`);
+      (APP ? '' : box('System channels', 'These stay the same on every show, so the Dante routing never changes. PGM and headphones are fixed by you; PROBE and HEARTBEAT are a proposal until the frame test.',
+        `<div class="scroll"><table class="t"><thead><tr><th>Channel</th><th>Carries</th><th></th><th>Notes</th></tr></thead><tbody>${sys.map(([c, w, k, d]) => `<tr><td class="n">${c}</td><td><b>${w}</b></td><td><span class="pill ${k === 'fixed' ? 'info' : 'warn'}">${k}</span></td><td>${d}</td></tr>`).join('')}</tbody></table></div>`));
   }
   function secProcessing() {
     const pp = P.proc, buf = P.engine.buffer / (P.engine.rate / 1000);
@@ -1319,26 +1320,102 @@ table.t tr.unused td{color:var(--muted)}
       `<span class="fixed">${rate / 1000} kHz</span>${ok ? '<span class="pill ok">48 kHz</span>' : '<span class="pill err">set 48 kHz in Dante Controller</span>'}`);
   }
   // ---------------------------------------------------------------- I/O patch (app)
-  const PATCH = [
-    ['talker_in', 'Talker inputs', 'e.g. 1-4'], ['talker_out', 'Talker returns (clean)', 'e.g. 1-4'], ['names', 'Talker names', 'comma separated'],
-    ['pgm_in', 'PGM input (echo reference)', '62'], ['probe_in', 'PROBE return input(s)', '61'], ['probe_out', 'PROBE output', '62'],
-    ['heartbeat_out', 'HEARTBEAT output (to the VOX)', '61'], ['monitor', 'Headphone outputs (phones bus)', '63,64'], ['listen_in', 'Listener feed input (optional, for timing)', 'e.g. 63'],
+  // Every choice is a dropdown. Talkers use channels 1-60; 61-64 are kept for the system.
+  const TALK_CH = Array.from({ length: 60 }, (_, k) => k + 1), SYS_CH = [61, 62, 63, 64];
+  const SYS = [
+    ['pgm_in', 'PGM input (echo reference)', 'in'], ['probe_in', 'PROBE return input', 'in'], ['listen_in', 'Listener feed input (optional, for timing)', 'in', true],
+    ['probe_out', 'PROBE output', 'out'], ['heartbeat_out', 'HEARTBEAT output (to the VOX)', 'out'], ['mon_l', 'Headphones left (phones bus)', 'out'], ['mon_r', 'Headphones right', 'out'],
   ];
+  function chansParse(v) {
+    const out = [];
+    String(v || '').split(',').map(x => x.trim()).filter(Boolean).forEach(part => {
+      const m = /^(\d+)\s*-\s*(\d+)$/.exec(part);
+      if (m) { for (let k = +m[1]; k <= +m[2]; k++) out.push(k); } else if (/^\d+$/.test(part)) out.push(+part);
+    });
+    return out;
+  }
+  function chansFmt(a) {                                  // [1,2,3,5] -> "1-3,5"
+    const out = []; let k = 0;
+    while (k < a.length) { let j = k; while (j + 1 < a.length && a[j + 1] === a[j] + 1) j++; out.push(j > k + 1 ? `${a[k]}-${a[j]}` : a.slice(k, j + 1).join(',')); k = j + 1; }
+    return out.join(',');
+  }
+  function patchFrom(cfg) {
+    const tin = chansParse(cfg.talker_in), tout = chansParse(cfg.talker_out), names = String(cfg.names || '').split(',');
+    const mon = chansParse(cfg.monitor);
+    return {
+      talkers: tin.map((c, k) => ({ in: c, out: tout[k] ?? c, name: (names[k] || '').trim() })),
+      pgm_in: chansParse(cfg.pgm_in)[0] ?? 62, probe_in: chansParse(cfg.probe_in)[0] ?? 61, listen_in: chansParse(cfg.listen_in)[0] ?? 0,
+      probe_out: chansParse(cfg.probe_out)[0] ?? 62, heartbeat_out: chansParse(cfg.heartbeat_out)[0] ?? 61, mon_l: mon[0] ?? 63, mon_r: mon[1] ?? mon[0] ?? 64,
+    };
+  }
+  function patchTo(pt) {
+    return {
+      talker_in: chansFmt(pt.talkers.map(t => t.in)), talker_out: chansFmt(pt.talkers.map(t => t.out)),
+      names: pt.talkers.map((t, k) => (t.name || `Talker ${k + 1}`).replace(/,/g, ' ')).join(','),
+      pgm_in: String(pt.pgm_in), probe_in: String(pt.probe_in), listen_in: pt.listen_in ? String(pt.listen_in) : '',
+      probe_out: String(pt.probe_out), heartbeat_out: String(pt.heartbeat_out), monitor: `${pt.mon_l},${pt.mon_r}`,
+    };
+  }
+  function patchClashes(pt) {
+    const bad = new Set(), msgs = [];
+    const check = (side, items) => {
+      const seen = {};
+      items.forEach(([key, ch, what]) => {
+        if (!ch) return;
+        if (seen[ch] && !(what === 'headphones' && seen[ch][1] === 'headphones')) { bad.add(key); bad.add(seen[ch][0]); msgs.push(`${side} ${ch} is set as both ${seen[ch][1]} and ${what}.`); }
+        else seen[ch] = [key, what];
+      });
+    };
+    check('Input', [...pt.talkers.map((t, k) => [`t${k}.in`, t.in, `talker ${k + 1}`]), ['pgm_in', pt.pgm_in, 'PGM'], ['probe_in', pt.probe_in, 'PROBE return'], ['listen_in', pt.listen_in, 'listener feed']]);
+    check('Output', [...pt.talkers.map((t, k) => [`t${k}.out`, t.out, `talker ${k + 1}`]), ['probe_out', pt.probe_out, 'PROBE'], ['heartbeat_out', pt.heartbeat_out, 'HEARTBEAT'], ['mon_l', pt.mon_l, 'headphones'], ['mon_r', pt.mon_r, 'headphones']]);
+    return { bad, msgs };
+  }
   function loadConfig() {
     if (UI.cfgLoading) return;
     UI.cfgLoading = true;
-    api('/api/config').then(r => { UI.cfg = r; UI.patch = { ...r.saved }; }).catch(() => { UI.cfg = { error: 'Sotto Bench did not answer' }; })
+    api('/api/config').then(r => { UI.cfg = r; UI.patch = patchFrom(r.saved); UI.patchSaved = JSON.stringify(patchTo(UI.patch)); })
+      .catch(() => { UI.cfg = { error: 'Sotto Bench did not answer' }; })
       .finally(() => { UI.cfgLoading = false; if (UI.sec === 'channels' && !$('#pSet').hidden) renderSet(); });
+  }
+  function chSel(key, val, list, bad, extra = []) {
+    return `<select data-pk="${key}" class="${bad.has(key) ? 'clash' : ''}">${extra.concat(list.map(c => [c, String(c)])).map(([v, l]) => `<option value="${v}"${+v === +val ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
   }
   function secPatchApp() {
     if (!UI.cfg) { loadConfig(); return box('I/O patch', 'Reading the patch…', ''); }
     if (UI.cfg.error) return box('I/O patch', esc(UI.cfg.error), '');
-    const pt = UI.patch, d = UI.cfg.defaults, run = UI.cfg.running;
-    const changed = PATCH.some(([k]) => String(pt[k] ?? '') !== String(UI.cfg.saved[k] ?? ''));
-    return box('I/O patch', 'Which soundcard channel does each job, counted from 1 as in Dante Controller. Ranges like 1-4 and lists like 63,64 both work. Applying checks for clashes and that the soundcard has the channels, then restarts the engine: HEARTBEAT stops, the frame puts listeners on dry, and Sotto starts again disarmed.',
-      `<div class="pgrid">${PATCH.map(([k, l, ph]) => `<label>${l}<input type="text" data-pt="${k}" value="${esc(pt[k] ?? '')}" placeholder="${esc(ph)}"><small class="muted">default ${esc(d[k] ?? '–') || '–'}${String(run[k] ?? '') !== String(pt[k] ?? '') && run[k] != null ? ` · running ${esc(run[k] ?? '')}` : ''}</small></label>`).join('')}</div>` +
+    const pt = UI.patch, { bad, msgs } = patchClashes(pt);
+    const changed = JSON.stringify(patchTo(pt)) !== UI.patchSaved;
+    const n = pt.talkers.length;
+    const trows = pt.talkers.map((t, k) => `<tr><td class="n">${pad(k + 1)}</td>
+      <td><input type="text" data-pk="t${k}.name" value="${esc(t.name)}" placeholder="Talker ${k + 1}" aria-label="Name of talker ${k + 1}"></td>
+      <td>${chSel(`t${k}.in`, t.in, TALK_CH, bad)}</td><td>${chSel(`t${k}.out`, t.out, TALK_CH, bad)}</td></tr>`).join('');
+    const srows = SYS.map(([key, label, side, optional]) => `<label>${label}${chSel(key, pt[key], SYS_CH, bad, optional ? [[0, 'Off']] : [])}<small class="muted">default ${key === 'mon_l' ? 63 : key === 'mon_r' ? 64 : (chansParse(UI.cfg.defaults[key])[0] || 'off')}</small></label>`).join('');
+    return box('I/O patch', 'Which soundcard channel does each job, numbered as in Dante Controller. Talkers use channels 1–60; 61–64 are kept for the system. Applying checks the soundcard has the channels, then restarts the engine: HEARTBEAT stops, the frame puts listeners on dry, and Sotto starts again disarmed.',
+      row('Talkers', 'How many people Sotto cleans up. New talkers take the next free input and return.', `<select data-pk="count">${TALK_CH.map(c => `<option value="${c}"${c === n ? ' selected' : ''}>${c}</option>`).join('')}</select>`) +
+      `<div class="scroll"><table class="t ptab"><thead><tr><th>#</th><th>Name</th><th>Input</th><th>Return (clean)</th></tr></thead><tbody>${trows}</tbody></table></div>` +
+      `<h4 class="subh">System channels</h4><div class="pgrid">${srows}</div>` +
+      (msgs.length ? `<p class="note warn">${msgs.map(esc).join('<br>')}</p>` : '') +
       (UI.patchErr ? `<p class="note warn">${esc(UI.patchErr)}</p>` : '') +
-      `<div class="row" style="margin-top:10px"><button class="btn sm" data-act="patchapply"${changed ? '' : ' disabled'}>Apply (restarts the engine)</button><button class="btn sm" data-act="patchdefaults">Back to defaults</button><button class="btn sm" data-act="patchundo"${changed ? '' : ' disabled'}>Undo changes</button></div>`);
+      `<div class="row" style="margin-top:10px"><button class="btn sm" data-act="patchapply"${changed && !msgs.length ? '' : ' disabled'}>Apply (restarts the engine)</button><button class="btn sm" data-act="patchdefaults">Back to defaults</button><button class="btn sm" data-act="patchundo"${changed ? '' : ' disabled'}>Undo changes</button></div>`);
+  }
+  function patchSet(key, value) {
+    const pt = UI.patch;
+    if (key === 'count') {
+      const n = clamp(+value, 1, 60);
+      while (pt.talkers.length > n) pt.talkers.pop();
+      while (pt.talkers.length < n) {
+        const usedIn = new Set(pt.talkers.map(t => t.in)), usedOut = new Set(pt.talkers.map(t => t.out));
+        const k = pt.talkers.length + 1;
+        const nin = TALK_CH.find(c => !usedIn.has(c) && c >= k) || TALK_CH.find(c => !usedIn.has(c));
+        const nout = TALK_CH.find(c => !usedOut.has(c) && c >= k) || TALK_CH.find(c => !usedOut.has(c));
+        pt.talkers.push({ in: nin, out: nout, name: '' });
+      }
+      return true;
+    }
+    const m = /^t(\d+)\.(in|out|name)$/.exec(key);
+    if (m) { pt.talkers[+m[1]][m[2]] = m[2] === 'name' ? value : +value; return m[2] !== 'name'; }
+    pt[key] = +value;
+    return true;
   }
   async function toSetup() {
     const r = await api('/api/setup', {}).catch(() => null);
@@ -1639,13 +1716,15 @@ table.t tr.unused td{color:var(--muted)}
   }
   $('#setBody').addEventListener('input', e => { const el = e.target.closest('[data-b]'); if (el && (el.type === 'text' || el.tagName === 'TEXTAREA' || el.type === 'range')) bindEl(el, false); });
   $('#setBody').addEventListener('input', e => {
-    const pt = e.target.closest('[data-pt]');
-    if (pt) { UI.patch[pt.dataset.pt] = pt.value; const b = $('[data-act="patchapply"]'), u = $('[data-act="patchundo"]'); const ch = PATCH.some(([k]) => String(UI.patch[k] ?? '') !== String(UI.cfg.saved[k] ?? '')); if (b) b.disabled = !ch; if (u) u.disabled = !ch; return; }
+    const pk = e.target.closest('input[data-pk]');
+    if (pk) { patchSet(pk.dataset.pk, pk.value); const ch = JSON.stringify(patchTo(UI.patch)) !== UI.patchSaved, b = $('[data-act="patchapply"]'), u = $('[data-act="patchundo"]'); if (b) b.disabled = !ch || patchClashes(UI.patch).msgs.length > 0; if (u) u.disabled = !ch; return; }
     const t = e.target.closest('[data-tf]'); if (!t) return;
     const f = UI.tf[t.dataset.ch]; const k = t.dataset.tf;
     if (k === 'level' || k === 'bleed') { f[k] = +t.value; const lab = t.nextElementSibling; if (lab) lab.textContent = k === 'level' ? `${f.level} dBFS` : `${f.bleed > 0 ? '+' : ''}${f.bleed} dB`; }
   });
   $('#setBody').addEventListener('change', e => {
+    const pk = e.target.closest('select[data-pk]');
+    if (pk) { patchSet(pk.dataset.pk, pk.value); UI.patchErr = ''; renderSet(); return; }
     const t = e.target.closest('[data-tf]');
     if (t) { const f = UI.tf[t.dataset.ch]; const k = t.dataset.tf; if (k === 'kind' || k === 'file') { f[k] = t.value; if (k === 'kind') renderSet(); } return; }
     if (e.target.id === 'f-op-ch') { assignOp(UI.op, e.target.value === '' ? null : +e.target.value); return; }
@@ -1664,10 +1743,11 @@ table.t tr.unused td{color:var(--muted)}
       case 'devrefresh': UI.devs = null; UI.devConfirm = false; break;
       case 'appcheck': UI.appCheck = [['ok', 'Checking…']]; api('/api/check').then(r => { UI.appCheck = r.checks; renderSet(); }).catch(() => { UI.appCheck = [['err', 'Sotto Bench did not answer']]; renderSet(); }); break;
       case 'tosetup': if (!UI.setupConfirm) { UI.setupConfirm = true; toast('Press Back to setup again to stop the engine'); setTimeout(() => { UI.setupConfirm = false; }, 4000); return; } UI.setupConfirm = false; toSetup(); return;
-      case 'patchdefaults': UI.patch = { ...UI.patch, ...Object.fromEntries(PATCH.map(([k]) => [k, UI.cfg.defaults[k] ?? ''])) }; UI.patchErr = ''; break;
-      case 'patchundo': UI.patch = { ...UI.cfg.saved }; UI.patchErr = ''; break;
+      case 'patchdefaults': UI.patch = patchFrom(UI.cfg.defaults); UI.patchErr = ''; break;
+      case 'patchundo': UI.patch = patchFrom(UI.cfg.saved); UI.patchErr = ''; break;
       case 'patchapply': {
-        const changes = Object.fromEntries(PATCH.filter(([k]) => String(UI.patch[k] ?? '') !== String(UI.cfg.saved[k] ?? '')).map(([k]) => [k, UI.patch[k] ?? '']));
+        const now = patchTo(UI.patch), was = JSON.parse(UI.patchSaved);
+        const changes = Object.fromEntries(Object.keys(now).filter(k => now[k] !== was[k]).map(k => [k, now[k]]));
         UI.patchErr = '';
         api('/api/config', changes).then(r => {
           if (!r.ok) { UI.patchErr = r.error; renderSet(); return; }

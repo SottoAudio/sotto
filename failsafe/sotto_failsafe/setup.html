@@ -31,6 +31,11 @@
   .alert { border-color: var(--bad); } .alert p { margin: 6px 0 0; }
   details pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 10px; max-height: 260px; overflow: auto; }
   a { color: var(--accent); } [hidden] { display: none !important; }
+  h3.sub { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 16px 0 8px; }
+  table.pt { width: 100%; border-collapse: collapse; } table.pt th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 600; padding: 4px 6px; }
+  table.pt td { padding: 3px 6px; } table.pt td:first-child { color: var(--muted); font-variant-numeric: tabular-nums; width: 28px; }
+  table.pt select { width: auto; min-width: 70px; } select.clash { border-color: var(--bad); }
+  .scroll { max-height: 360px; overflow: auto; } button.link { background: none; border: 0; padding: 0; color: var(--accent); font-weight: 600; text-decoration: underline; }
   a.button { display: inline-block; text-decoration: none; font-weight: 650; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); color: var(--text); padding: 11px 16px; }
 </style>
 </head>
@@ -57,20 +62,19 @@
     <label for="device">Soundcard</label>
     <div class="row" style="margin-top:0"><select id="device" style="flex:1 1 320px;width:auto"><option value="">Loading…</option></select><button id="devAgain">Look again</button></div>
     <p class="muted" id="devNote"></p>
+    <h3 class="sub">Talkers</h3>
+    <div class="row" style="margin-top:0"><label for="count" style="margin:0">How many</label><select id="count" style="width:auto"></select>
+      <span class="muted">Talkers use channels 1–60; 61–64 are kept for the system.</span></div>
+    <div class="scroll"><table class="pt"><thead><tr><th>#</th><th>Name</th><th>Input</th><th>Return (clean)</th></tr></thead><tbody id="talkers"></tbody></table></div>
+    <h3 class="sub">System channels</h3>
+    <div class="grid" id="system"></div>
+    <p class="err" id="clash"></p>
+    <h3 class="sub">Riedel frame</h3>
     <div class="grid">
-      <div><label for="talker_in">Talker inputs</label><input id="talker_in"></div>
-      <div><label for="talker_out">Talker returns (outputs)</label><input id="talker_out"></div>
-      <div><label for="probe_in">PROBE input(s)</label><input id="probe_in"></div>
-      <div><label for="probe_out">PROBE output</label><input id="probe_out"></div>
-      <div><label for="heartbeat_out">HEARTBEAT output</label><input id="heartbeat_out"></div>
-      <div><label for="pgm_in">PGM input</label><input id="pgm_in"></div>
-      <div><label for="monitor">Headphone outputs (solo bus)</label><input id="monitor" placeholder="63,64"></div>
-      <div><label for="listen_in">Listener feed input (optional, for timing)</label><input id="listen_in" placeholder="e.g. 63"></div>
-      <div><label for="rrcs_host">Riedel frame: RRCS IP address (optional)</label><input id="rrcs_host" placeholder="e.g. 10.0.0.10"></div>
+      <div><label for="rrcs_host">RRCS IP address (optional)</label><input id="rrcs_host" placeholder="e.g. 10.0.0.10"></div>
       <div><label for="rrcs_port">RRCS port</label><input id="rrcs_port" placeholder="8193" inputmode="numeric"></div>
     </div>
-    <div style="margin-top:12px"><label for="names">Talker names</label><input id="names"></div>
-    <p class="muted">Channels count from 1, as in Dante Controller. Ranges like 1-4 and lists like 63,64 both work. The defaults are Sotto's fixed system channels (IN 61 PROBE return, IN 62 PGM, OUT 61 HEARTBEAT, OUT 62 PROBE, OUT 63/64 headphones), so set Dante Virtual Soundcard to 64 &times; 64. See the Director setup in the Sotto README.</p>
+    <p class="muted">Channels are numbered as in Dante Controller. The defaults are Sotto's fixed system channels (IN 61 PROBE return, IN 62 PGM, OUT 61 HEARTBEAT, OUT 62 PROBE, OUT 63/64 headphones), so set Dante Virtual Soundcard to 64 &times; 64. <button type="button" id="patchDefaults" class="link">Back to defaults</button></p>
     <div class="row">
       <label class="check"><input type="checkbox" id="record"> Record the test</label>
     </div>
@@ -89,12 +93,71 @@
 <div class="starting" id="starting">Starting… the console opens here in a moment.</div>
 <script>
 const $ = s => document.querySelector(s);
-const fields = ['talker_in', 'talker_out', 'probe_in', 'probe_out', 'heartbeat_out', 'pgm_in', 'listen_in', 'monitor', 'rrcs_host', 'rrcs_port', 'names'];
+const fields = ['rrcs_host', 'rrcs_port'];
+// ---- the I/O patch: every choice a dropdown. Talkers on 1-60; 61-64 for the system.
+const TALK = Array.from({length: 60}, (_, k) => k + 1), SYSCH = [61, 62, 63, 64];
+const SYS = [['pgm_in', 'PGM input (echo reference)'], ['probe_in', 'PROBE return input'], ['listen_in', 'Listener feed input (optional)', true],
+             ['probe_out', 'PROBE output'], ['heartbeat_out', 'HEARTBEAT output (to the VOX)'], ['mon_l', 'Headphones left (phones bus)'], ['mon_r', 'Headphones right']];
+let patch = null, defaults = null;
+const chansParse = v => { const o = []; String(v || '').split(',').map(x => x.trim()).filter(Boolean).forEach(p => { const m = /^(\d+)\s*-\s*(\d+)$/.exec(p); if (m) { for (let k = +m[1]; k <= +m[2]; k++) o.push(k); } else if (/^\d+$/.test(p)) o.push(+p); }); return o; };
+const chansFmt = a => { const o = []; let k = 0; while (k < a.length) { let j = k; while (j + 1 < a.length && a[j + 1] === a[j] + 1) j++; o.push(j > k + 1 ? `${a[k]}-${a[j]}` : a.slice(k, j + 1).join(',')); k = j + 1; } return o.join(','); };
+function patchFrom(c) {
+  const tin = chansParse(c.talker_in), tout = chansParse(c.talker_out), names = String(c.names || '').split(','), mon = chansParse(c.monitor);
+  return { talkers: tin.map((ch, k) => ({ in: ch, out: tout[k] ?? ch, name: (names[k] || '').trim() })),
+           pgm_in: chansParse(c.pgm_in)[0] ?? 62, probe_in: chansParse(c.probe_in)[0] ?? 61, listen_in: chansParse(c.listen_in)[0] ?? 0,
+           probe_out: chansParse(c.probe_out)[0] ?? 62, heartbeat_out: chansParse(c.heartbeat_out)[0] ?? 61, mon_l: mon[0] ?? 63, mon_r: mon[1] ?? mon[0] ?? 64 };
+}
+function patchTo(p) {
+  return { talker_in: chansFmt(p.talkers.map(t => t.in)), talker_out: chansFmt(p.talkers.map(t => t.out)),
+           names: p.talkers.map((t, k) => (t.name || `Talker ${k + 1}`).replace(/,/g, ' ')).join(','),
+           pgm_in: String(p.pgm_in), probe_in: String(p.probe_in), listen_in: p.listen_in ? String(p.listen_in) : '',
+           probe_out: String(p.probe_out), heartbeat_out: String(p.heartbeat_out), monitor: `${p.mon_l},${p.mon_r}` };
+}
+function clashes(p) {
+  const bad = new Set(), msgs = [];
+  const check = (side, items) => { const seen = {}; items.forEach(([key, ch, what]) => { if (!ch) return;
+    if (seen[ch] && !(what === 'headphones' && seen[ch][1] === 'headphones')) { bad.add(key); bad.add(seen[ch][0]); msgs.push(`${side} ${ch} is set as both ${seen[ch][1]} and ${what}.`); } else seen[ch] = [key, what]; }); };
+  check('Input', [...p.talkers.map((t, k) => [`t${k}.in`, t.in, `talker ${k + 1}`]), ['pgm_in', p.pgm_in, 'PGM'], ['probe_in', p.probe_in, 'PROBE return'], ['listen_in', p.listen_in, 'listener feed']]);
+  check('Output', [...p.talkers.map((t, k) => [`t${k}.out`, t.out, `talker ${k + 1}`]), ['probe_out', p.probe_out, 'PROBE'], ['heartbeat_out', p.heartbeat_out, 'HEARTBEAT'], ['mon_l', p.mon_l, 'headphones'], ['mon_r', p.mon_r, 'headphones']]);
+  return { bad, msgs };
+}
+const opts = (list, val, extra = []) => extra.concat(list.map(c => [c, c])).map(([v, l]) => `<option value="${v}"${+v === +val ? ' selected' : ''}>${l}</option>`).join('');
+function renderPatch() {
+  const { bad, msgs } = clashes(patch);
+  $('#count').innerHTML = opts(TALK, patch.talkers.length);
+  $('#talkers').innerHTML = patch.talkers.map((t, k) => `<tr><td>${String(k + 1).padStart(2, '0')}</td>
+    <td><input data-pk="t${k}.name" value="${(t.name || '').replace(/[<>&"]/g, '')}" placeholder="Talker ${k + 1}"></td>
+    <td><select data-pk="t${k}.in" class="${bad.has(`t${k}.in`) ? 'clash' : ''}">${opts(TALK, t.in)}</select></td>
+    <td><select data-pk="t${k}.out" class="${bad.has(`t${k}.out`) ? 'clash' : ''}">${opts(TALK, t.out)}</select></td></tr>`).join('');
+  $('#system').innerHTML = SYS.map(([k, l, optional]) => `<div><label>${l}</label><select data-pk="${k}" class="${bad.has(k) ? 'clash' : ''}">${opts(SYSCH, patch[k], optional ? [[0, 'Off']] : [])}</select></div>`).join('');
+  $('#clash').textContent = msgs.join(' ');
+  $('#devBtn').disabled = msgs.length > 0;
+}
+function patchSet(key, value) {
+  if (key === 'count') {
+    const n = Math.max(1, Math.min(60, +value));
+    while (patch.talkers.length > n) patch.talkers.pop();
+    while (patch.talkers.length < n) {
+      const ui = new Set(patch.talkers.map(t => t.in)), uo = new Set(patch.talkers.map(t => t.out)), k = patch.talkers.length + 1;
+      patch.talkers.push({ in: TALK.find(c => !ui.has(c) && c >= k) || TALK.find(c => !ui.has(c)), out: TALK.find(c => !uo.has(c) && c >= k) || TALK.find(c => !uo.has(c)), name: '' });
+    }
+    return true;
+  }
+  const m = /^t(\d+)\.(in|out|name)$/.exec(key);
+  if (m) { patch.talkers[+m[1]][m[2]] = m[2] === 'name' ? value : +value; return m[2] !== 'name'; }
+  patch[key] = +value; return true;
+}
+document.addEventListener('change', e => { const t = e.target.closest('select[data-pk], select#count'); if (!t) return; patchSet(t.id === 'count' ? 'count' : t.dataset.pk, t.value); renderPatch(); });
+document.addEventListener('input', e => { const t = e.target.closest('input[data-pk]'); if (t) patchSet(t.dataset.pk, t.value); });
 let saved = {};
 async function init() {
   const c = await (await fetch('/setup/config')).json();
   saved = c.config;
+  defaults = c.defaults || null;
   fields.forEach(f => $('#' + f).value = saved[f] || '');
+  patch = patchFrom(saved);
+  renderPatch();
+  $('#patchDefaults').onclick = () => { if (defaults) { patch = patchFrom(defaults); renderPatch(); } };
   $('#record').checked = saved.record !== false;
   $('#runsDir').textContent = 'Recordings and event logs go to ' + c.runs_dir;
   if (c.log) $('#logPath').textContent = 'Sotto Bench keeps a detailed log at ' + c.log;
@@ -128,7 +191,8 @@ async function loadDevices() {
   }
   // Sotto needs one device with as many inputs and outputs as the highest channel below (64 with
   // the fixed system channels). Others are listed, greyed out, so you can see why.
-  const need = Math.max(64, ...fields.slice(0, 8).flatMap(f => ($('#' + f).value.match(/\d+/g) || []).map(Number)));
+  const pv = patchTo(patch);
+  const need = Math.max(64, ...['talker_in', 'talker_out', 'pgm_in', 'probe_in', 'probe_out', 'heartbeat_out', 'monitor', 'listen_in'].flatMap(f => chansParse(pv[f])));
   const esc = t => String(t).replace(/[<>&"]/g, '');
   const why = x => x.inputs === 0 ? 'output only' : x.outputs === 0 ? 'input only' : (x.inputs < need || x.outputs < need) ? `needs ${need} in and out` : '';
   const list = d.devices.slice().sort((a, b) => (why(a) ? 1 : 0) - (why(b) ? 1 : 0));
@@ -146,6 +210,7 @@ async function start(simulate) {
   $('#err').textContent = '';
   const body = {simulate, device: $('#device').value, record: $('#record').checked};
   fields.forEach(f => body[f] = $('#' + f).value.trim());
+  Object.assign(body, patchTo(patch));
   const r = await (await fetch('/setup/start', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})).json();
   if (!r.ok) { $('#err').textContent = r.error || 'Could not start'; return; }
   $('#form').style.display = 'none'; $('#starting').style.display = 'block';

@@ -528,7 +528,7 @@ table.t tr.unused td{color:var(--muted)}
       count: 16,
       ch: Array.from({ length: MAXT }, (_, i) => ({ name: `Talker ${i + 1}`, pos: pos[i] || 'SmartPanel', used: i < 4, mode: 'default', op: i < 4 ? OPIDS[i] : null })),
       operators: defaultOperators(),
-      proc: { mode: 'full', tail: 256, supp: 12, atten: 18, hpf: 100, trim: 0 },
+      proc: { mode: 'full', tail: 256, supp: 12, atten: 18, hpf: 100, trim: 0, headroom: 1 },
       engine: { driver: 'coreaudio', device: 'dvs', rate: 48000, buffer: 128 },
       rrcs: { host: '10.0.0.10', port: 8193, armed: 'ARMED', armReq: 'ARM_REQ', cleanOk: 'CLEAN_OK', hold: 400, probe: 200 },
       macros: defaultMacros(),
@@ -1180,7 +1180,9 @@ table.t tr.unused td{color:var(--muted)}
   }
   function secProcessing() {
     const pp = P.proc, buf = P.engine.buffer / (P.engine.rate / 1000);
-    const lat = 2 * buf + (pp.mode === 'full' ? 10 : 0);
+    const hr = pp.headroom || 1;
+    const lat = 2 * buf + (pp.mode === 'full' ? 10 : 0) + 10 * (hr - 1);
+    const armedNow = APP && APP.armed;
     const own = P.ch.slice(0, P.count).map((c, i) => i).filter(i => P.ch[i].used && modeIsOwn(i)).length;
     return box('Processing', `The project default for every talker.${own ? ` ${own} talker${own > 1 ? 's have' : ' has'} their own setting, from an operator profile or the Channels page.` : ' Any operator profile or channel can override it.'}`,
       `<div class="modes">${Object.entries(MODES).map(([k, m]) => `<button class="mode" data-act="mode" data-v="${k}" aria-pressed="${pp.mode === k}"><b>${m.l}</b><span class="chain">${m.chain}</span><small>${m.d}</small></button>`).join('')}</div>` +
@@ -1190,7 +1192,15 @@ table.t tr.unused td{color:var(--muted)}
       row('Speech model limit', 'Most the speech model may take away (Full clean). Lower sounds more natural, higher is cleaner.', rng('proc.atten', pp.atten, 6, 40, 1, 'dB')) +
       row('High-pass', 'Removes rumble and handling noise before processing.', sel('proc.hpf', [[0, 'Off'], [80, '80 Hz'], [100, '100 Hz'], [120, '120 Hz']], pp.hpf, 'data-t="n"')) +
       row('Output trim', 'Level change on every clean return.', rng('proc.trim', pp.trim, -12, 6, 0.5, 'dB')) +
-      row('Added delay (estimate)', 'Through Sotto, on top of the DVS latency. Latency work comes later.', `<span class="fixed">${lat.toFixed(1)} ms</span><span class="muted">${buf.toFixed(1)} ms in + ${buf.toFixed(1)} ms out${pp.mode === 'full' ? ' + 10 ms speech model frame' : ''}</span>`));
+      row('Processing headroom', `How long the processing gets for each 10 ms block. Some soundcards deliver blocks in bunches, two at once and then a gap; with 10 ms a bunched block can come back late, and that talker gets 10 ms of dry. 20 ms absorbs the bunching for 10 ms more delay. ${armedNow ? '<b>Disarm Sotto to change it:</b> it moves every talker\'s delay.' : 'Change it while disarmed: it moves every talker\'s delay.'}`,
+        sel('proc.headroom', [[1, '10 ms (20 ms through Sotto)'], [2, '20 ms (30 ms through Sotto)']], hr, 'data-t="n"' + (armedNow ? ' disabled' : '')) + gapsNote()) +
+      row('Added delay (estimate)', 'Through Sotto, on top of the DVS latency. Latency work comes later.', `<span class="fixed">${lat.toFixed(1)} ms</span><span class="muted">${buf.toFixed(1)} ms in + ${buf.toFixed(1)} ms out${pp.mode === 'full' ? ' + 10 ms speech model frame' : ''}${hr > 1 ? ` + ${10 * (hr - 1)} ms headroom` : ''}</span>`));
+  }
+  function gapsNote() {
+    const g = APP && APP.callback && APP.callback.gaps;
+    if (!g || !g.blocks) return '';
+    const pr = APP.processing || {};
+    return `<span class="muted">Last 10 s: blocks ${g.min_ms}–${g.max_ms} ms apart, ${g.bunched} bunched, ${g.late} late from the soundcard; ${pr.misses || 0} late from processing so far.</span>`;
   }
   function loadDevices() {
     if (UI.devsLoading) return;

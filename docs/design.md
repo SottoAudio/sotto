@@ -124,6 +124,20 @@ Failure handling forms two layers:
 
 `--workers 0` keeps the old single processing thread inside the engine process, for comparison.
 
+**Processing headroom.** Some soundcards deliver blocks in bunches: two arrive back to back, then
+there's a 20 ms gap. With one block of headroom, the second block of a bunch finds no result yet,
+so that group's talkers get 10 ms of dry, which is audible.
+
+The first M2 Pro run with two workers showed this. Each worker used only 3–5 ms of each 10 ms
+block, yet there were still 1–3 late blocks a second.
+
+Two blocks of headroom absorb the bunching at the cost of 10 ms more delay (30 ms through Sotto
+instead of 20). The default stays at one block. Headroom is set in the console, and only while
+disarmed, because changing it moves every talker's delay.
+
+The engine logs how evenly blocks arrive every 10 s: gap range, bunched (<3 ms) and late
+(>17 ms). The console shows the same figures next to the setting.
+
 ## Toolkit and licence
 
 MIT licence. The engine will be C++ on permissive libraries: RtAudio or miniaudio for Core Audio

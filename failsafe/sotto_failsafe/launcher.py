@@ -17,8 +17,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = 8766
 
 DEFAULTS = {
-    "device": "", "talker_in": "1-4", "talker_out": "1-4", "names": "caller,creative,tech mgr,stage mgr",
-    "probe_in": "5", "probe_out": "5", "heartbeat_out": "6", "listen_in": "6", "monitor": "",
+    "device": "", "talker_in": "1-4", "talker_out": "1-4", "names": "Show caller,Creative director,Technical manager,Stage manager",
+    "probe_in": "61", "probe_out": "62", "heartbeat_out": "61", "pgm_in": "62", "listen_in": "", "monitor": "63,64",
     "rrcs_host": "", "record": True,
 }
 
@@ -72,7 +72,8 @@ def argv_from(cfg, simulate):
         argv.append("--simulate")
     else:
         argv += ["--device", str(cfg["device"]), "--talker-in", cfg["talker_in"], "--talker-out", cfg["talker_out"],
-                 "--probe-in", cfg["probe_in"], "--probe-out", cfg["probe_out"], "--heartbeat-out", cfg["heartbeat_out"]]
+                 "--probe-in", cfg["probe_in"], "--probe-out", cfg["probe_out"], "--heartbeat-out", cfg["heartbeat_out"],
+                 "--pgm-in", cfg.get("pgm_in", "")]
         if cfg.get("listen_in"):
             argv += ["--listen-in", cfg["listen_in"]]
         if cfg.get("monitor"):

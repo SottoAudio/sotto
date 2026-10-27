@@ -54,6 +54,35 @@ only for re-arming and status, never for falling back.
 At 64 talkers, a 64 × 64 soundcard holds about 54 talkers once references, probes and the
 heartbeat are counted. Merging VAD Premium (136 × 136) holds 64.
 
+## Fixed system channels
+
+Every show uses the same numbers, so the Dante routing never changes: talkers on 1–60 in and
+out, IN 61 PROBE return, IN 62 PGM, OUT 61 HEARTBEAT, OUT 62 PROBE, OUT 63/64 the engineer's
+headphones. Dante Virtual Soundcard runs at 64 × 64.
+
+## Console
+
+- **Live** and **Settings** tabs, in the Partyline Planner colours.
+- **Solo bus.** Modelled on Pro Tools' AFL/PFL solo, not solo-in-place: soloing never changes a
+  talker's return or the Dante patch. Solos stack; Alt-click solos one alone. Nothing soloed
+  means silence. Modes: As clicked (an input solo is the dry signal before processing, an
+  output solo is the clean return), Dry, Clean, Split (dry left, clean right). Level, Dim and a
+  −3 dBFS limiter. Solos always start empty.
+- **Macros** run only when pressed. All to dry: RRCS ARMED off, disarm, confirm dry. Restore
+  all: wait for 5 s of green, arm, confirm the frame reports clean.
+
+## Operator profiles and plugin inserts
+
+- A profile belongs to a person: their insert plugin and its full state, their processing mode
+  and trim. It moves with them to another channel.
+- One VST3 (or AU on Mac) insert per profile, after Sotto's processing. Off means bypassed, not
+  unloaded, and the bypassed path is delayed by the plugin's latency, so switching never shifts
+  timing. The per-talker watchdog checks the output after the plugin.
+- Hosting uses the Steinberg VST3 SDK, MIT-licensed since 3.8, so Sotto stays MIT. JUCE is
+  avoided for the same reason. `engine/plugin-test` proves loading, save/restore and CPU before
+  this goes into the engine.
+- Licences stay with the plugin maker (CEDAR uses iLok: a physical iLok on the show laptop).
+
 ## Processing cost
 
 Measured in Python on one core of the development machine:

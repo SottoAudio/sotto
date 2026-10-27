@@ -32,6 +32,7 @@ jobs:
           pyinstaller --noconfirm --windowed --name "Sotto Bench" \
             --osx-bundle-identifier audio.sotto.bench \
             --add-data "sotto_failsafe/console.html:sotto_failsafe" \
+            --add-data "sotto_failsafe/console_bench.html:sotto_failsafe" \
             --add-data "sotto_failsafe/setup.html:sotto_failsafe" \
             --collect-all sounddevice --collect-all _sounddevice_data \
             sotto_bench.py > build.log 2>&1 || { echo "::error title=PyInstaller (mac)::$(tail -c 3000 build.log | tr '\n' ' ')"; exit 1; }
@@ -44,8 +45,10 @@ jobs:
         run: |
           "dist/Sotto Bench.app/Contents/MacOS/Sotto Bench" --simulate --no-browser --port 8790 > smoke.log 2>&1 &
           for i in $(seq 1 40); do curl -sf http://127.0.0.1:8790/api/state > state.json && break; sleep 1; done
-          python -c "import json; s=json.load(open('state.json')); assert s['armed'] is False; print('console up, disarmed:', s['health'])" \
+          python -c "import json; s=json.load(open('state.json')); assert s['armed'] is False and s['solo']['ids'] == []; print('console up, disarmed, no solos:', s['health'])" \
             || { echo "::error title=Smoke test (mac)::$(tail -c 3000 smoke.log | tr '\n' ' ')"; exit 1; }
+          curl -sf http://127.0.0.1:8790/ | grep -q "<title>Sotto Console</title>" || { echo "::error title=Smoke test::new console not served"; exit 1; }
+          curl -sf http://127.0.0.1:8790/bench > /dev/null || { echo "::error title=Smoke test::bench console not served"; exit 1; }
           curl -sf -X POST http://127.0.0.1:8790/quit
           sleep 2
       - name: Zip
@@ -73,6 +76,7 @@ jobs:
         run: |
           pyinstaller --noconfirm --name "Sotto Bench" \
             --add-data "sotto_failsafe/console.html;sotto_failsafe" \
+            --add-data "sotto_failsafe/console_bench.html;sotto_failsafe" \
             --add-data "sotto_failsafe/setup.html;sotto_failsafe" \
             --collect-all sounddevice --collect-all _sounddevice_data \
             sotto_bench.py > build.log 2>&1 || { echo "::error title=PyInstaller (windows)::$(tail -c 3000 build.log | tr '\n' ' ')"; exit 1; }
@@ -81,8 +85,10 @@ jobs:
         run: |
           "dist/Sotto Bench/Sotto Bench.exe" --simulate --no-browser --port 8790 > smoke.log 2>&1 &
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:8790/api/state > state.json && break; sleep 1; done
-          python -c "import json; s=json.load(open('state.json')); assert s['armed'] is False; print('console up, disarmed:', s['health'])" \
+          python -c "import json; s=json.load(open('state.json')); assert s['armed'] is False and s['solo']['ids'] == []; print('console up, disarmed, no solos:', s['health'])" \
             || { echo "::error title=Smoke test (windows)::$(tail -c 3000 smoke.log | tr '\n' ' ')"; exit 1; }
+          curl -sf http://127.0.0.1:8790/ | grep -q "<title>Sotto Console</title>" || { echo "::error title=Smoke test::new console not served"; exit 1; }
+          curl -sf http://127.0.0.1:8790/bench > /dev/null || { echo "::error title=Smoke test::bench console not served"; exit 1; }
           curl -sf -X POST http://127.0.0.1:8790/quit
           sleep 2
       - name: Zip

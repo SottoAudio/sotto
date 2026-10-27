@@ -1,242 +1,1500 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sotto Fail-safe Bench</title>
+<title>Sotto Console</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <style>
-  :root {
-    --bg: #0e1012; --panel: #16191c; --panel2: #1d2125; --line: #2a2f35;
-    --text: #e9ebee; --muted: #9aa3ad; --accent: #4fb3ff;
-    --ok: #3ccf7a; --warn: #f2b84b; --bad: #ff5d5d; --meter-bg: #0a0c0e;
+/* Layout: sticky header + tabs. Main = three columns: inputs (dry) | status, macros, channel tiles | outputs (clean).
+   Settings = section rail + one section at a time. Colours and type carried over from Partyline Planner. */
+:root{
+  --bg:#ECEEF1; --panel:#FFFFFF; --sunk:#F5F6F8; --ink:#14181D; --muted:#596472; --line:#D5DAE0; --line-strong:#B9C1CA;
+  --accent:#C9770A; --accent-ink:#8F5300; --accent-soft:#FBEBD3;
+  --ok:#23804F; --ok-soft:#DDF1E5; --warn:#A8640A; --warn-soft:#FBEED6; --err:#B42F23; --err-soft:#F9E0DD; --info:#2F62A0; --info-soft:#E0EAF7;
+  --lcd:#1B2026; --lcd-2:#232A31; --lcd-ink:#EEF2F5; --lcd-dim:#8C99A6;
+  --led-g:#4CC083; --led-a:#F0A23A; --led-r:#F2715F; --led-b:#78A8E6; --led-off:#353E47;
+  --track:#E1E5EA; --meter-g:#2E9A5E; --meter-a:#D69A2B; --meter-r:#D24A3A;
+  --clean:var(--ok); --clean-soft:var(--ok-soft); --dry:var(--info); --dry-soft:var(--info-soft);
+  --f-display:"Barlow Condensed","Arial Narrow",system-ui,sans-serif;
+  --f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+  --r:6px; --hdrH:112px; --solo:#E8B21C;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0F1216; --panel:#171B20; --sunk:#12161A; --ink:#E6EAEE; --muted:#8E99A5; --line:#283038; --line-strong:#3A444F;
+  --accent:#F0A23A; --accent-ink:#F4B25C; --accent-soft:#3A2A12;
+  --ok:#4CC083; --ok-soft:#14301F; --warn:#E5A44A; --warn-soft:#33260F; --err:#F07A6C; --err-soft:#3A1915; --info:#78A8E6; --info-soft:#15243A;
+  --lcd:#0B0E11; --lcd-2:#151A1F; --lcd-ink:#EEF2F5; --lcd-dim:#7F8B97; --led-off:#2A323A;
+  --track:#232A31; --meter-g:#3FB574; --meter-a:#E5A44A; --meter-r:#F07A6C;
+  color-scheme:dark }}
+:root[data-theme="dark"]{
+  --bg:#0F1216; --panel:#171B20; --sunk:#12161A; --ink:#E6EAEE; --muted:#8E99A5; --line:#283038; --line-strong:#3A444F;
+  --accent:#F0A23A; --accent-ink:#F4B25C; --accent-soft:#3A2A12;
+  --ok:#4CC083; --ok-soft:#14301F; --warn:#E5A44A; --warn-soft:#33260F; --err:#F07A6C; --err-soft:#3A1915; --info:#78A8E6; --info-soft:#15243A;
+  --lcd:#0B0E11; --lcd-2:#151A1F; --lcd-ink:#EEF2F5; --lcd-dim:#7F8B97; --led-off:#2A323A;
+  --track:#232A31; --meter-g:#3FB574; --meter-a:#E5A44A; --meter-r:#F07A6C;
+  color-scheme:dark }
+
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html{height:100%}
+body{min-height:100%;background:var(--bg);color:var(--ink);font:14px/1.45 var(--f-body);margin:0}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:30;background:var(--panel)}
+button,input,select,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+.mono{font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+.muted{color:var(--muted)}
+.wrap{max-width:1640px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.h2{font:600 16px/1.1 var(--f-display);letter-spacing:.08em;text-transform:uppercase;margin:0}
+.h2 em{font-style:normal;color:var(--muted);font-weight:500;margin-left:4px}
+
+/* header */
+.top{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;background:var(--panel);border-bottom:1px solid var(--line)}
+.top-row{display:flex;align-items:center;gap:10px 14px;flex-wrap:wrap;padding-block:10px 8px}
+.brand{font:700 21px/1 var(--f-display);letter-spacing:.08em;text-transform:uppercase;display:flex;align-items:center;gap:8px;white-space:nowrap}
+.brand i{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.proj{display:grid;line-height:1.15;min-width:0}
+.proj span{font:600 11px/1 var(--f-display);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.proj b{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:240px}
+.stats{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto;align-items:center}
+.stat{display:inline-flex;align-items:center;gap:6px;font:600 12.5px/1 var(--f-display);letter-spacing:.05em;text-transform:uppercase;padding:6px 9px;border:1px solid var(--line);border-radius:999px;color:var(--muted);white-space:nowrap}
+.stat b{color:var(--ink);font:500 12px/1 var(--f-mono);letter-spacing:0;text-transform:none}
+.dotl{width:8px;height:8px;border-radius:50%;background:var(--line-strong);flex:none}
+.dotl.ok{background:var(--ok)} .dotl.err{background:var(--err)} .dotl.warn{background:var(--warn)} .dotl.dry{background:var(--dry)}
+.phones-unused{display:inline-flex;align-items:center;gap:8px;padding:4px 4px 4px 10px;border:1px solid var(--accent);border-radius:999px;background:var(--accent-soft);min-width:0;max-width:100%}
+.phones .pl{font:600 12px/1 var(--f-display);letter-spacing:.07em;text-transform:uppercase;color:var(--accent-ink);white-space:nowrap}
+.phones b{font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.clock{font:500 13px/1 var(--f-mono);color:var(--muted)}
+.tabs{display:flex;gap:2px;overflow-x:auto;scrollbar-width:none}
+.tab{appearance:none;border:0;background:none;padding:9px 14px 8px;font:600 15px/1 var(--f-display);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);border-bottom:3px solid transparent;cursor:pointer;white-space:nowrap}
+.tab[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent)}
+
+/* controls */
+.btn{appearance:none;border:1px solid var(--line-strong);background:var(--panel);border-radius:var(--r);padding:6px 11px;cursor:pointer;font-weight:500;white-space:nowrap;line-height:1.3}
+.btn:hover{border-color:var(--ink)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#1B1206;font-weight:600}
+.btn.danger{color:var(--err);border-color:color-mix(in srgb,var(--err) 45%,var(--line))}
+.btn.sm{padding:3px 9px;font-size:12.5px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn[aria-pressed="true"]{background:var(--ink);color:var(--panel);border-color:var(--ink)}
+input[type=text],input[type=number],select,textarea{background:var(--panel);border:1px solid var(--line-strong);border-radius:var(--r);padding:6px 8px;min-width:0;max-width:100%}
+input[type=range]{accent-color:var(--accent);width:100%;min-width:0}
+textarea{width:100%;resize:vertical;min-height:70px}
+.seg{display:inline-flex;flex-wrap:wrap;border:1px solid var(--line-strong);border-radius:var(--r);overflow:hidden;max-width:100%}
+.seg button{appearance:none;border:0;background:var(--panel);padding:6px 11px;cursor:pointer;border-right:1px solid var(--line)}
+.seg button:last-child{border-right:0}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--panel)}
+.seg button:disabled{color:var(--muted);cursor:not-allowed}
+
+/* main grid */
+.mainview{display:grid;gap:14px;padding-block:14px 48px;grid-template-columns:minmax(250px,300px) minmax(0,1fr) minmax(250px,300px);grid-template-areas:"in mid out";align-items:start}
+.cin{grid-area:in}.cmid{grid-area:mid}.cout{grid-area:out}
+.col{background:var(--panel);border:1px solid var(--line);border-radius:10px;min-width:0;display:flex;flex-direction:column;overflow:hidden}
+.cin,.cout{position:sticky;top:calc(var(--hdrH) + 14px);max-height:calc(100dvh - var(--hdrH) - 28px)}
+.colh{display:flex;align-items:baseline;gap:8px;padding:12px 12px 6px}
+.colh .n{margin-left:auto;font:500 12px/1 var(--f-mono);color:var(--muted)}
+.scale{position:relative;height:14px;margin:0 12px 4px;font:500 10px/14px var(--f-mono);color:var(--muted)}
+.scale span{position:absolute;top:0;transform:translateX(-50%)}
+.scale span:first-child{transform:none}.scale span:last-child{transform:translateX(-100%)}
+.list{overflow:auto;flex:1 1 auto;min-height:100px;border-top:1px solid var(--line)}
+.sysh{font:600 11.5px/1 var(--f-display);letter-spacing:.09em;text-transform:uppercase;color:var(--muted);padding:9px 12px 5px;background:var(--sunk);border-top:1px solid var(--line)}
+.sys{flex:none;background:var(--sunk)}
+.pin{flex:none;border-top:1px solid var(--line)}
+
+/* channel strips (inputs and outputs) */
+.strip{appearance:none;display:grid;grid-template-columns:28px minmax(0,1fr) auto 16px;grid-template-rows:auto 7px;gap:4px 8px;align-items:center;width:100%;text-align:left;border:0;border-bottom:1px solid var(--line);background:none;padding:7px 12px 8px;cursor:pointer;color:inherit;font:inherit}
+.strip:last-child{border-bottom:0}
+.strip:hover{background:var(--sunk)}
+.sys .strip:hover,.pin .strip:hover{background:color-mix(in srgb,var(--ink) 4%,var(--sunk))}
+.strip.feed{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}
+.strip.static{cursor:default}.strip.static:hover{background:none}
+.strip .num{font:600 12.5px/1 var(--f-mono);color:var(--muted)}
+.strip .nm{min-width:0;display:flex;gap:6px;align-items:baseline}
+.strip .nm b{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.strip .nm small{color:var(--muted);font-size:11.5px;white-space:nowrap}
+.strip.off .nm b{color:var(--muted);font-weight:500}
+.strip .db{font:500 11.5px/1 var(--f-mono);color:var(--muted);min-width:4ch;text-align:right}
+.strip .sk{display:inline-grid;place-items:center;width:20px;height:18px;border:1px solid var(--line-strong);border-radius:3px;font:700 11px/1 var(--f-display);letter-spacing:.04em;color:var(--muted);background:var(--panel)}
+.strip:hover .sk{border-color:var(--accent);color:var(--accent-ink)}
+.strip.solo .sk{background:var(--solo);border-color:var(--solo);color:#1B1206;box-shadow:0 0 6px color-mix(in srgb,var(--solo) 60%,transparent)}
+.strip.static .sk{visibility:hidden}
+.strip .ear{font:600 10px/1 var(--f-mono);font-style:normal;color:#1B1206;background:var(--accent);border-radius:3px;padding:2px 4px;white-space:nowrap}
+.strip .ear:empty{display:none}
+.phrow{border-top:1px solid var(--line);background:var(--sunk)}
+.phin{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;padding-block:7px}
+.phl{font:600 12.5px/1 var(--f-display);letter-spacing:.08em;text-transform:uppercase;color:var(--accent-ink);white-space:nowrap}
+.phl .mono{color:var(--muted);letter-spacing:0;font-size:11.5px;margin-left:4px}
+.phsrc{font-weight:600;font-size:13px;min-width:0;flex:1 1 160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.phrow .seg button{padding:4px 10px;font-size:12.5px;white-space:nowrap}
+.phrow .rng{grid-template-columns:auto 130px 6ch;flex:none}
+.phrow .rng label{font:600 11.5px/1 var(--f-display);letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+.phrow .btns{display:flex;flex-wrap:wrap;gap:6px}
+@media (max-width:720px){.phrow .rng{grid-template-columns:auto minmax(0,1fr) 6ch;flex:1 1 100%}}
+.lamp{display:inline-grid;place-items:center;font:700 10.5px/1 var(--f-display);letter-spacing:.08em;padding:3px 6px;border-radius:3px;background:var(--line);color:var(--muted)}
+.lamp.on{background:var(--solo);color:#1B1206;animation:blink 1s steps(2) infinite}
+.strip .meter{grid-column:1/-1}
+.strip.pgm .num{color:var(--accent-ink)}
+.tag{font:600 10.5px/1 var(--f-display)!important;letter-spacing:.08em;text-transform:uppercase;padding:3px 6px;border-radius:4px;color:var(--muted)!important;background:var(--sunk)}
+.tag.clean{background:var(--clean-soft);color:var(--clean)!important}
+.tag.dry{background:var(--dry-soft);color:var(--dry)!important}
+.tag.trip{background:var(--err-soft);color:var(--err)!important}
+.tag.sil{background:var(--err);color:#fff!important}
+.meter{position:relative;height:7px;border-radius:2px;overflow:hidden;background:linear-gradient(90deg,var(--meter-g) 0 80%,var(--meter-a) 80% 95%,var(--meter-r) 95%)}
+.meter .m{position:absolute;inset:0;background:var(--track);transform-origin:100% 50%;transform:scaleX(1)}
+.meter .pk{position:absolute;top:0;bottom:0;width:2px;margin-left:-2px;background:var(--ink);left:0;opacity:0}
+
+/* middle column */
+.cmid{display:grid;gap:14px;min-width:0}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:10px;min-width:0}
+.box-h{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:11px 14px;border-bottom:1px solid var(--line)}
+.box-h .sp{flex:1}
+.box-b{padding:12px 14px}
+.band{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px 18px;align-items:center;padding:14px 16px 12px;border-left:6px solid var(--dry)}
+.band.armed{border-left-color:var(--clean)}.band.dead{border-left-color:var(--err)}
+.bstate{display:grid;gap:3px}
+.bstate b{font:700 32px/1 var(--f-display);letter-spacing:.06em}
+.band.armed .bstate b{color:var(--clean)}.band.dead .bstate b{color:var(--err)}.band.dis .bstate b{color:var(--dry)}
+.bstate small{font:600 12px/1 var(--f-display);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.bwhy{margin:0;min-width:0}
+.bact{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.hold{grid-column:1/-1;height:4px;border-radius:2px;background:var(--track);overflow:hidden}
+.hold i{display:block;height:100%;width:0;background:var(--clean);transition:width .1s linear}
+.checks{display:flex;flex-wrap:wrap;gap:6px;padding:0 16px 14px}
+.chk{display:inline-flex;align-items:center;gap:7px;padding:5px 9px;border:1px solid var(--line);border-radius:7px;background:var(--sunk);font-size:12.5px;min-width:0}
+.chk span{font:600 11.5px/1 var(--f-display);letter-spacing:.07em;text-transform:uppercase;color:var(--muted);white-space:nowrap}
+.chk b{font-weight:500;font-family:var(--f-mono);font-size:12px;white-space:nowrap}
+
+/* macro keys: panel-key style */
+.mkeys{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px}
+.mkey{appearance:none;position:relative;text-align:left;border:1px solid transparent;background:var(--lcd);color:var(--lcd-ink);border-radius:6px;padding:9px 10px 8px 14px;min-height:66px;display:grid;grid-template-rows:auto 1fr auto;gap:3px;cursor:pointer;min-width:0;--mc:var(--lcd-dim)}
+.mkey:hover{background:var(--lcd-2)}
+.mkey::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:4px;border-radius:0 2px 2px 0;background:var(--mc)}
+.mkey.s-dry{--mc:var(--led-b)}.mkey.s-clean{--mc:var(--led-g)}.mkey.s-alert{--mc:var(--led-r)}
+.mkey .kn{font:500 10.5px/1 var(--f-mono);color:var(--lcd-dim)}
+.mkey .kc{font:600 18px/1.05 var(--f-display);letter-spacing:.04em;text-transform:uppercase;align-self:center;overflow-wrap:anywhere}
+.mkey .ks{font-size:11px;color:var(--lcd-dim)}
+.mkey:disabled{opacity:.5;cursor:not-allowed}
+.mkey.running{border-color:var(--accent)}
+.runner{margin-top:12px;border:1px solid var(--line);border-radius:8px;background:var(--sunk);padding:10px 12px;display:grid;gap:8px}
+.runner[hidden]{display:none}
+.runh{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.runh b{font:600 14px/1.1 var(--f-display);letter-spacing:.06em;text-transform:uppercase}
+.rsteps{list-style:none;margin:0;padding:0;display:grid;gap:4px;font-size:13px}
+.rsteps li{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:8px;align-items:baseline}
+.rsteps li .ic{font:600 12px/1 var(--f-mono);text-align:center}
+.rsteps li .nt{font:500 11.5px/1.3 var(--f-mono);color:var(--muted);text-align:right}
+.rsteps .done .ic{color:var(--ok)}.rsteps .run .ic{color:var(--accent)}.rsteps .fail .ic,.rsteps .fail .nt{color:var(--err)}
+.rsteps .skip,.rsteps .wait{color:var(--muted)}
+.rsteps .run{font-weight:600}
+@keyframes blink{50%{opacity:.25}}
+.rsteps .run .ic{animation:blink 1s steps(2) infinite}
+.note{font-size:12.5px;color:var(--muted);margin:10px 0 0}
+
+/* channel tiles */
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(186px,1fr));gap:8px}
+.tile{background:var(--lcd);color:var(--lcd-ink);border-radius:6px;padding:9px 10px 9px;display:grid;gap:8px;border:1px solid transparent;min-width:0;box-shadow:inset 0 -3px 0 var(--led-off)}
+.tile.st-clean{box-shadow:inset 0 -3px 0 var(--led-g)}
+.tile.st-dry{box-shadow:inset 0 -3px 0 var(--led-b)}
+.tile.st-trip{border-color:var(--led-r);box-shadow:inset 0 -3px 0 var(--led-r)}
+.tile.st-sil{box-shadow:inset 0 -3px 0 var(--led-r)}
+.tile.idle{opacity:.5}
+.th{display:flex;gap:7px;align-items:baseline;min-width:0}
+.th .num{font:500 11px/1 var(--f-mono);color:var(--lcd-dim)}
+.th b{font:600 16px/1.05 var(--f-display);letter-spacing:.04em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+.th .pos{font-size:10.5px;color:var(--lcd-dim);white-space:nowrap}
+.leds{display:flex;gap:4px 10px;flex-wrap:wrap}
+.led{display:inline-flex;align-items:center;gap:5px;font:600 11px/1 var(--f-display);letter-spacing:.08em;text-transform:uppercase;color:var(--lcd-dim);white-space:nowrap}
+.led::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--led-off)}
+.led.g{color:var(--lcd-ink)}.led.g::before{background:var(--led-g);box-shadow:0 0 6px var(--led-g)}
+.led.a{color:var(--lcd-ink)}.led.a::before{background:var(--led-a);box-shadow:0 0 6px var(--led-a)}
+.led.r{color:var(--lcd-ink)}.led.r::before{background:var(--led-r);box-shadow:0 0 6px var(--led-r)}
+.led.b{color:var(--lcd-ink)}.led.b::before{background:var(--led-b);box-shadow:0 0 6px var(--led-b)}
+.tm{display:flex;justify-content:space-between;gap:8px;font-size:11.5px;color:var(--lcd-dim);min-width:0}
+.tm span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tm .red{font-family:var(--f-mono);color:var(--lcd-ink)}
+.ta{display:flex;gap:6px}
+.kbtn{appearance:none;flex:1;background:var(--lcd-2);color:var(--lcd-ink);border:1px solid color-mix(in srgb,var(--lcd-ink) 22%,transparent);border-radius:4px;font:600 12px/1 var(--f-display);letter-spacing:.08em;text-transform:uppercase;padding:6px 8px;cursor:pointer}
+.kbtn:hover{border-color:var(--lcd-ink)}
+.kbtn:disabled{opacity:.35;cursor:not-allowed}
+.kbtn.arm:not(:disabled){border-color:var(--led-g);color:var(--led-g)}
+
+details.box>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;padding:11px 14px}
+details.box>summary::-webkit-details-marker{display:none}
+details.box>summary .h2::after{content:" ▸";color:var(--muted)}
+details.box[open]>summary .h2::after{content:" ▾"}
+details.box[open]>summary{border-bottom:1px solid var(--line)}
+.faults{display:flex;flex-wrap:wrap;gap:6px}
+.logt{width:100%;border-collapse:collapse;font-size:12.5px}
+.logt td{padding:4px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+.logt td.n{font-family:var(--f-mono);color:var(--muted);white-space:nowrap;width:1%}
+.logt td.src{color:var(--muted);white-space:nowrap;width:1%}
+.logwrap{max-height:240px;overflow:auto;margin-top:12px;border:1px solid var(--line);border-radius:8px}
+
+@media (max-width:1180px){
+  .mainview{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-areas:"mid mid" "in out"}
+  .cin,.cout{position:static;max-height:72vh}
+}
+@media (max-width:720px){
+  .mainview{grid-template-columns:minmax(0,1fr);grid-template-areas:"mid" "in" "out"}
+  .band{grid-template-columns:minmax(0,1fr)}
+  .bact{justify-content:flex-start}
+  .proj b{max-width:150px}
+  .top{position:static}
+  .rail{top:0}
+}
+
+/* settings */
+.setview{display:grid;grid-template-columns:220px minmax(0,1fr);gap:18px;padding-block:18px 56px;align-items:start}
+.rail{position:sticky;top:calc(var(--hdrH) + 18px);display:grid;gap:3px}
+.rbtn{appearance:none;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:9px 11px;border-radius:8px;border:1px solid transparent;background:none;text-align:left;cursor:pointer}
+.rbtn:hover{background:var(--panel);border-color:var(--line)}
+.rbtn[aria-current="true"]{background:var(--panel);border-color:var(--line-strong);box-shadow:inset 3px 0 0 var(--accent)}
+.rbtn b{font:600 15px/1.1 var(--f-display);letter-spacing:.06em;text-transform:uppercase}
+.rbtn small{grid-column:1/-1;color:var(--muted);font-size:12px;line-height:1.3}
+.rbtn .dotl{grid-row:1;grid-column:2}
+.setbody{display:grid;gap:14px;min-width:0}
+.lede{color:var(--muted);margin:2px 0 0;max-width:72ch;font-size:13.5px}
+.setrow{display:grid;grid-template-columns:minmax(180px,1fr) minmax(0,2fr);gap:8px 18px;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)}
+.setrow:last-child{border-bottom:0}
+.setrow>div:first-child b{display:block;font-weight:600}
+.setrow>div:first-child small{display:block;color:var(--muted);font-size:12.5px;line-height:1.35;margin-top:2px}
+.setrow .ctl{display:flex;flex-wrap:wrap;gap:8px;align-items:center;min-width:0}
+.setrow .ctl input[type=text]{flex:1 1 220px}
+.rng{display:grid;grid-template-columns:minmax(0,1fr) 7ch;gap:10px;align-items:center;flex:1 1 260px}
+.rng output{font:500 13px/1 var(--f-mono);text-align:right}
+.fixed{display:inline-flex;align-items:center;gap:6px;font:500 13px/1 var(--f-mono);padding:6px 10px;border:1px dashed var(--line-strong);border-radius:var(--r);color:var(--muted)}
+.pill{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;line-height:1;padding:3px 7px;border-radius:999px;border:1px solid var(--line);white-space:nowrap;background:var(--panel)}
+.pill.ok{color:var(--ok);background:var(--ok-soft);border-color:transparent}
+.pill.warn{color:var(--warn);background:var(--warn-soft);border-color:transparent}
+.pill.err{color:var(--err);background:var(--err-soft);border-color:transparent}
+.pill.info{color:var(--info);background:var(--info-soft);border-color:transparent}
+.scroll{overflow-x:auto}
+table.t{border-collapse:collapse;width:100%;font-size:13px}
+table.t th{font:600 12px/1 var(--f-display);letter-spacing:.07em;text-transform:uppercase;color:var(--muted);text-align:left;padding:8px;border-bottom:1px solid var(--line);white-space:nowrap;background:var(--sunk)}
+table.t td{padding:4px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
+table.t td.n{font-family:var(--f-mono);color:var(--muted);white-space:nowrap}
+table.t input[type=text]{width:100%;min-width:150px;border-color:transparent;background:transparent}
+table.t input[type=text]:hover{border-color:var(--line)}
+table.t input[type=text]:focus{border-color:var(--accent);background:var(--panel)}
+table.t select{border-color:transparent;background:transparent}
+table.t select:hover{border-color:var(--line)}
+table.t tr.unused td{color:var(--muted)}
+.modes{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr));gap:8px}
+.mode{appearance:none;text-align:left;display:grid;gap:4px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel);cursor:pointer;min-width:0}
+.mode b{font:600 15px/1.1 var(--f-display);letter-spacing:.05em;text-transform:uppercase}
+.mode small{color:var(--muted);font-size:12.5px;line-height:1.35}
+.mode .chain{font:500 11px/1.3 var(--f-mono);color:var(--muted)}
+.mode[aria-pressed="true"]{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+.results{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:4px;font-size:13px}
+.results li{display:grid;grid-template-columns:22px minmax(0,1fr);gap:6px}
+.results .i{font:600 12px/1.45 var(--f-mono)}
+.results .ok .i{color:var(--ok)}.results .warn .i{color:var(--warn)}.results .err .i{color:var(--err)}
+.steps{margin:0;padding-left:20px;display:grid;gap:6px;font-size:13.5px;max-width:78ch}
+.rules{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+.rules li{display:flex;gap:8px;align-items:baseline;font-size:13.5px}
+.rules li::before{content:"■";color:var(--accent);font-size:9px}
+.medit{display:grid;grid-template-columns:220px minmax(0,1fr);gap:16px;align-items:start}
+.mlist{display:grid;gap:4px}
+.mli{appearance:none;display:grid;grid-template-columns:10px minmax(0,1fr);gap:8px;align-items:center;text-align:left;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);cursor:pointer}
+.mli[aria-current="true"]{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+.mli i{width:10px;height:10px;border-radius:2px;background:var(--lcd-dim)}
+.mli.s-dry i{background:var(--dry)}.mli.s-clean i{background:var(--clean)}.mli.s-alert i{background:var(--err)}
+.mli b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.esteps{list-style:none;margin:0;padding:0;display:grid;gap:6px;counter-reset:s}
+.estep{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:8px;align-items:center;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--sunk);counter-increment:s}
+.estep::before{content:counter(s);font:600 13px/1 var(--f-mono);color:var(--muted);text-align:center}
+.estep .sx{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-width:0}
+.estep .sx input[type=number]{width:90px}
+.estep .ord{display:flex;gap:2px}
+.warnbox{border-left:4px solid var(--warn);background:var(--warn-soft);color:var(--ink);padding:8px 12px;border-radius:6px;font-size:13px}
+.okbox{border-left:4px solid var(--ok);background:var(--ok-soft);padding:8px 12px;border-radius:6px;font-size:13px}
+.confirm{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;border-radius:8px;background:var(--err-soft);font-size:13px}
+@media (max-width:820px){
+  .setview{grid-template-columns:minmax(0,1fr)}
+  .rail{position:static;display:flex;overflow-x:auto;gap:6px;scrollbar-width:none}
+  .rbtn{flex:none;border-color:var(--line);background:var(--panel)}
+  .rbtn small{display:none}
+  .setrow{grid-template-columns:minmax(0,1fr)}
+  .medit{grid-template-columns:minmax(0,1fr)}
+}
+.insrow{display:flex;gap:6px}
+.kbtn.insb{display:flex;align-items:center;gap:8px;text-align:left;min-width:0;flex:1 1 0;overflow:hidden}
+.kbtn.insb span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.kbtn.insb[aria-pressed="true"]{border-color:var(--led-g)}
+.kbtn.ed{flex:0 0 auto}
+.mli .mt{display:grid;min-width:0}
+.mli small{color:var(--muted);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.opli i{border-radius:50%;background:var(--line-strong)}.opli i.on{background:var(--clean)}
+.plug{border:1px solid var(--line);border-radius:8px;background:var(--sunk);padding:0 12px 6px}
+.plugh{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
+.plugh b{font:600 15px/1.1 var(--f-display);letter-spacing:.06em;text-transform:uppercase}
+.plugh .sp{flex:1}
+.bands{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px 14px;flex:1 1 100%}
+.bands label{display:grid;grid-template-columns:auto minmax(0,1fr) 6ch;gap:8px;align-items:center;font:500 11.5px/1 var(--f-mono);color:var(--muted)}
+.bands output{text-align:right;color:var(--ink)}
+.chkl{display:inline-flex;gap:6px;align-items:center}
+.appnote{border-left:4px solid var(--info);background:var(--info-soft);padding:9px 12px;border-radius:6px;font-size:13px}
+.toast{position:fixed;left:50%;bottom:calc(18px + env(safe-area-inset-bottom,0px));transform:translate(-50%,20px);opacity:0;pointer-events:none;background:var(--ink);color:var(--panel);padding:9px 14px;border-radius:8px;font-size:13.5px;transition:.2s;z-index:40;max-width:calc(100vw - 32px)}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+</style>
+
+<header class="top" id="top">
+  <div class="wrap top-row">
+    <div class="brand"><i></i>Sotto</div>
+    <div class="proj"><span>Project</span><b id="projName"></b></div>
+    <div class="stats">
+      <span class="stat" id="stEngine"><i class="dotl"></i>Engine <b></b></span>
+      <span class="stat" id="stRrcs"><i class="dotl"></i>RRCS <b></b></span>
+      <span class="clock" id="clock"></span>
+      <button class="btn sm" id="quitBtn" data-app-only hidden>Quit</button>
+    </div>
+  </div>
+  <div class="phrow" aria-label="Headphone bus">
+    <div class="wrap phin">
+      <span class="phl">Phones bus <span class="mono">OUT 63/64</span></span>
+      <span class="lamp" id="soloLamp">SOLO</span>
+      <b class="phsrc" id="phSrc"></b>
+      <div class="seg" id="phMode" role="group" aria-label="What the headphones hear"></div>
+      <div class="rng"><label for="phLevel">Level</label><input type="range" id="phLevel" min="-40" max="6" step="1"><output id="phLevelOut"></output></div>
+      <div class="btns"><button class="btn sm" id="phDim" aria-pressed="false">Dim</button><button class="btn sm" id="clearSolo">Clear solos</button><button class="btn sm" id="hearBtn" aria-pressed="false" data-preview-only>Preview in browser</button></div>
+    </div>
+  </div>
+  <nav class="wrap tabs" role="tablist" aria-label="Pages">
+    <button class="tab" role="tab" id="tabMain" aria-selected="true" aria-controls="pMain">Live</button>
+    <button class="tab" role="tab" id="tabSet" aria-selected="false" aria-controls="pSet">Settings</button>
+  </nav>
+</header>
+
+<main id="pMain" class="wrap mainview">
+  <section class="col cin" aria-label="Inputs, dry">
+    <div class="colh"><h2 class="h2">Inputs<em>Dry</em></h2><span class="n" id="inCount"></span></div>
+    <div class="scale" aria-hidden="true"></div>
+    <div class="list" id="inList"></div>
+    <div class="sysh">System inputs</div>
+    <div class="sys" id="inSys"></div>
+  </section>
+
+  <section class="cmid" aria-label="Channels and macros">
+    <div class="box">
+      <div class="band dis" id="band">
+        <div class="bstate"><b id="bState">DISARMED</b><small id="bSub"></small></div>
+        <p class="bwhy" id="bWhy"></p>
+        <div class="bact"><button class="btn primary" id="armBtn">Arm</button><button class="btn" id="disarmBtn">Disarm</button></div>
+        <div class="hold" title="Checks green, out of the 5 s needed to arm"><i id="holdBar"></i></div>
+      </div>
+      <div class="checks" id="checks"></div>
+    </div>
+
+    <div class="box">
+      <div class="box-h"><h2 class="h2">Macros</h2><span class="sp"></span><button class="btn sm" id="editMacros">Edit macros</button></div>
+      <div class="box-b">
+        <div class="mkeys" id="mkeys"></div>
+        <div class="runner" id="runner" hidden></div>
+        <p class="note">Macros only run when someone presses them. Sotto never goes back to clean on its own.</p>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="box-h"><h2 class="h2">Channels</h2><span class="sp"></span><span class="muted" style="font-size:12.5px" id="chSummary"></span></div>
+      <div class="box-b"><div class="tiles" id="tiles"></div></div>
+    </div>
+
+    <details class="box" id="testBox">
+      <summary><h2 class="h2">Test without hardware</h2><span class="muted" style="font-size:12.5px">Faults, arm sources and the event log</span></summary>
+      <div class="box-b">
+        <div class="faults">
+          <button class="btn sm" data-fault="stop">Stop heartbeat</button>
+          <button class="btn sm" data-fault="silence">Laptop silent 3 s</button>
+          <button class="btn sm" data-fault="mute">Voices vanish 3 s</button>
+          <button class="btn sm" data-fault="freeze">Freeze 400 ms</button>
+          <button class="btn sm" data-fault="chan">One channel's DSP fails</button>
+          <button class="btn sm" data-fault="plugin">An insert plugin stalls</button>
+          <button class="btn sm" data-fault="rrcs" data-preview-only>RRCS link drops 10 s</button>
+          <button class="btn sm danger" data-fault="crash">Crash</button>
+        </div>
+        <div class="faults" style="margin-top:8px">
+          <button class="btn sm" id="panelArm" data-preview-only>Panel ARM key (via RRCS)</button>
+          <button class="btn sm" id="companionArm">Companion: arm</button>
+          <a class="btn sm" href="/bench" data-app-only hidden>Recording and fault timing</a>
+        </div>
+        <div class="logwrap"><table class="logt"><tbody id="log"></tbody></table></div>
+      </div>
+    </details>
+  </section>
+
+  <section class="col cout" aria-label="Outputs, clean">
+    <div class="colh"><h2 class="h2">Outputs<em>Clean</em></h2><span class="n" id="outCount"></span></div>
+    <div class="scale" aria-hidden="true"></div>
+    <div class="list" id="outList"></div>
+    <div class="sysh">System outputs</div>
+    <div class="sys" id="outSys"></div>
+  </section>
+</main>
+
+<main id="pSet" class="wrap setview" hidden>
+  <nav class="rail" id="rail" aria-label="Settings sections"></nav>
+  <div class="setbody" id="setBody"></div>
+</main>
+
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+(() => {
+  const $ = s => document.querySelector(s);
+  const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const pad = n => String(n).padStart(2, '0');
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const DT = 10, GRACE = 1000, ARM_HOLD = 5000, NET = 4, LOGIC = 20, RRCS_MS = 30, MAXT = 60;
+  const SYSNAME = { i61: 'PROBE return', i62: 'PGM', o61: 'HEARTBEAT', o62: 'PROBE', o63: 'Phones L', o64: 'Phones R' };
+  const SK = '<span class="sk" aria-hidden="true">S</span>';
+  const PHMODES = {
+    clicked: { l: 'As clicked', d: 'Both ears. An input solo is the dry signal as it reaches the DSP; an output solo is the clean return going to the Riedel.' },
+    dry: { l: 'Dry', d: 'Both ears hear the dry input of every soloed channel, whichever side you soloed it from.' },
+    clean: { l: 'Clean', d: 'Both ears hear the clean return of every soloed channel, whichever side you soloed it from.' },
+    split: { l: 'Split', d: 'Left ear dry, right ear clean, for every soloed channel. Best for judging what Sotto removes.' },
+  };
+
+  const MODES = {
+    bypass: { l: 'Bypass', chain: 'in → out', d: 'Dry passthrough. Nothing is removed. Use it to compare, or for a talker who must not be touched.' },
+    aec: { l: 'Echo removal', chain: 'echo canceller', d: 'Removes PGM bleed using the PGM feed on input 62 as the reference. Keeps everything else.' },
+    aecns: { l: 'Echo + noise', chain: 'echo canceller → suppressor', d: 'Echo removal, then a residual suppressor for bleed the canceller missed and for steady noise.' },
+    full: { l: 'Full clean', chain: 'echo canceller → suppressor → speech model', d: 'Echo + noise, then the speech model (DeepFilterNet3, low latency) keeps the voice and removes the rest.' },
+  };
+  const POS = ['SmartPanel', 'Bolero', '4-wire', 'Other'];
+  // Plugins Sotto can host. In the app this list comes from scanning the VST3 (and AU) folders; control
+  // ranges below are stand-ins until the app reads each plugin's own parameter list.
+  const PLUGINS = {
+    voxis: { name: 'Voxis', vendor: 'CEDAR', kind: 'Neural voice isolation', fmt: 'VST3, AU', lat: 480, latTxt: 'under 10 ms (CEDAR\'s figure; exact value read when loaded)', params: [
+      { k: 'low', l: 'Low', min: 0, max: 100, def: 50, h: 'Noise removed in the low band.' },
+      { k: 'mid', l: 'Mid', min: 0, max: 100, def: 50, h: 'Noise removed in the mid band.' },
+      { k: 'high', l: 'High', min: 0, max: 100, def: 50, h: 'Noise removed in the high band.' },
+      { k: 'link', l: 'Link', type: 'bool', def: true, h: 'Moves the three bands together, keeping their balance.' },
+      { k: 'voice', l: 'Voice', min: 0, max: 100, def: 0, h: 'Lifts the isolated voice.' }] },
+    screenvox: { name: 'ScreenVox', vendor: 'CEDAR', kind: 'Adaptive dialogue noise suppression', fmt: 'VST3, AU', lat: 14, latTxt: '14 samples (0.29 ms)', params: [
+      { k: 'att', l: 'Attenuation', min: 0, max: 100, def: 60, h: 'How much noise is removed.' },
+      { k: 'focus', l: 'Focus', min: 0, max: 100, def: 50, h: 'Higher settings go after the louder parts of the noise, such as hum.' },
+      { k: 'bias', l: 'Bias', min: -10, max: 10, def: 0, h: 'Positive removes more noise, negative keeps more detail.' }] },
+    dnsone: { name: 'DNS One', vendor: 'CEDAR', kind: 'Dialogue noise suppressor', fmt: 'VST3, AU', lat: 14, latTxt: '14 samples (0.29 ms)', params: [
+      { k: 'range', l: 'Range', type: 'select', opts: ['Low 20 Hz–400 Hz', 'Mid 200 Hz–6 kHz', 'High 4 kHz–18 kHz', 'Low+Mid 20 Hz–6 kHz', 'Mid+High 200 Hz–18 kHz', 'Full range 20 Hz–18 kHz'], def: 5, h: 'Which part of the spectrum it works on.' },
+      { k: 'learn', l: 'LEARN', type: 'bool', def: true, h: 'Estimates the noise and sets the level and band gains for you.' },
+      { k: 'level', l: 'Level', min: -80, max: 0, def: -60, u: 'dB', h: 'Where the noise sits. Set by LEARN when it is on.' },
+      { k: 'g', l: 'Band gains', type: 'bands', n: 6, min: -24, max: 0, def: -12, u: 'dB', h: 'The most each band may take away. Locked while LEARN is on.' }] },
+    voicex2: { name: 'VoicEX 2', vendor: 'CEDAR', kind: 'Neural voice extractor', fmt: 'VST3, AU', lat: 480, latTxt: 'not published (read from the plugin when loaded)', params: [
+      { k: 'voice', l: 'Voice', min: -50, max: 20, def: 0, u: 'dB', h: 'Level of the detected voices.' },
+      { k: 'noise', l: 'Noise', min: -50, max: 20, def: -20, u: 'dB', h: 'Level of everything else, including reverb.' }] },
+  };
+  const pd = id => Object.fromEntries(PLUGINS[id].params.map(q => [q.k, q.type === 'bands' ? Array(q.n).fill(q.def) : q.def]));
+  const OPIDS = ['op-caller', 'op-creative', 'op-tech', 'op-stage'];
+  function defaultOperators() {
+    return [
+      { id: 'op-caller', name: 'Show caller', mode: 'default', trim: 0, ins: { plugin: 'voxis', on: true, states: { voxis: { ...pd('voxis'), low: 40, mid: 60, high: 65, link: false } } } },
+      { id: 'op-creative', name: 'Creative director', mode: 'default', trim: 0, ins: { plugin: 'screenvox', on: true, states: { screenvox: pd('screenvox') } } },
+      { id: 'op-tech', name: 'Technical manager', mode: 'default', trim: 0, ins: { plugin: 'dnsone', on: false, states: { dnsone: pd('dnsone') } } },
+      { id: 'op-stage', name: 'Stage manager', mode: 'default', trim: 0, ins: { plugin: '', on: false, states: {} } },
+    ];
   }
-  @media (prefers-color-scheme: light) {
-    :root:not([data-theme="dark"]) {
-      --bg: #f4f5f7; --panel: #fff; --panel2: #f0f2f4; --line: #d9dde2;
-      --text: #15181b; --muted: #5d6670; --accent: #0a74c9;
-      --ok: #138a4a; --warn: #a86b00; --bad: #c62828; --meter-bg: #e6e9ec;
+  const STEPS = {
+    rrcs: { l: s => `RRCS: set logic source ${s.src || '?'} ${s.on ? 'on' : 'off'}`, d: { src: 'ARMED', on: false } },
+    disarm: { l: () => 'Disarm everyone (HEARTBEAT off)', d: {} },
+    waitDry: { l: s => `Wait for the frame to report dry (up to ${s.ms} ms)`, d: { ms: 1000 } },
+    waitGreen: { l: s => `Wait for ${s.s} s of green checks (engine and PROBE)`, d: { s: 5 } },
+    arm: { l: () => 'Arm everyone (HEARTBEAT on, ARMED set via RRCS)', d: {} },
+    rearm: { l: () => 'Re-arm tripped channels', d: {} },
+    waitClean: { l: s => `Wait for the frame to report clean: VOX hears HEARTBEAT (up to ${s.ms} ms)`, d: { ms: 2000 } },
+    wait: { l: s => `Pause ${s.ms} ms`, d: { ms: 500 } },
+  };
+  const STEP_NAMES = { rrcs: 'RRCS logic source', disarm: 'Disarm everyone', waitDry: 'Wait for dry', waitGreen: 'Wait for green checks', arm: 'Arm everyone', rearm: 'Re-arm tripped channels', waitClean: 'Wait for clean', wait: 'Pause' };
+  const DEVICES = {
+    dvs: { name: 'Dante Virtual Soundcard', in: 64, out: 64, drivers: ['coreaudio', 'asio'] },
+    vad: { name: 'Merging Virtual Audio Device (AES67)', in: 64, out: 64, drivers: ['coreaudio'] },
+    rav: { name: 'Merging RAVENNA ASIO', in: 64, out: 64, drivers: ['asio'] },
+    mbp: { name: 'MacBook Pro Microphone / Speakers', in: 1, out: 2, drivers: ['coreaudio'] },
+  };
+  const DRIVERS = { coreaudio: 'Core Audio (Mac)', asio: 'ASIO (Windows)' };
+
+  function defaultMacros() {
+    return [
+      { id: 'dry', name: 'All to dry', style: 'dry', steps: [{ t: 'rrcs', src: 'ARMED', on: false }, { t: 'disarm' }, { t: 'waitDry', ms: 1000 }] },
+      { id: 'restore', name: 'Restore all', style: 'clean', steps: [{ t: 'waitGreen', s: 5 }, { t: 'arm' }, { t: 'waitClean', ms: 2000 }] },
+    ];
+  }
+  function defaults() {
+    const names = ['Show caller', 'Creative director', 'Technical manager', 'Stage manager'];
+    const pos = ['SmartPanel', 'SmartPanel', 'Bolero', 'Bolero'];
+    return {
+      v: 1,
+      project: { name: 'Example show', venue: '', engineer: '', notes: '' },
+      count: 16,
+      ch: Array.from({ length: MAXT }, (_, i) => ({ name: `Talker ${i + 1}`, pos: pos[i] || 'SmartPanel', used: i < 4, mode: 'default', op: i < 4 ? OPIDS[i] : null })),
+      operators: defaultOperators(),
+      proc: { mode: 'full', tail: 256, supp: 12, atten: 18, hpf: 100, trim: 0 },
+      engine: { driver: 'coreaudio', device: 'dvs', rate: 48000, buffer: 128 },
+      rrcs: { host: '10.0.0.10', port: 8193, armed: 'ARMED', armReq: 'ARM_REQ', cleanOk: 'CLEAN_OK', hold: 400, probe: 200 },
+      macros: defaultMacros(),
+      phones: { mode: 'clicked', level: 0, dim: -20 },
+    };
+  }
+  const KEY = 'sotto.console.project.v1';
+  let P = defaults();
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (raw) {
+      const s = JSON.parse(raw), d = defaults();
+      P = { ...d, ...s, project: { ...d.project, ...s.project }, proc: { ...d.proc, ...s.proc }, engine: { ...d.engine, ...s.engine }, rrcs: { ...d.rrcs, ...s.rrcs }, phones: { ...d.phones, ...s.phones } };
+      if (!Array.isArray(P.ch) || P.ch.length !== MAXT) P.ch = d.ch;
+      if (!Array.isArray(P.macros)) P.macros = d.macros;
+      if (!Array.isArray(P.operators)) P.operators = d.operators;
+      P.ch.forEach((c, i) => { if (c.op === undefined) c.op = d.ch[i].op; });
+    }
+  } catch (e) { P = defaults(); }
+  function save() { try { localStorage.setItem(KEY, JSON.stringify(P)); } catch (e) {} }
+
+  const dev = () => DEVICES[P.engine.device] || DEVICES.dvs;
+  const engineOk = () => APP ? true : dev().in >= 64 && dev().out >= 64 && dev().drivers.includes(P.engine.driver);
+  const opById = id => (id && P.operators.find(o => o.id === id)) || null;
+  const opOf = i => opById(P.ch[i].op);
+  const modeRaw = i => { const o = opOf(i); return o ? o.mode : P.ch[i].mode; };
+  const modeOf = i => modeRaw(i) === 'default' ? P.proc.mode : modeRaw(i);
+  const modeIsOwn = i => modeRaw(i) !== 'default';
+  const nameOf = (k, n) => n <= MAXT ? ((opOf(n - 1) || {}).name || P.ch[n - 1].name) : SYSNAME[k + n];
+  const chName = i => nameOf('i', i + 1);
+  function insOf(i) {
+    const o = opOf(i); if (!o || !o.ins || !PLUGINS[o.ins.plugin]) return null;
+    const id = o.ins.plugin; if (!o.ins.states[id]) o.ins.states[id] = pd(id);
+    return { o, id, pl: PLUGINS[id], on: !!o.ins.on, st: o.ins.states[id] };
+  }
+  // Stand-in for what each plugin takes away, so meters and the phones preview respond to it.
+  function insEffect(x) {
+    const s = x.st;
+    if (x.id === 'voxis') { const a = s.link ? (s.low + s.mid + s.high) / 3 : s.low * 0.2 + s.mid * 0.5 + s.high * 0.3; return { b: a * 0.25, n: a * 0.3, v: s.voice * 0.06 }; }
+    if (x.id === 'screenvox') { const a = s.att * 0.24 * (1 + s.bias / 20); return { b: a * 0.3, n: a, v: 0 }; }
+    if (x.id === 'dnsone') { const a = s.learn ? 14 : -s.g.reduce((m, g) => m + g, 0) / 6; return { b: a * 0.3, n: a, v: 0 }; }
+    if (x.id === 'voicex2') return { b: Math.max(0, -s.noise) * 0.8, n: Math.max(0, -s.noise), v: s.voice };
+    return { b: 0, n: 0, v: 0 };
+  }
+  const idLabel = id => `${id[0] === 'i' ? 'IN' : 'OUT'} ${pad(+id.slice(1))} ${nameOf(id[0], +id.slice(1))}`;
+  const isTalker = id => +id.slice(1) <= MAXT;
+  const dryOf = id => id[0] === 'o' && isTalker(id) ? 'i' + id.slice(1) : id;
+  const cleanOf = id => id[0] === 'i' && isTalker(id) ? 'o' + id.slice(1) : id;
+  // The phones bus: which taps feed the left and right ears. It only reads the taps; talker outputs 1-60 are never changed.
+  function busFeed() {
+    const ids = [...S.solo], m = P.phones.mode;
+    if (m === 'dry') { const x = new Set(ids.map(dryOf)); return { L: x, R: x }; }
+    if (m === 'clean') { const x = new Set(ids.map(cleanOf)); return { L: x, R: x }; }
+    if (m === 'split') return { L: new Set(ids.map(dryOf)), R: new Set(ids.map(cleanOf)) };
+    const x = new Set(ids); return { L: x, R: x };
+  }
+
+  // ------------------------------------------------------------ runtime state (the simulated frame and engine)
+  let S;
+  function fresh() {
+    return {
+      t: 0, alive: true, startedAt: 0, frozenUntil: -1, silenceUntil: -1, muteUntil: -1, rrcsDownUntil: -1,
+      armed: false, chArmed: Array(MAXT).fill(false), greenSince: null, reason: 'Starting up.',
+      probeLast: null, voxLast: -1e9, cleanOk: false, pending: null, armedLS: false, refusal: '',
+      talk: Array(MAXT).fill(0), vv: Array(MAXT).fill(-120), pgm: -16,
+      lv: {}, comp: {}, red: Array(MAXT).fill(0), disp: {}, peak: {}, log: [], run: null, panelPollAt: null,
+      solo: new Set(), dim: false, hbSent: false, vox: false, probeMissing: Infinity, outputsLive: false, muted: false,
+    };
+  }
+  const fmt = ms => { const s = ms / 1000, m = Math.floor(s / 60); return `${pad(m)}:${(s - 60 * m).toFixed(1).padStart(4, '0')}`; };
+  function log(ev, from) { S.log.unshift([fmt(S.t), ev, from]); S.log.length = Math.min(S.log.length, 100); logDirty = true; }
+  let logDirty = true;
+  function toast(msg) { const el = $('#toast'); el.textContent = msg; el.classList.add('show'); clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('show'), 2600); }
+  const greenFor = () => S.greenSince === null ? 0 : S.t - S.greenSince;
+  const rrcsUp = () => APP ? (APP.rrcs && APP.rrcs.configured ? !!APP.rrcs.ok : !!(APP.engine && APP.engine.simulate)) : S.rrcsDownUntil < 0;
+  const frameKnown = () => !APP || !!S.frameKnown;
+  const frameClean = () => S.cleanOk && S.armedLS;
+  const sentence = s => s.charAt(0).toUpperCase() + s.slice(1).replace(/\.?$/, '.');
+
+  function disarm(why, from) {
+    if (APP) { appCmd({ cmd: 'disarm', source: from }); return; }
+    const was = S.armed;
+    S.armed = false; S.chArmed.fill(false); S.reason = sentence(why);
+    if (was) log(`Disarmed: ${why}`, from);
+  }
+  function requestArm(from, ch = null) {
+    const refuse = msg => { S.refusal = msg; log(`Arm refused: ${msg}`, from); toast(`Arm refused: ${msg}`); return false; };
+    if (APP) { appCmd({ cmd: 'arm', talker: ch === null ? undefined : ch, source: from }).then(r => { if (!r.ok) toast(`Arm refused: ${r.message || r.error}`); }); return null; }
+    if (!S.alive) return refuse('Sotto is not running');
+    if (ch === null) {
+      if (!rrcsUp()) return refuse('no RRCS link to the frame, so ARMED cannot be set');
+      if (greenFor() < ARM_HOLD) return refuse(S.greenSince === null ? 'checks not green' : `green for ${(greenFor() / 1000).toFixed(1)} s, needs 5 s`);
+      S.armed = true; S.chArmed.fill(true); S.reason = '';
+      S.rrcsQ = { at: S.t + RRCS_MS, on: true };
+      log('Armed everyone', from); return true;
+    }
+    if (!S.armed) return refuse(`arm everyone first: the frame is holding all talkers on dry`);
+    S.chArmed[ch] = true; log(`Re-armed ${chName(ch)}`, from); return true;
+  }
+  function trip(i, why, from) {
+    if (APP) { appCmd({ cmd: 'trip', talker: i, source: from }); return; }
+    if (!S.alive || !S.chArmed[i]) return;
+    S.chArmed[i] = false; log(`Tripped ${chName(i)}: ${why}. Dry inside Sotto until re-armed`, from);
+  }
+  function setLogic(src, on) {
+    if (src === P.rrcs.armed) S.armedLS = on;
+  }
+
+  // ------------------------------------------------------------ macros
+  function runMacro(id) {
+    if (S.run && S.run.state === 'running') { toast('A macro is already running'); return; }
+    const m = P.macros.find(x => x.id === id); if (!m) return;
+    S.run = { id, name: m.name, steps: m.steps.map(s => ({ ...s, st: 'wait', note: '' })), i: 0, state: 'running', t0: S.t };
+    log(`Macro started: ${m.name}`, 'console');
+    startStep();
+  }
+  function startStep() {
+    const r = S.run;
+    if (r.i >= r.steps.length) { r.state = 'done'; r.took = S.t - r.t0; log(`Macro done: ${r.name} (${(r.took / 1000).toFixed(1)} s)`, 'macro'); toast(`${r.name}: done`); return; }
+    const s = r.steps[r.i]; s.st = 'run'; s.t0 = S.t;
+  }
+  function tickMacro() {
+    const r = S.run; if (!r || r.state !== 'running') return;
+    const s = r.steps[r.i], dt = S.t - s.t0, src = 'macro: ' + r.name;
+    const ok = note => { s.st = 'done'; s.note = note || ''; r.i++; startStep(); };
+    const fail = note => { s.st = 'fail'; s.note = note; r.state = 'failed'; r.steps.slice(r.i + 1).forEach(x => x.st = 'skip'); log(`Macro stopped at step ${r.i + 1}: ${note}`, src); toast(`${r.name} stopped: ${note}`); };
+    const viaApp = (body, done) => {          // send once, then finish the step when the app answers
+      if (!s.req) { s.req = true; appCmd(body).then(res => { s.res = res; }); }
+      if (s.res) { if (s.res.ok) ok(done); else fail(s.res.message || s.res.error || 'refused'); }
+    };
+    if (APP) {
+      if (s.t === 'rrcs') return viaApp({ cmd: 'rrcs_set', name: s.src, on: !!s.on, source: src }, 'sent');
+      if (s.t === 'disarm') return viaApp({ cmd: 'disarm', source: src });
+      if (s.t === 'arm') return viaApp({ cmd: 'arm', source: src });
+      if (s.t === 'rearm') {
+        const tripped = P.ch.map((c, i) => i).filter(i => i < P.count && S.armed && !S.chArmed[i]);
+        if (!S.armed) return fail('not armed');
+        tripped.forEach(i => appCmd({ cmd: 'arm', talker: i, source: src }));
+        return ok(tripped.length ? `${tripped.length} re-armed` : 'none tripped');
+      }
+      if ((s.t === 'waitDry' || s.t === 'waitClean') && !frameKnown()) return ok('not checked: frame state needs RRCS');
+    }
+    switch (s.t) {
+      case 'rrcs':
+        if (!rrcsUp()) return fail('no RRCS link to the frame');
+        if (dt >= RRCS_MS) { setLogic(s.src, !!s.on); log(`RRCS SetLogicSourceState ${s.src} ${s.on ? 'on' : 'off'}`, src); ok(`${RRCS_MS} ms`); }
+        break;
+      case 'disarm': disarm(`${r.name} macro`, src); ok(); break;
+      case 'waitDry':
+        if (!frameClean()) ok(`dry after ${dt} ms`);
+        else if (dt > s.ms) fail('frame still reports clean');
+        else s.note = `${dt} ms`;
+        break;
+      case 'waitGreen': {
+        if (!S.alive) return fail('Sotto is not running');
+        const g = greenFor();
+        if (g >= s.s * 1000) ok(`green ${s.s} s`);
+        else if (dt > 30000) fail(`checks did not stay green for ${s.s} s within 30 s`);
+        else s.note = S.greenSince === null ? 'not green: waiting' : `green ${(g / 1000).toFixed(1)} s`;
+        break;
+      }
+      case 'arm': if (requestArm(src)) ok(); else fail(S.refusal); break;
+      case 'rearm': {
+        if (!S.armed) return fail('not armed');
+        let n = 0; P.ch.forEach((c, i) => { if (i < P.count && c.used && !S.chArmed[i]) { S.chArmed[i] = true; n++; } });
+        if (n) log(`Re-armed ${n} tripped channel${n > 1 ? 's' : ''}`, src);
+        ok(n ? `${n} re-armed` : 'none tripped'); break;
+      }
+      case 'waitClean':
+        if (frameClean()) ok(`clean after ${dt} ms`);
+        else if (!S.armed) fail('disarmed while waiting');
+        else if (dt > s.ms) fail(`frame did not report clean within ${s.ms} ms`);
+        else s.note = `${dt} ms`;
+        break;
+      case 'wait': if (dt >= s.ms) ok(); else s.note = `${dt} ms`; break;
+      default: ok('skipped');
     }
   }
-  * { box-sizing: border-box; }
-  html, body { overflow-x: hidden; }
-  body { margin: 0; background: var(--bg); color: var(--text);
-         font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-  header { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 12px 16px;
-           border-bottom: 1px solid var(--line); background: var(--panel); }
-  h1 { font-size: 17px; margin: 0 10px 0 0; font-weight: 650; }
-  .chip { padding: 3px 9px; border-radius: 999px; font-size: 12.5px; background: var(--panel2);
-          border: 1px solid var(--line); color: var(--muted); white-space: normal; }
-  main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 14px; padding: 14px 16px 30px; }
-  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
-  .panel + .panel { margin-top: 14px; }
-  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; font-weight: 650; }
-  .banner { border-radius: 10px; padding: 16px; display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: space-between; }
-  .banner.armed { background: color-mix(in srgb, var(--ok) 16%, var(--panel)); border: 2px solid var(--ok); }
-  .banner.disarmed { background: color-mix(in srgb, var(--bad) 14%, var(--panel)); border: 2px solid var(--bad); }
-  .big { font-size: 26px; font-weight: 750; letter-spacing: .02em; }
-  .sub { color: var(--muted); font-size: 13.5px; margin-top: 2px; }
-  button { font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--line);
-           background: var(--panel2); color: var(--text); padding: 9px 14px; font-weight: 600; }
-  button:hover:not(:disabled) { filter: brightness(1.15); }
-  button:disabled { opacity: .45; cursor: not-allowed; }
-  button.arm { background: var(--ok); border-color: var(--ok); color: #fff; padding: 12px 20px; font-size: 16px; }
-  button.disarm { background: var(--bad); border-color: var(--bad); color: #fff; }
-  button.danger { border-color: var(--bad); color: var(--bad); }
-  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  .talkers { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
-  .talker { background: var(--panel2); border-radius: 8px; padding: 12px; border-left: 4px solid var(--line); }
-  .talker.clean { border-left-color: var(--ok); }
-  .talker.dry { border-left-color: var(--bad); }
-  .talker .name { font-weight: 650; }
-  .talker .state { font-size: 12.5px; color: var(--muted); margin: 2px 0 8px; }
-  .bar { height: 10px; background: var(--meter-bg); border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
-  .bar > i { display: block; height: 100%; width: 0; background: var(--ok); transition: width .12s linear; }
-  .bar > i.hot { background: var(--warn); } .bar > i.clip { background: var(--bad); }
-  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13.5px; }
-  .kv span:nth-child(odd) { color: var(--muted); }
-  .good { color: var(--ok); font-weight: 600; } .badtxt { color: var(--bad); font-weight: 600; }
-  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-  td, th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { color: var(--muted); font-weight: 600; }
-  td.t { font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .tablewrap { overflow-x: auto; }
-  input[type=text] { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 8px 9px; font: inherit; flex: 1; min-width: 0; }
-  .muted { color: var(--muted); font-size: 13px; }
-  .offline { padding: 16px; color: var(--bad); font-weight: 600; display: none; }
-  .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--panel2);
-           border: 1px solid var(--line); padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; max-width: calc(100% - 32px); }
-  .toast.show { opacity: 1; }
-</style>
-</head>
-<body>
-<header>
-  <h1>Sotto · fail-safe bench</h1>
-  <span class="chip" id="take">…</span>
-  <span class="chip" id="lat">…</span>
-  <span class="chip" id="xr">Dropouts 0</span>
-  <span class="chip" id="rrcs">RRCS: off</span>
-  <button id="quitBtn" style="margin-left:auto">Quit</button>
-</header>
-<div class="offline" id="offline">Lost contact with Sotto Bench. If it crashed (or you pressed Crash), the Riedel should now be on dry. Open it again: it comes back disarmed.</div>
-<main>
-  <section>
-    <div class="banner disarmed" id="banner">
-      <div>
-        <div class="big" id="bigstate">DISARMED</div>
-        <div class="sub" id="reason">…</div>
-        <div class="sub" id="health">…</div>
-      </div>
-      <div class="row">
-        <button class="arm" id="armBtn" disabled>Arm clean</button>
-        <button class="disarm" id="disarmBtn">Disarm</button>
-      </div>
-    </div>
-    <div class="panel" style="margin-top:14px">
-      <h2>Talkers</h2>
-      <div class="talkers" id="talkers"></div>
-      <p class="muted">Every return from the laptop carries a quiet marker tone, so you can hear (and the analysis can see) when a listener is on the laptop path. A tripped talker stays on dry until it is re-armed.</p>
-    </div>
-    <div class="panel">
-      <h2>Inject a fault</h2>
-      <div class="row">
-        <button data-fault="stop_heartbeat">Stop heartbeat</button>
-        <button data-fault="silence_all" data-seconds="3">Silence all outputs 3 s</button>
-        <button data-fault="mute_returns" data-seconds="3">Mute talker returns 3 s</button>
-        <button data-fault="freeze" data-ms="400">Freeze audio 400 ms</button>
-        <button class="danger" id="crashBtn">Crash the app</button>
-        <button id="clearBtn">Clear faults</button>
-      </div>
-      <p class="muted" style="margin-bottom:0">
-        <b>Stop heartbeat</b>: an app-level fault; the Riedel should drop to dry after the VOX hold time.
-        <b>Silence all outputs</b>: what the Riedel sees if the laptop, soundcard or network dies; PROBE is lost too, so the app disarms.
-        <b>Mute talker returns</b>: heartbeat stays on but voices vanish; shows what the per-talker watchdog must catch.
-        <b>Freeze</b>: misses audio deadlines; shows what the soundcard does when the app hangs.
-        <b>Crash</b>: the process exits; restart it and check it comes back disarmed.
-      </p>
-    </div>
-    <div class="panel">
-      <h2>Fallback timing</h2>
-      <div class="row"><button id="timeBtn">Stop recording and time the faults</button></div>
-      <div class="tablewrap" style="margin-top:10px"><table><thead><tr><th>Fault</th><th>At (s)</th><th>Laptop path gone</th><th>Silence heard</th><th>Dry back</th></tr></thead><tbody id="timing"><tr><td colspan="5" class="muted">Needs a listener feed input and a recording. Inject some faults first.</td></tr></tbody></table></div>
-      <p class="muted" style="margin-bottom:0">Times are from the fault to what the listener heard. Saved as fallback_timing.csv in the take folder.</p>
-    </div>
-    <div class="panel">
-      <h2>Event log</h2>
-      <div class="tablewrap"><table><thead><tr><th>Audio time</th><th>Clock</th><th>Event</th><th>Detail</th><th>From</th></tr></thead><tbody id="events"></tbody></table></div>
-    </div>
-  </section>
-  <aside>
-    <div class="panel">
-      <h2>Checks</h2>
-      <div class="kv" id="checks"></div>
-    </div>
-    <div class="panel">
-      <h2>Recording and marks</h2>
-      <button id="recBtn" style="width:100%">Start recording</button>
-      <p class="muted" id="recInfo"></p>
-      <div class="row"><input type="text" id="note" placeholder="Note, Enter to mark"><button id="markBtn">Mark</button></div>
-    </div>
-    <div class="panel">
-      <h2>Headphones</h2>
-      <div class="row" id="monRow"></div>
-      <p class="muted" style="margin-bottom:0">Only if started with --monitor.</p>
-    </div>
-    <div class="panel">
-      <h2>Companion</h2>
-      <p class="muted" style="margin:0">POST <code>/api/arm</code> (optional <code>{"talker": 1}</code>), POST <code>/api/disarm</code>, GET <code>/api/state</code>. Every arm is checked against the same 5 s green rule and logged with where it came from.</p>
-    </div>
-  </aside>
-</main>
-<div class="toast" id="toast"></div>
-<script>
-const $ = s => document.querySelector(s);
-let S = null, built = false, crashArmed = false, stopped = false;
-function esc(v) { return String(v).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c])); }
-function toast(t) { const el = $('#toast'); el.textContent = t; el.classList.add('show'); clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('show'), 2200); }
-async function post(c) {
-  try {
-    const r = await fetch('/cmd', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(Object.assign({source: 'console'}, c))});
-    const j = await r.json(); if (j.message) toast(j.message); else if (!j.ok && j.error) toast(j.error); return j;
-  } catch (e) { toast('No response from the bench tool'); }
-}
-function meter(el, db) { const p = Math.max(0, Math.min(100, (db + 60) / 60 * 100)); el.style.width = p + '%'; el.classList.toggle('hot', db > -12 && db <= -3); el.classList.toggle('clip', db > -3); }
-function build(st) {
-  const w = $('#talkers'); w.innerHTML = '';
-  st.talkers.forEach((t, i) => {
-    const d = document.createElement('div'); d.className = 'talker'; d.dataset.i = i;
-    d.innerHTML = `<div class="name">${i + 1} · ${esc(t.name)}</div><div class="state"></div><div class="bar"><i></i></div>
-      <div class="row"><button data-a="arm">Arm</button><button data-a="trip">Trip</button></div>`;
-    d.querySelector('[data-a=arm]').onclick = () => post({cmd: 'arm', talker: i});
-    d.querySelector('[data-a=trip]').onclick = () => post({cmd: 'trip', talker: i});
-    w.appendChild(d);
-  });
-  const m = $('#monRow'); m.innerHTML = '';
-  const opts = [['listen', 'Listener feed']].concat(st.talkers.map((t, i) => [String(i), t.name + ' return']));
-  opts.forEach(([v, label]) => { const b = document.createElement('button'); b.textContent = label; b.dataset.v = v; b.onclick = () => post({cmd: 'monitor', source_ch: v}); m.appendChild(b); });
-  built = true;
-}
-function render(st) {
-  if (!built) build(st);
-  $('#take').textContent = 'Take ' + st.take;
-  $('#lat').textContent = st.latency_note || '…';
-  $('#xr').textContent = 'Dropouts ' + st.xruns;
-  const r = st.rrcs; $('#rrcs').textContent = !r.configured ? 'RRCS: not used' : (r.ok ? 'RRCS: connected' : 'RRCS: not reachable');
-  const b = $('#banner'); b.className = 'banner ' + (st.armed ? 'armed' : 'disarmed');
-  $('#bigstate').textContent = st.armed ? 'ARMED · HEARTBEAT ON' : 'DISARMED · HEARTBEAT OFF';
-  $('#reason').textContent = st.armed ? 'Listeners can hear clean.' : 'Riedel holds everyone on dry. Last reason: ' + (st.reason || '–');
-  $('#health').textContent = 'Checks: ' + st.health + (st.health === 'all green' ? ` for ${st.green_for_s.toFixed(1)} s` : '');
-  const a = $('#armBtn'); a.disabled = st.armed || !st.can_arm;
-  a.textContent = st.armed ? 'Armed' : (st.can_arm ? 'Arm clean' : (st.health === 'all green' ? `Arm in ${(st.arm_hold_s - st.green_for_s).toFixed(1)} s` : 'Arm (checks not green)'));
-  st.talkers.forEach((t, i) => {
-    const d = document.querySelector(`.talker[data-i="${i}"]`); if (!d) return;
-    d.className = 'talker ' + (t.armed ? 'clean' : 'dry');
-    d.querySelector('.state').textContent = t.armed ? 'Armed: clean' : 'Dry: needs re-arming';
-    meter(d.querySelector('.bar i'), t.level_db);
-  });
-  const c = $('#checks'); c.innerHTML = '';
-  const add = (k, v, ok) => { const a = document.createElement('span'); a.textContent = k; const b = document.createElement('span'); b.textContent = v; if (ok !== undefined) b.className = ok ? 'good' : 'badtxt'; c.append(a, b); };
-  st.probes.forEach((p, i) => add(`PROBE ${i + 1}`, p.ok ? 'returning' : (p.missing_ms == null ? 'never seen' : `missing ${p.missing_ms} ms`), p.ok));
-  add('Heartbeat', st.heartbeat_on ? 'sending' : 'off', st.heartbeat_on);
-  if (st.listen_db !== null) add('Listener feed', st.listen_db.toFixed(0) + ' dBFS');
-  add('Faults active', st.faults.length ? st.faults.join(', ') : 'none', !st.faults.length);
-  if (st.rrcs.configured) add('RRCS ARMED', st.rrcs.armed_state === null || st.rrcs.armed_state === undefined ? '–' : (st.rrcs.armed_state ? 'on' : 'off'));
-  $('#recBtn').textContent = st.recording ? 'Stop recording' : 'Start recording';
-  $('#recInfo').textContent = 'Saved in ' + st.folder + (st.rec_dropped ? ` · dropped ${st.rec_dropped} blocks` : '');
-  document.querySelectorAll('#monRow button').forEach(b => b.style.outline = (String(st.monitor) === b.dataset.v ? '2px solid var(--accent)' : 'none'));
-  if (st.timing && st.timing.length) {
-    const ms = v => v === null || v === undefined ? '–' : v + ' ms';
-    $('#timing').innerHTML = st.timing.map(r => `<tr><td>${esc(r.event)}</td><td class="t">${esc(r.at_s)}</td><td class="t">${ms(r.switch_ms)}</td><td class="t">${ms(r.silence_ms)}</td><td class="t">${ms(r.dry_back_ms)}</td></tr>`).join('');
+
+  // ------------------------------------------------------------ faults
+  function inject(kind) {
+    if (APP) {
+      const map = { stop: { name: 'stop_heartbeat' }, silence: { name: 'silence_all', seconds: 3 }, mute: { name: 'mute_returns', seconds: 3 }, freeze: { name: 'freeze', ms: 400 }, crash: { name: 'crash' } };
+      if (map[kind]) { appCmd({ cmd: 'fault', ...map[kind] }); if (kind === 'crash') toast('Sotto Bench quits now (crash test). Open it again to carry on.'); return; }
+      const live = P.ch.map((c, i) => i).filter(i => i < P.count && S.chArmed[i]);
+      if (!live.length) { toast('No armed channel to trip. Arm first.'); return; }
+      trip(live[Math.floor(Math.random() * live.length)], 'test fault', 'test'); return;
+    }
+    if (!S.alive) { toast('Sotto is not running. Restart it first.'); return; }
+    const names = { stop: 'Stop heartbeat', silence: 'Laptop silent 3 s', mute: 'Voices vanish 3 s', freeze: 'Freeze 400 ms', chan: "One channel's DSP fails", plugin: 'An insert plugin stalls', rrcs: 'RRCS link drops 10 s', crash: 'Crash' };
+    log(`Fault: ${names[kind]}`, 'test');
+    if (kind === 'stop') disarm('heartbeat stopped (test fault)', 'test');
+    if (kind === 'silence') S.silenceUntil = S.t + 3000;
+    if (kind === 'mute') S.muteUntil = S.t + 3000;
+    if (kind === 'freeze') S.frozenUntil = S.t + 400;
+    if (kind === 'rrcs') { S.rrcsDownUntil = S.t + 10000; log('RRCS link lost: macros, panel arm and ARMED changes are unavailable', 'auto'); }
+    if (kind === 'plugin') {
+      const live = P.ch.map((c, i) => i).filter(i => i < P.count && P.ch[i].used && S.chArmed[i] && insOf(i) && insOf(i).on);
+      if (!live.length) { toast('No armed channel has an insert switched on.'); return; }
+      const i = live[Math.floor(Math.random() * live.length)];
+      trip(i, `insert ${insOf(i).pl.name} stopped returning audio (test fault)`, 'auto');
+    }
+    if (kind === 'chan') {
+      const live = P.ch.map((c, i) => i).filter(i => i < P.count && P.ch[i].used && S.chArmed[i]);
+      if (!live.length) { toast('No armed channel to trip. Arm first.'); return; }
+      trip(live[Math.floor(Math.random() * live.length)], 'output check failed (test fault)', 'auto');
+    }
+    if (kind === 'crash') { S.alive = false; S.armed = false; S.chArmed.fill(false); S.greenSince = null; S.reason = 'Sotto crashed.'; if (S.run && S.run.state === 'running') S.run.state = 'failed'; }
   }
-  $('#events').innerHTML = st.events.slice().reverse().map(e => `<tr><td class="t">${esc(e[0])}</td><td class="t">${esc(e[1])}</td><td>${esc(e[2])}</td><td>${esc(e[3])}</td><td>${esc(e[4])}</td></tr>`).join('');
-}
-$('#armBtn').onclick = () => post({cmd: 'arm'});
-$('#disarmBtn').onclick = () => post({cmd: 'disarm'});
-document.querySelectorAll('[data-fault]').forEach(b => b.onclick = () => post({cmd: 'fault', name: b.dataset.fault, seconds: b.dataset.seconds ? +b.dataset.seconds : undefined, ms: b.dataset.ms ? +b.dataset.ms : undefined}));
-$('#crashBtn').onclick = () => {
-  if (!crashArmed) { crashArmed = true; $('#crashBtn').textContent = 'Click again to crash'; setTimeout(() => { crashArmed = false; $('#crashBtn').textContent = 'Crash the app'; }, 3000); return; }
-  post({cmd: 'fault', name: 'crash'});
-};
-$('#clearBtn').onclick = () => post({cmd: 'clear_faults'});
-$('#timeBtn').onclick = () => { toast('Timing the faults…'); post({cmd: 'analyse'}); };
-let quitArmed = false;
-$('#quitBtn').onclick = async () => {
-  if (!quitArmed) { quitArmed = true; $('#quitBtn').textContent = 'Click again to quit'; setTimeout(() => { quitArmed = false; $('#quitBtn').textContent = 'Quit'; }, 3000); return; }
-  stopped = true;
-  try { await fetch('/quit', {method: 'POST'}); } catch (e) {}
-  document.body.innerHTML = '<p style="padding:24px;font:16px sans-serif">Sotto Bench has stopped. The Riedel is on dry. You can close this tab.</p>';
-};
-$('#recBtn').onclick = () => post({cmd: 'rec', on: !(S && S.recording)});
-function mark() { post({cmd: 'mark', note: $('#note').value}).then(() => { toast('Marked'); $('#note').value = ''; }); }
-$('#markBtn').onclick = mark;
-$('#note').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); mark(); e.target.blur(); } });
-async function tick() {
-  if (stopped) return;
-  try { const r = await fetch('/state', {cache: 'no-store'}); S = await r.json(); render(S); $('#offline').style.display = 'none'; }
-  catch (e) { $('#offline').style.display = 'block'; }
-  setTimeout(tick, 200);
-}
-tick();
+  function restart() {
+    S.alive = true; S.startedAt = S.t; S.frozenUntil = S.silenceUntil = S.muteUntil = -1;
+    S.armed = false; S.greenSince = null; S.probeLast = null; S.reason = 'Restarted after a crash. Sotto always starts disarmed.';
+    S.solo.clear(); S.dim = false; $('#phDim').setAttribute('aria-pressed', 'false');   // solos always start empty
+    log('Sotto restarted (disarmed)', 'restart');
+  }
+
+  // ------------------------------------------------------------ one 10 ms step of the simulation
+  const pw = db => Math.pow(10, db / 10), todb = p => p > 1e-12 ? 10 * Math.log10(p) : -120;
+  function reduction(mode) {
+    const pp = P.proc;
+    if (mode === 'bypass') return { b: 0, n: 0 };
+    if (mode === 'aec') return { b: 20, n: 0 };
+    if (mode === 'aecns') return { b: 20 + pp.supp, n: pp.supp * 0.6 };
+    return { b: 20 + pp.supp + pp.atten * 0.6, n: pp.atten };
+  }
+  function step() {
+    S.t += DT; const t = S.t;
+    if (S.silenceUntil >= 0 && t >= S.silenceUntil) { S.silenceUntil = -1; log('Fault ended: outputs back', 'auto'); }
+    if (S.muteUntil >= 0 && t >= S.muteUntil) { S.muteUntil = -1; log('Fault ended: returns back', 'auto'); }
+    if (S.rrcsDownUntil >= 0 && t >= S.rrcsDownUntil) { S.rrcsDownUntil = -1; log('RRCS link back', 'auto'); }
+    const frozen = t < S.frozenUntil, silent = S.silenceUntil >= 0, muted = S.muteUntil >= 0, eng = engineOk();
+    const outputsLive = S.alive && !frozen && !silent && eng;
+    const probeMissing = S.probeLast === null ? Infinity : t - S.probeLast;
+    if (S.alive && !frozen) {
+      const healthy = t - S.startedAt >= GRACE && probeMissing <= P.rrcs.probe && eng;
+      if (healthy) { if (S.greenSince === null) S.greenSince = t; }
+      else {
+        S.greenSince = null;
+        if (S.armed) disarm(eng ? `PROBE missing for ${Math.round(probeMissing)} ms` : 'the audio device has no channels 61 to 64', 'auto');
+      }
+    }
+    if (outputsLive) S.probeLast = t - 2 * NET;
+    const hbSent = outputsLive && S.armed;
+    if (hbSent) S.voxLast = t - NET;
+    const vox = (t - S.voxLast) <= P.rrcs.hold;
+    if (vox !== S.cleanOk && (!S.pending || S.pending.state !== vox)) S.pending = { at: t + LOGIC, state: vox };
+    if (S.pending && t >= S.pending.at) {
+      S.cleanOk = S.pending.state; S.pending = null;
+      if (!S.cleanOk && S.armedLS) { S.armedLS = false; log('Frame: CLEAN_OK dropped, ARMED released. Listeners on dry', 'frame'); }
+    }
+    if (S.rrcsQ && t >= S.rrcsQ.at) { if (rrcsUp() && S.armed) setLogic(P.rrcs.armed, S.rrcsQ.on); S.rrcsQ = null; }
+    Object.assign(S, { hbSent, vox, probeMissing, outputsLive, muted, frozen });
+
+    for (let i = 0; i < P.count; i++) {
+      if (!P.ch[i].used) continue;
+      if (S.talk[i] > 0) S.talk[i] -= DT;
+      else if (Math.random() < (i === 0 ? 0.004 : 0.0018)) S.talk[i] = 900 + Math.random() * 2600;
+    }
+    if (t % 50 === 0) levels();
+    tickMacro();
+    if (S.panelPollAt !== null && t >= S.panelPollAt) { S.panelPollAt = null; requestArm('panel ARM key (RRCS)'); }
+  }
+  function levels() {
+    S.pgm = clamp(S.pgm + (-15 - S.pgm) * 0.04 + (Math.random() - 0.5) * 3.2, -30, -6);
+    S.lv.i62 = S.pgm; S.comp.i62 = { v: -120, b: S.pgm, n: -70 };
+    for (let i = 0; i < MAXT; i++) {
+      const n = i + 1, c = P.ch[i];
+      if (i >= P.count || !c.used) { S.lv['i' + n] = S.lv['o' + n] = -120; S.comp['i' + n] = S.comp['o' + n] = null; continue; }
+      if (S.talk[i] > 0) S.vv[i] = Math.random() < 0.22 ? -42 : -21 + (Math.random() * 9 - 4.5); else S.vv[i] = -120;
+      const v = S.vv[i], b = S.pgm + (c.pos === 'Bolero' ? -12 : c.pos === 'SmartPanel' ? -22 : -18), nz = -60;
+      S.lv['i' + n] = todb(pw(v) + pw(b) + pw(nz)); S.comp['i' + n] = { v, b, n: nz };
+      let out, oc = null;
+      if (!S.outputsLive || S.muted) out = -120;
+      else if (S.armed && !S.chArmed[i]) { out = S.lv['i' + n]; oc = S.comp['i' + n]; }
+      else {
+        const o = opOf(i), r = reduction(modeOf(i)), tr = P.proc.trim + (o ? +o.trim || 0 : 0);
+        const x = insOf(i), ie = x && x.on ? insEffect(x) : { b: 0, n: 0, v: 0 };       // insert: after Sotto's processing
+        oc = { v: v - 0.5 + ie.v + tr, b: b - r.b - ie.b + tr, n: nz - r.n - ie.n + tr };
+        out = todb(pw(oc.v) + pw(oc.b) + pw(oc.n));
+      }
+      S.lv['o' + n] = out; S.comp['o' + n] = oc;
+      if (v < -100 && out > -110) S.red[i] += ((S.lv['i' + n] - out) - S.red[i]) * 0.3;
+      else if (out <= -110) S.red[i] = 0;
+    }
+    S.lv.i61 = S.outputsLive && S.probeMissing < 40 ? -20 + Math.random() * 0.2 : -120;
+    S.lv.o61 = S.hbSent ? -20 : -120;
+    S.lv.o62 = S.outputsLive ? -20 : -120;
+    const f = busFeed(), live = S.alive && engineOk() && !S.frozen;
+    const g = P.phones.level + (S.dim ? P.phones.dim : 0);
+    const bus = set => set.size ? Math.min(-3, todb([...set].reduce((a, id) => a + pw(S.lv[id] ?? -120), 0)) + g) : -120;   // -3 dBFS limiter
+    S.lv.o63 = live ? bus(f.L) : -120; S.lv.o64 = live ? bus(f.R) : -120;
+  }
+
+  // ------------------------------------------------------------ main page build
+  let strips = [], tiles = [];
+  function stripHTML(k, n, sub, opts = {}) {
+    const name = nameOf(k, n), off = n <= MAXT && !P.ch[n - 1].used;
+    const tagged = k === 'o' && n <= MAXT;
+    const subHTML = tagged ? `<small class="tag" data-tag>–</small>` : `<small>${esc(sub)}</small>`;
+    const cls = ['strip', off && 'off', opts.cls, opts.static && 'static'].filter(Boolean).join(' ');
+    const label = `${k === 'i' ? 'Input' : 'Output'} ${n}, ${name}${opts.static ? '' : '. Press to solo it to the headphones'}`;
+    const tag = opts.static ? 'div' : 'button';
+    return `<${tag} class="${cls}" data-id="${k}${n}" ${opts.static ? '' : `aria-pressed="false" aria-label="${esc(label)}"`}><span class="num">${pad(n)}</span><span class="nm"><b>${esc(name)}</b>${subHTML}<i class="ear"></i></span><span class="db">−∞</span>${SK}<span class="meter"><i class="m"></i><i class="pk"></i></span></${tag}>`;
+  }
+  function buildScale() {
+    const marks = [-60, -40, -20, -12, -6, 0];
+    document.querySelectorAll('.scale').forEach(el => el.innerHTML = marks.map(d => `<span style="left:${(d + 60) / 60 * 100}%">${d}</span>`).join(''));
+  }
+  function buildMain() {
+    $('#projName').textContent = P.project.name || 'Untitled project';
+    const n = P.count, used = P.ch.slice(0, n).filter(c => c.used).length;
+    $('#inCount').textContent = `1–${n}`; $('#outCount').textContent = `1–${n}`;
+    $('#inList').innerHTML = Array.from({ length: n }, (_, i) => stripHTML('i', i + 1, P.ch[i].used ? P.ch[i].pos : 'not patched')).join('');
+    $('#inSys').innerHTML = stripHTML('i', 61, 'from OUT 62') + stripHTML('i', 62, 'reference', { cls: 'pgm' });
+    $('#outList').innerHTML = Array.from({ length: n }, (_, i) => stripHTML('o', i + 1)).join('');
+    $('#outSys').innerHTML = stripHTML('o', 61, 'to VOX 4-wire') + stripHTML('o', 62, 'loops to IN 61') + stripHTML('o', 63, 'phones bus', { static: true }) + stripHTML('o', 64, 'phones bus', { static: true });
+    strips = [...document.querySelectorAll('.strip')].map(el => ({ id: el.dataset.id, el, m: el.querySelector('.m'), pk: el.querySelector('.pk'), db: el.querySelector('.db'), tag: el.querySelector('[data-tag]'), ear: el.querySelector('.ear') }));
+    $('#tiles').innerHTML = Array.from({ length: n }, (_, i) => {
+      const c = P.ch[i];
+      return `<div class="tile${c.used ? '' : ' idle'}" data-i="${i}">
+        <div class="th"><span class="num">${pad(i + 1)}</span><b>${esc(chName(i))}</b><span class="pos">${c.used ? esc(c.pos) : 'spare'}</span></div>
+        <div class="leds"><span class="led" data-l="sig">Sig</span><span class="led" data-l="dsp">DSP</span><span class="led" data-l="trip">Trip</span><span class="led" data-l="out">Riedel</span></div>
+        <div class="tm"><span data-l="mode"></span><span class="red" data-l="red"></span></div>
+        <div class="insrow"><button class="kbtn insb" data-a="ins" aria-pressed="false"><span class="led" data-l="ins">Ins</span><span data-l="insname"></span></button><button class="kbtn ed" data-a="edit" aria-label="Edit this operator's profile">Edit</button></div>
+        <div class="ta"><button class="kbtn arm" data-a="arm">Re-arm</button><button class="kbtn" data-a="trip">Trip</button></div>
+      </div>`;
+    }).join('');
+    tiles = [...document.querySelectorAll('.tile')].map(el => ({ i: +el.dataset.i, el, L: Object.fromEntries([...el.querySelectorAll('[data-l]')].map(x => [x.dataset.l, x])), arm: el.querySelector('[data-a="arm"]'), trip: el.querySelector('[data-a="trip"]'), insb: el.querySelector('[data-a="ins"]'), ed: el.querySelector('[data-a="edit"]') }));
+    $('#chSummary').textContent = `${used} patched of ${n}`;
+    $('#mkeys').innerHTML = P.macros.map((m, k) => `<button class="mkey s-${m.style}" data-m="${esc(m.id)}"><span class="kn"><span>M${k + 1}</span></span><span class="kc">${esc(m.name)}</span><span class="ks">${m.steps.length} step${m.steps.length === 1 ? '' : 's'}</span></button>`).join('');
+    [...S.solo].forEach(id => { if (isTalker(id) && +id.slice(1) > n) S.solo.delete(id); });
+    buildPhones();
+    runSig = '';
+  }
+  document.addEventListener('click', e => {
+    const st = e.target.closest('button.strip');
+    if (st) {
+      const id = st.dataset.id;
+      if (e.altKey) { S.solo = new Set([id]); log(`Solo only ${idLabel(id)}`, 'console'); soloChanged(); return; }
+      else if (S.solo.has(id)) { S.solo.delete(id); log(`Solo off ${idLabel(id)}`, 'console'); soloChanged(); return; }
+      else { S.solo.add(id); log(`Solo ${idLabel(id)}`, 'console'); soloChanged(); }
+      return;
+    }
+    const mk = e.target.closest('.mkey'); if (mk) { runMacro(mk.dataset.m); return; }
+    const tb = e.target.closest('.tile [data-a]');
+    if (tb) {
+      const i = +tb.closest('.tile').dataset.i, a = tb.dataset.a;
+      if (a === 'arm') requestArm('console', i);
+      else if (a === 'trip') trip(i, 'tripped by the engineer', 'console');
+      else if (a === 'ins') toggleIns(i);
+      else if (a === 'edit') { const o = opOf(i); UI.sec = o ? 'operators' : 'channels'; if (o) UI.op = o.id; showTab('set'); }
+    }
+  });
+
+  function toggleIns(i) {
+    if (APP) { toast('Plugins are not in this build yet: Sotto Bench passes the talkers straight through.'); return; }
+    const x = insOf(i);
+    if (!x) { toast(opOf(i) ? 'No insert in this profile. Choose a plugin under Settings › Operators.' : 'No operator on this channel. Assign one under Settings › Channels.'); return; }
+    x.o.ins.on = !x.o.ins.on; save();
+    log(`Insert ${x.pl.name} ${x.o.ins.on ? 'on' : 'off'} for ${x.o.name}`, 'console');
+  }
+  // ------------------------------------------------------------ render (every animation frame)
+  let lastFrame = performance.now(), textAt = 0, runSig = '', checkSig = '';
+  function meters(now, dtms) {
+    const doText = now - textAt > 120; if (doText) textAt = now;
+    const feed = busFeed();
+    for (const r of strips) {
+      const target = S.lv[r.id] ?? -120;
+      let d = S.disp[r.id] ?? -120;
+      d = target > d ? target : Math.max(target, d - 0.028 * dtms);
+      S.disp[r.id] = d;
+      let pk = S.peak[r.id];
+      if (!pk || d >= pk.db || now - pk.at > 1600) pk = S.peak[r.id] = { db: d, at: now };
+      const pct = clamp((d + 60) / 60, 0, 1), ppct = clamp((pk.db + 60) / 60, 0, 1);
+      r.m.style.transform = `scaleX(${(1 - pct).toFixed(4)})`;
+      r.pk.style.left = (ppct * 100).toFixed(2) + '%'; r.pk.style.opacity = pk.db > -59 ? 1 : 0;
+      if (doText) r.db.textContent = d <= -60 ? '−∞' : Math.round(d).toString().replace('-', '−');
+      const solo = S.solo.has(r.id), inL = feed.L.has(r.id), inR = feed.R.has(r.id);
+      if (r.el.classList.contains('solo') !== solo) { r.el.classList.toggle('solo', solo); if (r.el.tagName === 'BUTTON') r.el.setAttribute('aria-pressed', solo); }
+      if (r.el.classList.contains('feed') !== (inL || inR)) r.el.classList.toggle('feed', inL || inR);
+      const ear = P.phones.mode === 'split' && (inL || inR) ? (inL && inR ? 'L R' : inL ? 'L' : 'R') : '';
+      if (r.ear && r.ear.textContent !== ear) r.ear.textContent = ear;
+      if (r.tag && doText) {
+        const i = +r.id.slice(1) - 1, c = P.ch[i];
+        let txt = '–', cls = 'tag';
+        if (!c.used) { txt = 'spare'; }
+        else if (!frameKnown()) { txt = 'Riedel: ?'; }
+        else if (!frameClean()) { txt = 'Riedel: dry'; cls += ' dry'; }
+        else if (!S.outputsLive || S.muted) { txt = 'silent'; cls += ' sil'; }
+        else if (!S.chArmed[i]) { txt = 'tripped: dry'; cls += ' trip'; }
+        else { txt = 'clean'; cls += ' clean'; }
+        if (r.tag.textContent !== txt) { r.tag.textContent = txt; r.tag.className = cls; }
+      }
+    }
+  }
+  function setLed(el, c, txt) { const cls = 'led' + (c ? ' ' + c : ''); if (el.className !== cls) el.className = cls; if (txt !== undefined && el.textContent !== txt) el.textContent = txt; }
+  function render(now) {
+    const dtms = Math.min(100, now - lastFrame); lastFrame = now;
+    const t = S.t, g = greenFor();
+    $('#clock').textContent = fmt(t);
+    const eng = engineOk();
+    const se = $('#stEngine'); se.querySelector('.dotl').className = 'dotl ' + (!S.alive ? 'err' : eng && !S.frozen ? 'ok' : 'err');
+    const appEng = APP && APP.engine ? `${APP.engine.simulate ? 'simulated frame' : String(APP.engine.device || 'device')} · ${APP.engine.fs / 1000} kHz · ${APP.engine.block}` : '';
+    se.querySelector('b').textContent = APP ? (S.alive ? appEng : 'not answering') : !S.alive ? 'not running' : !eng ? 'no channels 61–64' : `${P.engine.device === 'dvs' ? 'DVS' : P.engine.device === 'mbp' ? 'built-in' : 'Merging'} 64×64 · ${P.engine.rate / 1000} kHz · ${P.engine.buffer}`;
+    const sr = $('#stRrcs'); sr.querySelector('.dotl').className = 'dotl ' + (rrcsUp() ? 'ok' : 'err');
+    sr.querySelector('b').textContent = APP ? (APP.rrcs && APP.rrcs.configured ? (APP.rrcs.ok ? APP.rrcs.url.replace('http://', '') : 'no answer') : APP.engine && APP.engine.simulate ? 'simulated' : 'not set up') : rrcsUp() ? P.rrcs.host : 'link lost';
+    const ns = S.solo.size, ph = !ns ? 'No solo: bus silent' : (ns === 1 ? idLabel([...S.solo][0]) : `${ns} soloed`) + ` · ${PHMODES[P.phones.mode].l}`;
+    if ($('#phSrc').textContent !== ph) $('#phSrc').textContent = ph;
+    $('#soloLamp').classList.toggle('on', ns > 0);
+    $('#clearSolo').disabled = !ns;
+
+    // status band
+    const b = $('#band');
+    const usedIdx = P.ch.map((c, i) => i).filter(i => i < P.count && P.ch[i].used);
+    const tripped = usedIdx.filter(i => S.armed && !S.chArmed[i]);
+    if (!S.alive) {
+      b.className = 'band dead'; $('#bState').textContent = 'NOT RUNNING'; $('#bSub').textContent = 'Riedel on dry';
+      $('#bWhy').textContent = 'Sotto stopped. Every listener is on dry. Restart, then use Restore all once the checks are green.';
+    } else if (S.armed) {
+      b.className = 'band armed'; $('#bState').textContent = 'ARMED'; $('#bSub').textContent = 'HEARTBEAT on';
+      const cl = !frameKnown() ? `${usedIdx.length - tripped.length} of ${usedIdx.length} talkers armed. The frame's state needs RRCS to show here.` : frameClean() ? `${usedIdx.length - tripped.length} of ${usedIdx.length} talkers clean.` : 'Waiting for the frame to report clean.';
+      $('#bWhy').textContent = cl + (tripped.length ? ` Tripped: ${tripped.map(i => chName(i)).join(', ')}. Re-arm on the tile.` : '');
+    } else {
+      b.className = 'band dis'; $('#bState').textContent = 'DISARMED'; $('#bSub').textContent = 'Riedel on dry';
+      $('#bWhy').textContent = `${S.reason} The frame holds everyone on dry.`;
+    }
+    $('#holdBar').style.width = (S.armed ? 100 : S.alive ? Math.min(100, g / ARM_HOLD * 100) : 0) + '%';
+    const ab = $('#armBtn');
+    if (!S.alive && APP) { ab.textContent = 'Open Sotto Bench again'; ab.disabled = true; ab.dataset.mode = ''; }
+    else if (!S.alive) { ab.textContent = 'Restart Sotto'; ab.disabled = false; ab.dataset.mode = 'restart'; }
+    else if (S.armed) { ab.textContent = 'Armed'; ab.disabled = true; ab.dataset.mode = ''; }
+    else if (g >= ARM_HOLD) { ab.textContent = 'Arm everyone'; ab.disabled = false; ab.dataset.mode = 'arm'; }
+    else { ab.textContent = S.greenSince === null ? 'Checks not green' : `Arm in ${((ARM_HOLD - g) / 1000).toFixed(1)} s`; ab.disabled = true; ab.dataset.mode = ''; }
+    $('#disarmBtn').disabled = !S.armed;
+
+    // checks
+    const pm = S.probeMissing, hold = P.rrcs.hold;
+    const chk = [
+      ['Engine', !S.alive ? 'not running' : S.frozen ? 'frozen' : !eng ? 'wrong device' : 'running', S.alive && !S.frozen && eng ? 'ok' : 'err'],
+      ['PROBE 62→61', pm === Infinity ? 'never seen' : pm <= 40 ? 'back in 8 ms' : `missing ${Math.round(pm)} ms`, pm <= 40 ? 'ok' : 'err'],
+      ['Green', S.greenSince === null ? 'no' : `${Math.min(99, g / 1000).toFixed(1)} s`, S.greenSince === null ? 'err' : g >= ARM_HOLD ? 'ok' : 'warn'],
+      ['HEARTBEAT 61', S.hbSent ? 'sending' : 'off', S.hbSent ? 'ok' : ''],
+      frameKnown() ? ['VOX', S.vox ? (S.hbSent ? 'on' : APP ? 'holding' : `holding ${Math.max(0, hold - (t - S.voxLast))} ms`) : 'off', S.vox ? (S.hbSent ? 'ok' : 'warn') : ''] : ['VOX', 'unknown', ''],
+      [P.rrcs.armed, !frameKnown() ? 'unknown' : S.armedLS ? 'set' : 'clear', frameKnown() && S.armedLS ? 'ok' : ''],
+      ['Frame', !frameKnown() ? 'unknown without RRCS' : frameClean() ? 'clean' : 'dry', !frameKnown() ? '' : frameClean() ? 'ok' : 'dry'],
+    ];
+    const cs = chk.map(c => c.join('|')).join(';');
+    if (cs !== checkSig) { checkSig = cs; $('#checks').innerHTML = chk.map(([k, v, c]) => `<span class="chk"><i class="dotl ${c}"></i><span>${esc(k)}</span><b>${esc(v)}</b></span>`).join(''); }
+
+    // tiles
+    for (const tl of tiles) {
+      const i = tl.i, c = P.ch[i];
+      if (!c.used) { tl.L.mode.textContent = 'not patched'; tl.L.red.textContent = ''; tl.L.insname.textContent = '–'; tl.arm.disabled = tl.trip.disabled = tl.insb.disabled = tl.ed.disabled = true; continue; }
+      const x = insOf(i);
+      setLed(tl.L.ins, x && x.on ? (S.alive && !S.frozen && eng ? 'g' : 'r') : '');
+      const insTxt = APP ? (x ? `${x.pl.name}: not yet` : 'Inserts: not yet') : x ? `${x.pl.name}${x.on ? '' : ': off'}` : (opOf(i) ? 'No insert' : 'No operator');
+      if (tl.L.insname.textContent !== insTxt) tl.L.insname.textContent = insTxt;
+      tl.insb.disabled = !x; tl.ed.disabled = false;
+      if (tl.insb.getAttribute('aria-pressed') !== String(!!(x && x.on))) tl.insb.setAttribute('aria-pressed', !!(x && x.on));
+      const sig = (S.lv['i' + (i + 1)] ?? -120) > -50, mode = modeOf(i), isTrip = S.armed && !S.chArmed[i];
+      setLed(tl.L.sig, sig ? 'g' : '');
+      setLed(tl.L.dsp, !S.alive || S.frozen || !eng ? 'r' : mode === 'bypass' ? 'a' : 'g');
+      setLed(tl.L.trip, isTrip ? 'r' : '');
+      const fc = frameClean();
+      const silent = fc && (!S.outputsLive || S.muted);
+      if (!frameKnown()) setLed(tl.L.out, isTrip ? 'a' : '', isTrip ? 'Dry (app)' : 'Riedel ?');
+      else setLed(tl.L.out, silent ? 'r' : !fc ? 'b' : isTrip ? 'a' : 'g', silent ? 'Silent' : !fc ? 'Riedel dry' : isTrip ? 'Dry (app)' : 'Clean');
+      const st = 'tile ' + (silent ? 'st-sil' : isTrip ? 'st-trip' : fc ? 'st-clean' : 'st-dry');
+      if (tl.el.className !== st) tl.el.className = st;
+      const ml = MODES[mode].l + (modeIsOwn(i) ? ' (own)' : '');
+      const ml2 = APP ? 'Passthrough (bench build)' : ml;
+      if (tl.L.mode.textContent !== ml2) tl.L.mode.textContent = ml2;
+      const rt = mode === 'bypass' || S.red[i] < 1 ? '' : `bleed −${Math.round(S.red[i])} dB`;
+      if (tl.L.red.textContent !== rt) tl.L.red.textContent = rt;
+      tl.arm.disabled = !isTrip; tl.trip.disabled = !(S.armed && S.chArmed[i]);
+    }
+
+    // macros
+    const r = S.run, running = r && r.state === 'running';
+    document.querySelectorAll('.mkey').forEach(k => { k.disabled = !!running && k.dataset.m !== r.id; k.classList.toggle('running', !!running && k.dataset.m === r.id); });
+    const sig = r ? r.state + r.i + r.steps.map(s => s.st + s.note).join() : '';
+    if (sig !== runSig) {
+      runSig = sig; const el = $('#runner');
+      if (!r) el.hidden = true;
+      else {
+        el.hidden = false;
+        const ic = { done: '✓', run: '●', fail: '✕', skip: '–', wait: '○' };
+        const head = { running: 'Running', done: `Done in ${((r.took || 0) / 1000).toFixed(1)} s`, failed: 'Stopped', cancelled: 'Cancelled' }[r.state];
+        el.innerHTML = `<div class="runh"><b>${esc(r.name)}</b><span class="pill ${r.state === 'done' ? 'ok' : r.state === 'running' ? 'warn' : 'err'}">${head}</span><span style="flex:1"></span>${running ? '<button class="btn sm danger" id="cancelRun">Cancel</button>' : '<button class="btn sm" id="clearRun">Clear</button>'}</div>
+          <ol class="rsteps">${r.steps.map(s => `<li class="${s.st}"><span class="ic">${ic[s.st]}</span><span>${esc(STEPS[s.t].l(s))}</span><span class="nt">${esc(s.note || '')}</span></li>`).join('')}</ol>`;
+      }
+    }
+    meters(now, dtms);
+    if (logDirty) { logDirty = false; $('#log').innerHTML = S.log.map(x => `<tr><td class="n">${x[0]}</td><td>${esc(x[1])}</td><td class="src">${esc(x[2])}</td></tr>`).join(''); }
+    audioUpdate();
+  }
+  $('#runner').addEventListener('click', e => {
+    if (e.target.id === 'cancelRun' && S.run) { S.run.state = 'cancelled'; S.run.steps.forEach(s => { if (s.st === 'run' || s.st === 'wait') s.st = 'skip'; }); log(`Macro cancelled: ${S.run.name}`, 'console'); }
+    if (e.target.id === 'clearRun') S.run = null;
+  });
+  $('#armBtn').onclick = () => { if ($('#armBtn').dataset.mode === 'restart') restart(); else requestArm('console'); };
+  $('#disarmBtn').onclick = () => disarm('disarmed by the engineer', 'console');
+  $('#panelArm').onclick = () => { if (!rrcsUp()) { toast('RRCS link is down: the panel key cannot reach Sotto'); return; } S.panelPollAt = S.t + 250; toast('Panel ARM key pressed. Sotto sees it on its next RRCS poll.'); };
+  $('#companionArm').onclick = () => { if (APP) api('/api/arm', {}).then(r => toast(r.ok ? 'Armed from the Companion address' : `Arm refused: ${r.message || r.error}`)).catch(() => toast('Sotto Bench is not answering')); else requestArm('Companion'); };
+  document.querySelectorAll('[data-fault]').forEach(b => b.onclick = () => inject(b.dataset.fault));
+
+  // ------------------------------------------------------------ phones bus controls
+  function buildPhones() {
+    $('#phMode').innerHTML = Object.entries(PHMODES).map(([k, m]) => `<button data-ph="${k}" aria-pressed="${P.phones.mode === k}" title="${esc(m.d)}">${m.l}</button>`).join('');
+    $('#phLevel').value = P.phones.level; $('#phLevelOut').textContent = `${P.phones.level > 0 ? '+' : ''}${P.phones.level} dB`;
+  }
+  $('#phMode').addEventListener('click', e => { const b = e.target.closest('[data-ph]'); if (!b) return; P.phones.mode = b.dataset.ph; save(); buildPhones(); log(`Phones bus: ${PHMODES[P.phones.mode].l}`, 'console'); toast(PHMODES[P.phones.mode].d); soloChanged(); });
+  $('#phLevel').addEventListener('input', e => { P.phones.level = +e.target.value; save(); $('#phLevelOut').textContent = `${P.phones.level > 0 ? '+' : ''}${P.phones.level} dB`; soloChanged(); });
+  $('#phDim').onclick = () => { S.dim = !S.dim; $('#phDim').setAttribute('aria-pressed', S.dim); soloChanged(); };
+  const clearSolos = () => { if (!S.solo.size) return; S.solo.clear(); log('Solos cleared: phones bus silent', 'console'); soloChanged(); };
+  $('#clearSolo').onclick = clearSolos;
+
+  // ------------------------------------------------------------ browser preview of the phones bus (stand-in sound)
+  let ac = null, E = {}, envAt = 0;
+  function audioStart() {
+    ac = new (window.AudioContext || window.webkitAudioContext)();
+    const noise = () => { const len = ac.sampleRate * 2, buf = ac.createBuffer(1, len, ac.sampleRate), d = buf.getChannelData(0); for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1; const s = ac.createBufferSource(); s.buffer = buf; s.loop = true; s.start(); return s; };
+    const master = ac.createGain(); master.gain.value = 0.7; master.connect(ac.destination);
+    const merge = ac.createChannelMerger(2); merge.connect(master);
+    const vbp = ac.createBiquadFilter(); vbp.type = 'bandpass'; vbp.frequency.value = 900; vbp.Q.value = 1.1;
+    E.vEnv = ac.createGain(); E.vEnv.gain.value = 0; noise().connect(vbp).connect(E.vEnv);
+    const blp = ac.createBiquadFilter(); blp.type = 'lowpass'; blp.frequency.value = 1400;
+    [110, 164.8, 220, 277.2, 329.6].forEach((f, k) => { const o = ac.createOscillator(); o.type = k % 2 ? 'triangle' : 'sawtooth'; o.frequency.value = f; const og = ac.createGain(); og.gain.value = 0.05; o.connect(og).connect(blp); o.start(); });
+    E.kick = ac.createGain(); E.kick.gain.value = 0; const ko = ac.createOscillator(); ko.frequency.value = 55; ko.connect(E.kick).connect(blp); ko.start();
+    const hp = ac.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 3000; const hiss = noise(); hiss.connect(hp);
+    const t1 = ac.createOscillator(); t1.frequency.value = 1000; t1.start();
+    const t2 = ac.createOscillator(); t2.frequency.value = 2000; t2.start();
+    E.ear = [0, 1].map(ch => {
+      const mk = src => { const g = ac.createGain(); g.gain.value = 0; src.connect(g).connect(merge, 0, ch); return g; };
+      return { v: mk(E.vEnv), b: mk(blp), n: mk(hp), t1: mk(t1), t2: mk(t2) };
+    });
+  }
+  const lin = db => db < -100 ? 0 : Math.pow(10, db / 20);
+  function earMix(set) {
+    let v = 0, b = 0, n = 0, t1 = 0, t2 = 0;
+    for (const id of set) {
+      if (id === 'o61') { if (S.hbSent) t1 += 1; continue; }
+      if (id === 'o62') { if (S.lv.o62 > -100) t2 += 1; continue; }
+      if (id === 'i61') { if (S.lv.i61 > -100) t2 += 1; continue; }
+      const c = S.comp[id]; if (!c) continue;
+      if (id[0] === 'o' && (S.lv[id] ?? -120) < -100) continue;       // a silent return stays silent
+      v += pw(c.v); b += pw(c.b); n += pw(c.n);
+    }
+    return { v: todb(v), b: todb(b), n: todb(n), t1, t2 };
+  }
+  function audioUpdate() {
+    if (!ac || ac.state !== 'running') return;
+    const now = ac.currentTime, live = S.alive && engineOk() && !S.frozen, f = busFeed();
+    const g = P.phones.level + (S.dim ? P.phones.dim : 0);
+    [f.L, f.R].forEach((set, k) => {
+      const m = earMix(set), e = E.ear[k], set1 = (node, v) => node.gain.setTargetAtTime(live ? Math.min(1, v) : 0, now, 0.02);
+      set1(e.v, lin(m.v + 14 + g) * 0.9); set1(e.b, lin(m.b + 14 + g) * 0.9); set1(e.n, lin(m.n + 30 + g) * 0.5);
+      set1(e.t1, m.t1 * 0.1 * lin(g)); set1(e.t2, m.t2 * 0.1 * lin(g));
+    });
+    if (performance.now() > envAt) { envAt = performance.now() + 90 + Math.random() * 140; E.vEnv.gain.setTargetAtTime(Math.random() < 0.25 ? 0.1 : 0.5 + Math.random() * 0.5, now, 0.03); E.kick.gain.setTargetAtTime(Math.random() < 0.5 ? 0.2 : 0, now, 0.05); }
+  }
+  $('#hearBtn').onclick = async () => {
+    const btn = $('#hearBtn');
+    try {
+      if (!ac) audioStart();
+      if (btn.getAttribute('aria-pressed') === 'true') { await ac.suspend(); btn.setAttribute('aria-pressed', 'false'); btn.textContent = 'Preview in browser'; return; }
+      await ac.resume(); btn.setAttribute('aria-pressed', 'true'); btn.textContent = 'Stop preview';
+      toast('Stand-in sound of the phones bus: band noise for voices, a chord for PA bleed. In the app it goes out on DVS 63/64.');
+    } catch (e) { toast('This browser blocked audio playback.'); }
+  };
+
+  // ------------------------------------------------------------ tabs
+  function showTab(which) {
+    const set = which === 'set';
+    $('#pMain').hidden = set; $('#pSet').hidden = !set;
+    $('#tabMain').setAttribute('aria-selected', !set); $('#tabSet').setAttribute('aria-selected', set);
+    if (set) renderSet();
+    try { localStorage.setItem('sotto.console.tab', which); } catch (e) {}
+    window.scrollTo(0, 0);
+  }
+  $('#tabMain').onclick = () => showTab('main');
+  $('#tabSet').onclick = () => showTab('set');
+  $('#editMacros').onclick = () => { UI.sec = 'macros'; showTab('set'); };
+
+  // ------------------------------------------------------------ settings
+  const UI = { op: 'op-caller', sec: 'project', macro: 'dry', confirmDel: false, confirmReset: false, check: null, rrcsTest: null };
+  const SECS = [
+    ['project', 'Project', 'Name and notes for this show'],
+    ['channels', 'Channels', 'How many talkers, names, patching'],
+    ['operators', 'Operators', 'Profiles that follow each person: insert, settings, processing'],
+    ['processing', 'Processing', 'What Sotto removes from each voice'],
+    ['engine', 'Audio engine', 'Dante Virtual Soundcard or Merging VAD'],
+    ['plugins', 'Plugins', 'VST3 and AU plugins Sotto can host'],
+    ['riedel', 'Riedel and fail-safe', 'RRCS, logic sources, VOX, PROBE'],
+    ['macros', 'Macros', 'Steps behind the macro keys'],
+  ];
+  function secHealth(id) {
+    if (id === 'engine') return engineOk() ? 'ok' : 'err';
+    if (id === 'macros') return P.macros.some(m => macroWarnings(m).length) ? 'warn' : '';
+    return '';
+  }
+  function renderRail() {
+    $('#rail').innerHTML = SECS.map(([id, l, d]) => { const h = secHealth(id); return `<button class="rbtn" data-sec="${id}" aria-current="${UI.sec === id}"><b>${l}</b>${h ? `<i class="dotl ${h}"></i>` : ''}<small>${d}</small></button>`; }).join('');
+  }
+  $('#rail').addEventListener('click', e => { const b = e.target.closest('[data-sec]'); if (b) { UI.sec = b.dataset.sec; UI.confirmDel = UI.confirmReset = false; renderSet(); } });
+  const row = (label, help, ctl) => `<div class="setrow"><div><b>${label}</b>${help ? `<small>${help}</small>` : ''}</div><div class="ctl">${ctl}</div></div>`;
+  const sel = (bind, opts, val, extra = '') => `<select id="f-${bind.replace(/\./g, '-')}" data-b="${bind}" ${extra}>${opts.map(([v, l, dis]) => `<option value="${esc(v)}"${String(v) === String(val) ? ' selected' : ''}${dis ? ' disabled' : ''}>${esc(l)}</option>`).join('')}</select>`;
+  const txt = (bind, val, ph = '') => `<input type="text" id="f-${bind.replace(/\./g, '-')}" data-b="${bind}" value="${esc(val)}" placeholder="${esc(ph)}">`;
+  const rng = (bind, val, min, max, stepv, unit) => `<div class="rng"><input type="range" id="f-${bind.replace(/\./g, '-')}" data-b="${bind}" data-t="n" min="${min}" max="${max}" step="${stepv}" value="${val}"><output>${val} ${unit}</output></div>`;
+  const box = (title, lede, body) => `<section class="box"><div class="box-h"><div><h2 class="h2">${title}</h2>${lede ? `<p class="lede">${lede}</p>` : ''}</div></div><div class="box-b">${body}</div></section>`;
+
+  function secProject() {
+    const p = P.project;
+    return box('Project', 'Everything on this page is saved with the project. In this preview it is kept in this browser; the app saves it as a project file.',
+      row('Project name', 'Shown in the header.', txt('project.name', p.name, 'e.g. the show name')) +
+      row('Venue', '', txt('project.venue', p.venue)) +
+      row('Comms engineer', '', txt('project.engineer', p.engineer)) +
+      row('Notes', 'Anything the next engineer should know.', `<textarea id="f-project-notes" data-b="project.notes">${esc(p.notes)}</textarea>`) +
+      row('Start again', 'Puts every setting back to the example project.', UI.confirmReset
+        ? `<span class="confirm">Reset every setting, channel name and macro? <button class="btn sm danger" data-act="resetok">Reset</button><button class="btn sm" data-act="resetno">Keep</button></span>`
+        : `<button class="btn sm" data-act="reset">Reset to example</button>`));
+  }
+  function secChannels() {
+    const n = P.count;
+    const rows = Array.from({ length: n }, (_, i) => {
+      const c = P.ch[i];
+      return `<tr class="${c.used ? '' : 'unused'}"><td class="n">${pad(i + 1)}</td>
+        <td>${sel(`ch.${i}.op`, [['', 'No operator'], ...P.operators.map(o => [o.id, o.name])], c.op || '', `aria-label="Operator on channel ${i + 1}"`)}</td>
+        <td><input type="text" id="f-ch-${i}-name" data-b="ch.${i}.name" value="${esc(c.name)}" aria-label="Label for channel ${i + 1}, used when no operator is assigned"></td>
+        <td><input type="checkbox" id="f-ch-${i}-used" data-b="ch.${i}.used" ${c.used ? 'checked' : ''} aria-label="Channel ${i + 1} patched"></td>
+        <td>${sel(`ch.${i}.pos`, POS.map(x => [x, x]), c.pos, `aria-label="Position of channel ${i + 1}"`)}</td>
+        <td>${c.op && opById(c.op) ? `<span class="muted">From ${esc(opById(c.op).name)}</span>` : sel(`ch.${i}.mode`, [['default', `Project default (${MODES[P.proc.mode].l})`], ...Object.entries(MODES).map(([k, m]) => [k, m.l])], c.mode, `aria-label="Processing for channel ${i + 1}"`)}</td>
+        <td class="n">IN ${pad(i + 1)} → OUT ${pad(i + 1)}</td></tr>`;
+    }).join('');
+    const sys = [['IN 61', 'PROBE return', 'proposed', 'Loops back from OUT 62 through the frame.'], ['IN 62', 'PGM reference', 'fixed', 'Mono programme feed. The echo canceller removes this from every talker.'],
+      ['OUT 61', 'HEARTBEAT', 'proposed', '1 kHz at −20 dBFS to the VOX 4-wire, only while armed.'], ['OUT 62', 'PROBE', 'proposed', '2 kHz, patched straight back to IN 61.'],
+      ['OUT 63', 'Phones bus L', 'fixed', 'The solo mix. Silent when nothing is soloed.'], ['OUT 64', 'Phones bus R', 'fixed', 'Same mix, or the clean side in Split.']];
+    return box('Talker channels', 'Each talker comes in on an input and goes back to the Riedel on the output with the same number. Channels 61 to 64 are kept for the system, so up to 60 talkers.',
+      row('Talker channels', `Uses DVS inputs and outputs 1–${n}. Unpatched channels stay on the list as spares.`,
+        `<input type="number" id="f-count" data-b="count" data-t="n" min="1" max="60" value="${n}" style="width:90px" ${APP ? 'disabled' : ''}><span class="muted">of 60</span><span class="seg">${[4, 8, 16, 32, 60].map(v => `<button data-act="count" data-v="${v}" aria-pressed="${n === v}" ${APP ? 'disabled' : ''}>${v}</button>`).join('')}</span>`) +
+      `<div class="scroll" style="margin-top:10px"><table class="t"><thead><tr><th>Ch</th><th>Operator</th><th>Label</th><th>Patched</th><th>Position</th><th>Processing</th><th>Route</th></tr></thead><tbody>${rows}</tbody></table></div>`) +
+      box('System channels', 'These stay the same on every show, so the Dante routing never changes. PGM and headphones are fixed by you; PROBE and HEARTBEAT are a proposal until the frame test.',
+        `<div class="scroll"><table class="t"><thead><tr><th>Channel</th><th>Carries</th><th></th><th>Notes</th></tr></thead><tbody>${sys.map(([c, w, k, d]) => `<tr><td class="n">${c}</td><td><b>${w}</b></td><td><span class="pill ${k === 'fixed' ? 'info' : 'warn'}">${k}</span></td><td>${d}</td></tr>`).join('')}</tbody></table></div>`);
+  }
+  function secProcessing() {
+    const pp = P.proc, buf = P.engine.buffer / (P.engine.rate / 1000);
+    const lat = 2 * buf + (pp.mode === 'full' ? 10 : 0);
+    const own = P.ch.slice(0, P.count).map((c, i) => i).filter(i => P.ch[i].used && modeIsOwn(i)).length;
+    return box('Processing', `The project default for every talker.${own ? ` ${own} talker${own > 1 ? 's have' : ' has'} their own setting, from an operator profile or the Channels page.` : ' Any operator profile or channel can override it.'}`,
+      `<div class="modes">${Object.entries(MODES).map(([k, m]) => `<button class="mode" data-act="mode" data-v="${k}" aria-pressed="${pp.mode === k}"><b>${m.l}</b><span class="chain">${m.chain}</span><small>${m.d}</small></button>`).join('')}</div>` +
+      row('Echo tail', 'How long the PA bleed can ring on after the PGM. Longer suits bigger rooms but adapts more slowly.', sel('proc.tail', [[128, '128 ms'], [256, '256 ms'], [512, '512 ms']], pp.tail, 'data-t="n"')) +
+      row('Reference delay', 'The PGM reaches the canceller before the bleed reaches the mic. Sotto measures the gap when it starts and locks it.', `<span class="fixed">Auto, locked at start</span>`) +
+      row('Bleed suppression', 'Extra removal after the echo canceller (Echo + noise and Full clean).', rng('proc.supp', pp.supp, 0, 24, 1, 'dB')) +
+      row('Speech model limit', 'Most the speech model may take away (Full clean). Lower sounds more natural, higher is cleaner.', rng('proc.atten', pp.atten, 6, 40, 1, 'dB')) +
+      row('High-pass', 'Removes rumble and handling noise before processing.', sel('proc.hpf', [[0, 'Off'], [80, '80 Hz'], [100, '100 Hz'], [120, '120 Hz']], pp.hpf, 'data-t="n"')) +
+      row('Output trim', 'Level change on every clean return.', rng('proc.trim', pp.trim, -12, 6, 0.5, 'dB')) +
+      row('Added delay (estimate)', 'Through Sotto, on top of the DVS latency. Latency work comes later.', `<span class="fixed">${lat.toFixed(1)} ms</span><span class="muted">${buf.toFixed(1)} ms in + ${buf.toFixed(1)} ms out${pp.mode === 'full' ? ' + 10 ms speech model frame' : ''}</span>`));
+  }
+  function appNote(sec) {
+    const m = {
+      processing: 'This Sotto Bench build passes the talkers straight through. Processing settings are saved now and take effect when the processing engine is added.',
+      operators: 'Profiles are saved now. Their plugin inserts and processing take effect when the processing engine is added; names show straight away.',
+      plugins: 'Plugin hosting is being tested with sotto-plugin-test first. This list is still the preview.',
+      channels: 'The number of talkers and the channel numbers come from the setup page. Quit and open Sotto Bench again to change them.',
+      riedel: 'Sotto Bench uses the RRCS address from its setup page. Changes here are saved for the full app.',
+    }[sec];
+    return m ? `<div class="appnote">${m}</div>` : '';
+  }
+  function secEngine() {
+    if (APP && APP.engine) {
+      const e = APP.engine;
+      return box('Audio engine', 'What Sotto Bench is running on now. Change it on the setup page: Quit, then open Sotto Bench again.',
+        row('Device', '', `<span class="fixed">${esc(e.simulate ? 'Simulated Riedel frame (no audio hardware)' : String(e.device))}</span>`) +
+        row('Channels open', 'Inputs and outputs Sotto Bench asked the device for.', `<span class="fixed">${e.n_in} in / ${e.n_out} out</span>`) +
+        row('Sample rate', '', `<span class="fixed">${e.fs / 1000} kHz</span>`) +
+        row('Block', '', `<span class="fixed">${e.block} samples (${(1000 * e.block / e.fs).toFixed(1)} ms)</span>`) +
+        row('Latency', 'Reported by the audio driver.', `<span class="fixed">${esc(e.latency_note || 'not reported')}</span>`) +
+        row('Recordings', 'Where this run is saved.', `<span class="fixed">${esc(APP.folder || '')}</span>`));
+    }
+    const e = P.engine, d = dev(), okDev = engineOk();
+    const devOpts = Object.entries(DEVICES).filter(([, x]) => x.drivers.includes(e.driver)).map(([k, x]) => [k, `${x.name} (${x.in} in / ${x.out} out)`]);
+    const res = UI.check;
+    return box('Audio engine', 'Sotto opens one audio device for every input and output. Dante Virtual Soundcard and Merging VAD both appear to the computer as an ordinary soundcard.',
+      row('Driver', 'On a Mac Sotto uses Core Audio. On Windows it uses ASIO.', `<span class="seg">${Object.entries(DRIVERS).map(([k, l]) => `<button data-act="driver" data-v="${k}" aria-pressed="${e.driver === k}">${l}</button>`).join('')}</span>`) +
+      row('Device', okDev ? 'Has the 64 inputs and outputs Sotto needs.' : 'Sotto needs a device with 64 inputs and 64 outputs so channels 61 to 64 exist.', sel('engine.device', devOpts.length ? devOpts : [['', 'No devices for this driver']], e.device) + (okDev ? '<span class="pill ok">64 × 64</span>' : '<span class="pill err">too few channels</span>')) +
+      row('Sample rate', 'Must match the Dante or AES67 network. Set it in Dante Controller (or the VAD settings); Sotto follows it. 64 channels needs 48 kHz or 44.1 kHz.', sel('engine.rate', [[48000, '48 kHz'], [44100, '44.1 kHz'], [96000, '96 kHz (DVS limit: 32 channels)', true]], e.rate, 'data-t="n"')) +
+      row('Buffer', 'Smaller is lower latency but needs more headroom. Start at 128 and only go lower after a full-channel test.', `<span class="seg">${[32, 64, 128, 256, 512].map(v => `<button data-act="buffer" data-v="${v}" aria-pressed="${e.buffer === v}">${v}</button>`).join('')}</span><span class="muted mono">${(e.buffer / (e.rate / 1000)).toFixed(2)} ms</span>`) +
+      row('Phones bus dim', 'How much the Dim button takes off the headphones.', sel('phones.dim', [[-10, '−10 dB'], [-20, '−20 dB'], [-30, '−30 dB']], P.phones.dim, 'data-t="n"')) +
+      row('Phones bus limiter', 'Protects your ears when several solos add up.', '<span class="fixed">−3 dBFS, fixed</span>') +
+      row('Check the device', 'Runs the start-up checks without arming. Simulated in this preview.', `<button class="btn sm" data-act="check">Check device</button>`) +
+      (res ? `<ul class="results">${res.map(([c, t]) => `<li class="${c}"><span class="i">${c === 'ok' ? '✓' : c === 'warn' ? '!' : '✕'}</span><span>${t}</span></li>`).join('')}</ul>` : '')) +
+      box('Setting up Dante Virtual Soundcard', '',
+        `<ol class="steps">
+          <li>In Dante Virtual Soundcard, set the channel count to <b>64 × 64</b> and the latency to <b>4 ms</b> (6 ms if you hear dropouts). On Windows pick <b>ASIO</b> mode.</li>
+          <li>Start DVS, then in Dante Controller check the laptop is synced to the network clock (the Master Antenna is grandmaster) at 48 kHz.</li>
+          <li>Route the frame's Dante transmit channels for the talkers to DVS receive 1–60, PGM to receive 62, and the frame's PROBE loop to receive 61. Route DVS transmit 1–60 back to the frame's clean returns, 61 to the VOX 4-wire, 62 into the PROBE loop.</li>
+          <li>Open Sotto, choose <b>Dante Virtual Soundcard</b> here, then Check device.</li>
+          <li>The first time, macOS asks whether Sotto may use the microphone. Allow it: macOS treats every audio input that way, including DVS. If you said no, turn it on in System Settings › Privacy &amp; Security › Microphone.</li>
+        </ol>
+        <p class="note">Merging VAD works the same way on a Mac: set the VAD to 64 channels at 48 kHz (AES67) in Merging's settings and pick it here. VAD only speaks RAVENNA and AES67, so the frame side must be AES67.</p>
+        <div class="warnbox" style="margin-top:10px">Audinate rate a desktop Mac (they name the Mac mini) for sending and receiving at high channel counts, and a MacBook Pro for recording only. Before a show at 64 × 64, run the full channel count on the show laptop for an hour with the Dante Controller latency and clock pages open.</div>`);
+  }
+  function secRiedel() {
+    const r = P.rrcs, t = UI.rrcsTest;
+    return box('RRCS', 'Sotto talks to the frame over RRCS (XML-RPC). It sets ARMED when it arms, reads the panel arm key, and the macros use it to switch the frame to dry.',
+      row('Frame address', 'The RRCS server, usually on the Artist frame\'s control network.', txt('rrcs.host', r.host, 'e.g. 10.0.0.10') + `<input type="number" id="f-rrcs-port" data-b="rrcs.port" data-t="n" value="${r.port}" style="width:90px" aria-label="RRCS port"><button class="btn sm" data-act="rrcs">Test link</button>`) +
+      (t ? `<ul class="results">${t.map(([c, x]) => `<li class="${c}"><span class="i">${c === 'ok' ? '✓' : '✕'}</span><span>${x}</span></li>`).join('')}</ul>` : '') +
+      row('ARMED logic source', 'Sotto sets it via RRCS when it arms. The frame\'s logic releases it when CLEAN_OK drops.', txt('rrcs.armed', r.armed)) +
+      row('Arm request source', 'A panel key that asks Sotto to arm. Sotto still checks for 5 s of green.', txt('rrcs.armReq', r.armReq)) +
+      row('CLEAN_OK', 'Set by the VOX on the HEARTBEAT 4-wire. Read only.', txt('rrcs.cleanOk', r.cleanOk))) +
+      box('Fail-safe timing', 'The frame falls back to dry on its own when HEARTBEAT stops. These two numbers decide how fast.',
+        row('VOX hold', 'Set on the HEARTBEAT 4-wire port in Director. Sotto needs to know it to show the countdown.', sel('rrcs.hold', [[200, '200 ms'], [400, '400 ms'], [800, '800 ms']], r.hold, 'data-t="n"')) +
+        row('PROBE timeout', 'How long the PROBE may go missing before Sotto disarms. Fallback lands roughly at this plus the VOX hold; aim for 250–500 ms.', sel('rrcs.probe', [[100, '100 ms'], [200, '200 ms'], [300, '300 ms']], r.probe, 'data-t="n"') + `<span class="muted">worst case about ${r.probe + r.hold + 40} ms to dry</span>`) +
+        row('Arm hold', 'Checks must be green this long before anyone can arm.', '<span class="fixed">5 s, fixed</span>')) +
+      box('Rules that cannot be changed', '', `<ul class="rules"><li>Sotto starts disarmed, every time.</li><li>HEARTBEAT only goes out while armed and every check is green.</li><li>Any fault latches. Going back to clean is always a person's decision.</li><li>Re-arming is manual (console, panel key or Companion) and needs 5 s of green.</li><li>Sidetone never passes through Sotto.</li></ul>`);
+  }
+  function macroWarnings(m) {
+    const w = [];
+    if (!m.steps.length) w.push('This macro has no steps.');
+    const ai = m.steps.findIndex(s => s.t === 'arm');
+    if (ai >= 0) {
+      if (!m.steps.slice(0, ai).some(s => s.t === 'waitGreen' && s.s >= 5)) w.push('Arm comes before any wait for 5 s of green, so it will be refused unless the checks were already green.');
+      if (!m.steps.slice(ai).some(s => s.t === 'waitClean')) w.push('Add "Wait for clean" after Arm so the macro confirms the frame really switched.');
+    }
+    if (m.steps.some(s => s.t === 'rrcs' && !s.on && s.src !== P.rrcs.armed)) w.push('RRCS can only switch off a logic source that RRCS switched on.');
+    return w;
+  }
+  function secMacros() {
+    let m = P.macros.find(x => x.id === UI.macro) || P.macros[0];
+    if (m) UI.macro = m.id;
+    const list = `<div class="mlist">${P.macros.map((x, k) => `<button class="mli s-${x.style}" data-act="msel" data-v="${esc(x.id)}" aria-current="${x.id === UI.macro}"><i></i><b>M${k + 1} ${esc(x.name)}</b></button>`).join('')}<button class="btn sm" data-act="mnew">New macro</button><button class="btn sm" data-act="mreset">Restore the two built-in macros</button></div>`;
+    if (!m) return box('Macros', '', list);
+    const mi = P.macros.indexOf(m), w = macroWarnings(m);
+    const stepRow = (s, j) => {
+      let params = '';
+      if (s.t === 'rrcs') params = `${txt(`macros.${mi}.steps.${j}.src`, s.src)}${sel(`macros.${mi}.steps.${j}.on`, [['true', 'on'], ['false', 'off']], String(!!s.on))}`;
+      if ('ms' in s) params = `<input type="number" id="f-m${mi}s${j}ms" data-b="macros.${mi}.steps.${j}.ms" data-t="n" min="0" step="100" value="${s.ms}"> <span class="muted">ms</span>`;
+      if (s.t === 'waitGreen') params = `<input type="number" id="f-m${mi}s${j}s" data-b="macros.${mi}.steps.${j}.s" data-t="n" min="5" max="60" value="${s.s}"> <span class="muted">s, 5 at least</span>`;
+      return `<li class="estep"><div class="sx"><b>${STEP_NAMES[s.t]}</b>${params}</div><div class="ord"><button class="btn sm" data-act="sup" data-v="${j}" aria-label="Move up" ${j ? '' : 'disabled'}>↑</button><button class="btn sm" data-act="sdown" data-v="${j}" aria-label="Move down" ${j < m.steps.length - 1 ? '' : 'disabled'}>↓</button><button class="btn sm danger" data-act="sdel" data-v="${j}" aria-label="Remove step">✕</button></div></li>`;
+    };
+    const editor = `<div style="display:grid;gap:12px;min-width:0">
+      ${row('Name', '', txt(`macros.${mi}.name`, m.name))}
+      ${row('Colour', 'The stripe on the key.', `<span class="seg">${[['dry', 'Dry'], ['clean', 'Clean'], ['alert', 'Alert'], ['neutral', 'Neutral']].map(([v, l]) => `<button data-act="mstyle" data-v="${v}" aria-pressed="${m.style === v}">${l}</button>`).join('')}</span>`)}
+      <div><b class="h2" style="font-size:14px">Steps</b><p class="lede" style="margin-bottom:8px">Run in order. If a step fails, the macro stops there and says why.</p>
+      <ol class="esteps">${m.steps.map(stepRow).join('')}</ol>
+      <div class="row" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">${sel('_newstep', Object.entries(STEP_NAMES).map(([k, l]) => [k, l]), UI.newStep || 'wait', 'aria-label="Step to add"')}<button class="btn sm" data-act="sadd">Add step</button></div></div>
+      ${w.length ? w.map(x => `<div class="warnbox">${esc(x)}</div>`).join('') : '<div class="okbox">Ready. Press it on the Live page to run it.</div>'}
+      <div>${UI.confirmDel ? `<span class="confirm">Delete ${esc(m.name)}? <button class="btn sm danger" data-act="mdelok">Delete</button><button class="btn sm" data-act="mdelno">Keep</button></span>` : `<button class="btn sm danger" data-act="mdel">Delete macro</button>`}</div>
+    </div>`;
+    return box('Macros', 'Each macro key on the Live page runs these steps in order. Changes save straight away.', `<div class="medit">${list}${editor}</div>`);
+  }
+  const chOfOp = id => P.ch.findIndex((c, k) => k < P.count && c.op === id);
+  function pctl(q, base, val, locked) {
+    const id = 'f-' + base.replace(/\./g, '-') + '-' + q.k;
+    if (q.type === 'bool') return row(q.l, q.h || '', `<label class="chkl"><input type="checkbox" id="${id}" data-b="${base}.${q.k}" ${val ? 'checked' : ''}> On</label>`);
+    if (q.type === 'select') return row(q.l, q.h || '', sel(`${base}.${q.k}`, q.opts.map((x, j) => [j, x]), val, 'data-t="n"'));
+    if (q.type === 'bands') return row(q.l, q.h || '', `<div class="bands">${val.map((g, j) => `<label><span>Band ${j + 1}</span><input type="range" id="${id}-${j}" data-b="${base}.${q.k}.${j}" data-t="n" min="${q.min}" max="${q.max}" step="1" value="${g}" ${locked ? 'disabled' : ''}><output>${g} ${q.u}</output></label>`).join('')}</div>`);
+    const r = rng(`${base}.${q.k}`, val, q.min, q.max, q.step || 1, q.u || '');
+    return row(q.l, q.h || '', locked ? r.replace('type="range"', 'type="range" disabled') : r);
+  }
+  function secOperators() {
+    let o = opById(UI.op) || P.operators[0]; if (o) UI.op = o.id;
+    const list = `<div class="mlist">${P.operators.map(x => { const k = chOfOp(x.id), pl = PLUGINS[x.ins.plugin];
+      return `<button class="mli opli" data-act="osel" data-v="${esc(x.id)}" aria-current="${x.id === UI.op}"><i class="${pl && x.ins.on ? 'on' : ''}"></i><span class="mt"><b>${esc(x.name)}</b><small>${k >= 0 ? `CH ${pad(k + 1)}` : 'not on a channel'} · ${pl ? esc(pl.name) + (x.ins.on ? '' : ' off') : 'no insert'}</small></span></button>`; }).join('')}<button class="btn sm" data-act="onew">New profile</button></div>`;
+    const lede = 'A profile belongs to a person, not a channel. Their insert plugin, its settings, their processing and trim go wherever you put them. These four are examples.';
+    if (!o) return box('Operators', lede, list);
+    const oi = P.operators.indexOf(o), k = chOfOp(o.id), pid = o.ins.plugin, pl = PLUGINS[pid];
+    if (pl && !o.ins.states[pid]) o.ins.states[pid] = pd(pid);
+    const chSel = `<select id="f-op-ch" aria-label="Channel for ${esc(o.name)}"><option value="">Not on a channel</option>${Array.from({ length: P.count }, (_, j) => { const occ = opById(P.ch[j].op); return `<option value="${j}"${j === k ? ' selected' : ''}>CH ${pad(j + 1)}${occ && occ.id !== o.id ? ` (now ${esc(occ.name)})` : !P.ch[j].used ? ' (spare)' : ''}</option>`; }).join('')}</select>`;
+    const base = `operators.${oi}.ins.states.${pid}`;
+    const plug = pl ? `<div class="plug">
+        <div class="plugh"><b>${esc(pl.vendor)} ${esc(pl.name)}</b><span class="muted">${esc(pl.kind)}</span><span class="sp"></span><button class="btn sm" data-act="owin">Open ${esc(pl.vendor)}'s window</button><button class="btn sm" data-act="odef">Plugin defaults</button></div>
+        ${pl.params.map(q => pctl(q, base, o.ins.states[pid][q.k], q.type === 'bands' && pid === 'dnsone' && o.ins.states[pid].learn)).join('')}
+      </div>` : '';
+    const editor = `<div style="display:grid;gap:12px;min-width:0">
+      ${row('Name', 'Shown on the tiles, the strips and the event log.', txt(`operators.${oi}.name`, o.name))}
+      ${row('On channel', 'When the person moves position, move the profile. Their settings go with them.', chSel)}
+      ${row('Processing', 'Sotto\'s own processing for this person.', sel(`operators.${oi}.mode`, [['default', `Project default (${MODES[P.proc.mode].l})`], ...Object.entries(MODES).map(([kk, m]) => [kk, m.l])], o.mode))}
+      ${row('Output trim', 'On top of the project trim.', rng(`operators.${oi}.trim`, o.trim, -12, 6, 0.5, 'dB'))}
+      ${row('Insert plugin', 'Runs after Sotto\'s processing, before the output.', sel(`operators.${oi}.ins.plugin`, [['', 'None'], ...Object.entries(PLUGINS).map(([id, x]) => [id, `${x.vendor} ${x.name}`])], pid) + (pl ? `<span class="seg"><button data-act="oins" data-v="1" aria-pressed="${!!o.ins.on}">On</button><button data-act="oins" data-v="0" aria-pressed="${!o.ins.on}">Off</button></span>` : ''))}
+      ${pl ? row('Insert latency', 'Stays the same when the insert is off, so switching never shifts the timing.', `<span class="fixed">${esc(pl.latTxt)}</span>`) : ''}
+      ${plug}
+      ${pl ? '<p class="note">Control ranges here are stand-ins. In the app Sotto reads the plugin\'s own controls, and saves its complete state (including what LEARN has learnt) in this profile.</p>' : ''}
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn sm" data-act="odup">Duplicate profile</button>${UI.confirmDel ? `<span class="confirm">Delete ${esc(o.name)}? <button class="btn sm danger" data-act="odelok">Delete</button><button class="btn sm" data-act="mdelno">Keep</button></span>` : '<button class="btn sm danger" data-act="odel">Delete profile</button>'}</div>
+    </div>`;
+    return box('Operators', lede, `<div class="medit">${list}${editor}</div>`);
+  }
+  function secPlugins() {
+    const used = id => P.operators.filter(o => o.ins.plugin === id).map(o => o.name).join(', ') || '–';
+    return box('Plugins', 'Plugins Sotto found on this computer. This list is simulated; the app scans the VST3 folders (and Audio Units on a Mac) when it starts.',
+      `<div class="scroll"><table class="t"><thead><tr><th>Plugin</th><th>Type</th><th>Format</th><th>Latency</th><th>Used by</th><th>Licence</th></tr></thead><tbody>${Object.entries(PLUGINS).map(([id, x]) => `<tr><td><b>${esc(x.vendor)} ${esc(x.name)}</b></td><td>${esc(x.kind)}</td><td class="n">${esc(x.fmt)}</td><td>${esc(x.latTxt)}</td><td>${esc(used(id))}</td><td>iLok</td></tr>`).join('')}</tbody></table></div>
+      <div style="margin-top:10px"><button class="btn sm" data-act="rescan">Rescan plugins</button></div>`) +
+      box('How Sotto hosts a plugin', '', `<ul class="rules">
+        <li>One insert per operator profile, after Sotto's own processing and before the output trim.</li>
+        <li>Off means bypassed, not unloaded. The plugin keeps running, so switching it on is instant and click-free and it doesn't have to re-learn the noise.</li>
+        <li>The bypassed path is delayed by the plugin's latency, so a listener hears no timing change when you switch.</li>
+        <li>Each talker gets its own mono instance at the project sample rate.</li>
+        <li>The per-talker watchdog checks the output after the plugin. If the plugin stalls or returns invalid audio, only that talker drops to dry until re-armed.</li>
+        <li>If a plugin crashes Sotto, the frame falls back to dry within the VOX hold, and Sotto restarts disarmed.</li>
+        <li>New plugins are scanned in a separate helper process, so one that crashes on load can't stop Sotto starting.</li>
+        <li>Licences stay with the maker. CEDAR uses iLok: use a physical iLok on the show laptop, because iLok Cloud needs an internet connection.</li>
+      </ul>`);
+  }
+  function renderSet() {
+    renderRail();
+    const f = { project: secProject, channels: secChannels, processing: secProcessing, engine: secEngine, riedel: secRiedel, macros: secMacros, operators: secOperators, plugins: secPlugins }[UI.sec];
+    const y = window.scrollY, ae = document.activeElement && document.activeElement.id;
+    $('#setBody').innerHTML = (APP ? appNote(UI.sec) : '') + f();
+    if (ae && document.getElementById(ae)) document.getElementById(ae).focus({ preventScroll: true });
+    window.scrollTo(0, y);
+  }
+  function setPath(obj, path, v) {
+    const ks = path.split('.'); let o = obj;
+    for (let i = 0; i < ks.length - 1; i++) o = o[ks[i]];
+    o[ks[ks.length - 1]] = v;
+  }
+  function assignOp(opId, chIdx) {
+    P.ch.forEach((c, k) => { if (opId && c.op === opId) c.op = null; });
+    if (chIdx !== null && chIdx >= 0) { P.ch[chIdx].op = opId; if (opId) P.ch[chIdx].used = true; }
+    const o = opById(opId);
+    if (o) log(chIdx !== null && chIdx >= 0 ? `${o.name} moved to CH ${pad(chIdx + 1)}` : `${o.name} taken off its channel`, 'settings');
+    save(); buildMain(); renderSet();
+  }
+  function bindEl(el, rerender) {
+    if (el.dataset.b === '_newstep') { UI.newStep = el.value; return; }
+    const chop = /^ch\.(\d+)\.op$/.exec(el.dataset.b);
+    if (chop) { assignOp(el.value || null, +chop[1]); return; }
+    let v = el.type === 'checkbox' ? el.checked : el.value;
+    if (el.dataset.t === 'n') v = +v;
+    if (v === 'true') v = true; else if (v === 'false') v = false;
+    setPath(P, el.dataset.b, v);
+    P.count = clamp(Math.round(+P.count || 1), 1, 60);
+    if (el.type === 'range') { const o = el.parentElement.querySelector('output'); if (o) o.textContent = `${v} ${o.textContent.split(' ').pop()}`; }
+    if (el.dataset.b.startsWith('engine')) UI.check = null;
+    if (/^operators\.\d+\.ins\.plugin$/.test(el.dataset.b)) { const o = P.operators[+el.dataset.b.split('.')[1]]; if (!v) o.ins.on = false; else if (!o.ins.states[v]) o.ins.states[v] = pd(v); }
+    save(); buildMain();
+    if (rerender) renderSet(); else renderRail();
+  }
+  $('#setBody').addEventListener('input', e => { const el = e.target.closest('[data-b]'); if (el && (el.type === 'text' || el.tagName === 'TEXTAREA' || el.type === 'range')) bindEl(el, false); });
+  $('#setBody').addEventListener('change', e => {
+    if (e.target.id === 'f-op-ch') { assignOp(UI.op, e.target.value === '' ? null : +e.target.value); return; }
+    const el = e.target.closest('[data-b]'); if (!el) return; bindEl(el, !(el.type === 'text' || el.tagName === 'TEXTAREA')); });
+  $('#setBody').addEventListener('click', e => {
+    const b = e.target.closest('[data-act]'); if (!b) return;
+    const a = b.dataset.act, v = b.dataset.v, m = P.macros.find(x => x.id === UI.macro);
+    switch (a) {
+      case 'reset': UI.confirmReset = true; break;
+      case 'resetno': UI.confirmReset = false; break;
+      case 'resetok': P = defaults(); UI.confirmReset = false; UI.macro = 'dry'; save(); buildMain(); toast('Settings reset to the example project'); break;
+      case 'count': P.count = +v; break;
+      case 'mode': P.proc.mode = v; break;
+      case 'driver': P.engine.driver = v; if (!dev().drivers.includes(v)) P.engine.device = 'dvs'; UI.check = null; break;
+      case 'buffer': P.engine.buffer = +v; UI.check = null; break;
+      case 'check': {
+        const d = dev(), e2 = P.engine, ok = engineOk();
+        UI.check = [
+          [d ? 'ok' : 'err', `Found <b>${esc(d.name)}</b> through ${DRIVERS[e2.driver]}.`],
+          [ok ? 'ok' : 'err', `${d.in} inputs and ${d.out} outputs. ${ok ? 'Channels 61 to 64 are there.' : 'Sotto needs 64 of each.'}`],
+          ['ok', `Running at ${e2.rate / 1000} kHz, buffer ${e2.buffer} samples (${(e2.buffer / (e2.rate / 1000)).toFixed(2)} ms).`],
+          [ok ? 'ok' : 'err', ok ? 'PROBE sent on OUT 62 came back on IN 61 in 8 ms.' : 'PROBE could not be sent: no output 62.'],
+          [ok ? 'ok' : 'warn', ok ? `PGM present on IN 62 at ${Math.round(S.pgm)} dBFS.` : 'No input 62, so no PGM reference.'],
+          ['ok', 'Microphone permission granted.'],
+        ];
+        log(`Device check: ${ok ? 'passed' : 'failed'}`, 'settings'); break;
+      }
+      case 'rrcs': UI.rrcsTest = rrcsUp()
+        ? [['ok', `GetAlive answered from ${esc(P.rrcs.host)}:${P.rrcs.port} in 6 ms.`], ['ok', `Found logic sources ${esc(P.rrcs.armed)}, ${esc(P.rrcs.armReq)} and ${esc(P.rrcs.cleanOk)}.`]]
+        : [['err', `No answer from ${esc(P.rrcs.host)}:${P.rrcs.port}. Check the address and that RRCS is running.`]]; break;
+      case 'msel': UI.macro = v; UI.confirmDel = false; break;
+      case 'mnew': { const id = 'm' + Date.now().toString(36); P.macros.push({ id, name: `Macro ${P.macros.length + 1}`, style: 'neutral', steps: [] }); UI.macro = id; break; }
+      case 'mreset': { const d = defaultMacros(); d.forEach(x => { const k = P.macros.findIndex(y => y.id === x.id); if (k >= 0) P.macros[k] = x; else P.macros.unshift(x); }); UI.macro = 'dry'; toast('Built-in macros restored'); break; }
+      case 'mstyle': if (m) m.style = v; break;
+      case 'mdel': UI.confirmDel = true; break;
+      case 'mdelno': UI.confirmDel = false; break;
+      case 'mdelok': P.macros = P.macros.filter(x => x !== m); UI.confirmDel = false; UI.macro = P.macros[0] ? P.macros[0].id : ''; break;
+      case 'sup': if (m) { const j = +v; [m.steps[j - 1], m.steps[j]] = [m.steps[j], m.steps[j - 1]]; } break;
+      case 'sdown': if (m) { const j = +v; [m.steps[j + 1], m.steps[j]] = [m.steps[j], m.steps[j + 1]]; } break;
+      case 'sdel': if (m) m.steps.splice(+v, 1); break;
+      case 'osel': UI.op = v; UI.confirmDel = false; break;
+      case 'onew': { const id = 'op' + Date.now().toString(36); P.operators.push({ id, name: `Operator ${P.operators.length + 1}`, mode: 'default', trim: 0, ins: { plugin: '', on: false, states: {} } }); UI.op = id; break; }
+      case 'odup': { const o = opById(UI.op); if (o) { const c = JSON.parse(JSON.stringify(o)); c.id = 'op' + Date.now().toString(36); c.name = o.name + ' (copy)'; P.operators.push(c); UI.op = c.id; } break; }
+      case 'odel': UI.confirmDel = true; break;
+      case 'odelok': { const id = UI.op; P.operators = P.operators.filter(o => o.id !== id); P.ch.forEach(c => { if (c.op === id) c.op = null; }); UI.confirmDel = false; UI.op = P.operators[0] ? P.operators[0].id : ''; break; }
+      case 'oins': { const o = opById(UI.op); if (o && o.ins.plugin) { o.ins.on = v === '1'; log(`Insert ${PLUGINS[o.ins.plugin].name} ${o.ins.on ? 'on' : 'off'} for ${o.name}`, 'settings'); } break; }
+      case 'odef': { const o = opById(UI.op); if (o && o.ins.plugin) o.ins.states[o.ins.plugin] = pd(o.ins.plugin); break; }
+      case 'owin': { const o = opById(UI.op); toast(`In the app this opens ${o ? PLUGINS[o.ins.plugin].vendor : 'the maker'}'s own plugin window on the laptop.`); break; }
+      case 'rescan': toast('In the app this rescans the VST3 and AU folders.'); break;
+      case 'sadd': if (m) { const t = UI.newStep || 'wait'; m.steps.push({ t, ...STEPS[t].d }); } break;
+    }
+    save(); buildMain(); renderSet();
+  });
+
+  // ------------------------------------------------------------ connected to the Sotto Bench app
+  // When the app serves this page, its fail-safe core is the source of truth: the simulation
+  // stops, the page shows the app's state, and every button sends a command to the app.
+  let APP = null, appMisses = 0;
+  const api = (path, body) => fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : { cache: 'no-store' }).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
+  const appCmd = body => api('/cmd', { source: 'console', ...body }).catch(() => ({ ok: false, error: 'Sotto Bench is not answering' }));
+  function soloChanged() {
+    if (APP) appCmd({ cmd: 'solo', ids: [...S.solo], mode: P.phones.mode, level_db: P.phones.level, dim: S.dim, dim_db: P.phones.dim });
+  }
+  const EVENT_WORDS = { armed: 'Armed', disarmed: 'Disarmed', arm_refused: 'Arm refused', talker_armed: 'Re-armed', talker_tripped: 'Tripped', fault_injected: 'Fault', fault_ended: 'Fault ended', faults_cleared: 'Faults cleared', started: 'Sotto Bench started', stopped: 'Stopped', recording_started: 'Recording to', recording_stopped: 'Recording stopped', rrcs_armed_set: 'RRCS', rrcs_error: 'RRCS problem', rrcs_set: 'RRCS', callback_error: 'Audio error', mark: 'Mark', solo: 'Phones bus' };
+  function describe(kind, detail) {
+    const w = EVENT_WORDS[kind] || sentence(String(kind).replace(/_/g, ' ')).replace(/\.$/, '');
+    return detail ? `${w}: ${detail}` : w;
+  }
+  function applyState(st) {
+    APP = st; S.alive = true; S.t = st.t * 1000;
+    S.armed = !!st.armed;
+    (st.talkers || []).forEach((tk, i) => { S.chArmed[i] = !!tk.armed; });
+    S.greenSince = st.health === 'all green' ? S.t - st.green_for_s * 1000 : null;
+    S.reason = st.reason ? sentence(st.reason) : 'Started disarmed.';
+    S.hbSent = !!st.heartbeat_on;
+    const pr = st.probes || [];
+    S.probeMissing = !pr.length ? Infinity : pr.every(x => x.ok) ? 8 : Math.max(...pr.map(x => x.missing_ms == null ? Infinity : x.missing_ms));
+    S.frameKnown = !!st.frame;
+    if (st.frame) { S.cleanOk = !!st.frame.clean_ok; S.armedLS = !!st.frame.armed; S.vox = !!st.frame.clean_ok; }
+    const f = st.faults || [];
+    S.outputsLive = !f.includes('silence_all'); S.muted = f.includes('mute_returns'); S.frozen = false;
+    (st.levels_in || []).forEach((v, k) => { S.lv['i' + (k + 1)] = v; });
+    (st.levels_out || []).forEach((v, k) => { S.lv['o' + (k + 1)] = v; });
+    const ev = (st.events || []).slice().reverse().map(r => [r[1], describe(r[2], r[3]), r[4]]);
+    if (ev.length !== S.log.length || (ev[0] && S.log[0] && ev[0].join() !== S.log[0].join())) { S.log = ev; logDirty = true; }
+    tickMacro();
+  }
+  async function poll() {
+    try { applyState(await api('/api/state')); appMisses = 0; }
+    catch (e) { if (++appMisses > 4) { S.alive = false; S.armed = false; S.reason = 'Sotto Bench is not answering.'; } }
+  }
+  function enterApp(st) {
+    APP = st;
+    document.querySelectorAll('[data-preview-only]').forEach(el => { el.hidden = true; });
+    document.querySelectorAll('[data-app-only]').forEach(el => { el.hidden = false; });
+    S = fresh(); S.log = []; logDirty = true;
+    const n = (st.talkers || []).length || 1;
+    P.count = n;
+    st.talkers.forEach((tk, i) => { P.ch[i].name = tk.name; P.ch[i].used = true; });
+    buildMain(); buildPhones();
+    applyState(st);
+    soloChanged();                                     // solos always start empty
+    setInterval(poll, 150);
+    toast(st.engine && st.engine.simulate ? 'Connected to Sotto Bench (simulated frame)' : 'Connected to Sotto Bench');
+  }
+  $('#quitBtn').onclick = async () => {
+    try { await api('/quit', {}); } catch (e) {}
+    document.body.innerHTML = '<p style="padding:24px;font:15px var(--f-body)">Sotto Bench has quit. You can close this tab.</p>';
+  };
+
+  // ------------------------------------------------------------ start
+  const ro = new ResizeObserver(() => document.documentElement.style.setProperty('--hdrH', $('#top').offsetHeight + 'px'));
+  ro.observe($('#top'));
+  buildScale();
+  S = fresh(); buildMain();
+  log('Sotto started: disarmed', 'auto');
+  // Example state on load: start, run Restore all, then a few seconds of a clean show.
+  for (let i = 0; i < 150; i++) step();
+  runMacro('restore');
+  for (let i = 0; i < 900; i++) step();
+  try { if (localStorage.getItem('sotto.console.tab') === 'set') showTab('set'); } catch (e) {}
+  let last = performance.now(), acc = 0;
+  function frame(now) {
+    acc += Math.min(250, now - last); last = now;
+    while (acc >= DT) { if (!APP) step(); acc -= DT; }
+    render(now);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+  fetch('/api/state', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(st => { if (st && typeof st.armed === 'boolean' && Array.isArray(st.talkers)) enterApp(st); }).catch(() => {});
+})();
 </script>
-</body>
-</html>

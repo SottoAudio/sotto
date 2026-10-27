@@ -21,7 +21,7 @@ import numpy as np
 
 class SimRiedel:
     def __init__(self, cfg, fs=48000, net_ms=4.0, vox_hold_ms=400.0, vox_on_dbfs=-40.0,
-                 logic_ms=20.0, seed=0):
+                 logic_ms=20.0, seed=0, model_armed=False):
         self.cfg = cfg
         self.fs = fs
         self.delay = int(net_ms * fs / 1000)
@@ -38,6 +38,11 @@ class SimRiedel:
         self.out_hist = np.zeros((self.delay + 4096, n_out))
         self.n_out = n_out
         self.lp = 0.0
+        self.pgm_lp = 0.0
+        # Design D: listeners hear clean only while CLEAN_OK *and* the ARMED latch are on. ARMED is
+        # set over RRCS when the app arms and released by the frame's logic when CLEAN_OK drops.
+        self.model_armed = model_armed
+        self.armed = False
 
     def _mic(self, frames, gain):
         w = self.rng.standard_normal(frames) * gain
@@ -47,6 +52,17 @@ class SimRiedel:
             self.lp = a * self.lp + (1 - a) * w[i]
             y[i] = self.lp * 6.0
         return y
+
+    def set_logic(self, name, on):
+        """What an RRCS SetLogicSourceState does to the simulated frame."""
+        if name.upper() == "ARMED":
+            self.armed = bool(on)
+            return True
+        return False
+
+    def frame_state(self):
+        return {"clean_ok": bool(self.clean_ok), "armed": bool(self.armed) if self.model_armed else bool(self.clean_ok),
+                "source": "simulated"}
 
     def make_input(self, frames, n_in):
         """Builds the app's input block from the frame's point of view."""
@@ -72,9 +88,20 @@ class SimRiedel:
         if self.pending and self.t >= self.pending[0]:
             self.clean_ok = self.pending[1]
             self.pending = None
+            if not self.clean_ok:
+                self.armed = False                    # logic releases the ARMED latch
+        if getattr(cfg, "pgm_in", None) is not None and cfg.pgm_in < n_in:
+            w = self.rng.standard_normal(frames) * 0.2
+            env = 0.6 + 0.4 * np.sin(2 * np.pi * 0.5 * (self.t + np.arange(frames) / self.fs))
+            y = np.empty(frames)
+            for i in range(frames):
+                self.pgm_lp = 0.9 * self.pgm_lp + 0.1 * w[i]
+                y[i] = self.pgm_lp * 2.0 * env[i]
+            x[:, cfg.pgm_in] = y
         if cfg.listen_in is not None:
             clean_ret = past[:, cfg.talker_out[0]]
-            x[:, cfg.listen_in] = clean_ret if self.clean_ok else mics[0]
+            clean_now = self.clean_ok and (self.armed or not self.model_armed)
+            x[:, cfg.listen_in] = clean_ret if clean_now else mics[0]
         self.t += frames / self.fs
         return x.astype(np.float32)
 

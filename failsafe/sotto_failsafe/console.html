@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sotto Fail-safe Bench</title>
+<style>
+  :root {
+    --bg: #0e1012; --panel: #16191c; --panel2: #1d2125; --line: #2a2f35;
+    --text: #e9ebee; --muted: #9aa3ad; --accent: #4fb3ff;
+    --ok: #3ccf7a; --warn: #f2b84b; --bad: #ff5d5d; --meter-bg: #0a0c0e;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f4f5f7; --panel: #fff; --panel2: #f0f2f4; --line: #d9dde2;
+      --text: #15181b; --muted: #5d6670; --accent: #0a74c9;
+      --ok: #138a4a; --warn: #a86b00; --bad: #c62828; --meter-bg: #e6e9ec;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { overflow-x: hidden; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 12px 16px;
+           border-bottom: 1px solid var(--line); background: var(--panel); }
+  h1 { font-size: 17px; margin: 0 10px 0 0; font-weight: 650; }
+  .chip { padding: 3px 9px; border-radius: 999px; font-size: 12.5px; background: var(--panel2);
+          border: 1px solid var(--line); color: var(--muted); white-space: normal; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 14px; padding: 14px 16px 30px; }
+  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  .panel + .panel { margin-top: 14px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; font-weight: 650; }
+  .banner { border-radius: 10px; padding: 16px; display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: space-between; }
+  .banner.armed { background: color-mix(in srgb, var(--ok) 16%, var(--panel)); border: 2px solid var(--ok); }
+  .banner.disarmed { background: color-mix(in srgb, var(--bad) 14%, var(--panel)); border: 2px solid var(--bad); }
+  .big { font-size: 26px; font-weight: 750; letter-spacing: .02em; }
+  .sub { color: var(--muted); font-size: 13.5px; margin-top: 2px; }
+  button { font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--line);
+           background: var(--panel2); color: var(--text); padding: 9px 14px; font-weight: 600; }
+  button:hover:not(:disabled) { filter: brightness(1.15); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.arm { background: var(--ok); border-color: var(--ok); color: #fff; padding: 12px 20px; font-size: 16px; }
+  button.disarm { background: var(--bad); border-color: var(--bad); color: #fff; }
+  button.danger { border-color: var(--bad); color: var(--bad); }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .talkers { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+  .talker { background: var(--panel2); border-radius: 8px; padding: 12px; border-left: 4px solid var(--line); }
+  .talker.clean { border-left-color: var(--ok); }
+  .talker.dry { border-left-color: var(--bad); }
+  .talker .name { font-weight: 650; }
+  .talker .state { font-size: 12.5px; color: var(--muted); margin: 2px 0 8px; }
+  .bar { height: 10px; background: var(--meter-bg); border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--ok); transition: width .12s linear; }
+  .bar > i.hot { background: var(--warn); } .bar > i.clip { background: var(--bad); }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13.5px; }
+  .kv span:nth-child(odd) { color: var(--muted); }
+  .good { color: var(--ok); font-weight: 600; } .badtxt { color: var(--bad); font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  td, th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  td.t { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .tablewrap { overflow-x: auto; }
+  input[type=text] { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 8px 9px; font: inherit; flex: 1; min-width: 0; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .offline { padding: 16px; color: var(--bad); font-weight: 600; display: none; }
+  .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--panel2);
+           border: 1px solid var(--line); padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; max-width: calc(100% - 32px); }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Sotto · fail-safe bench</h1>
+  <span class="chip" id="take">…</span>
+  <span class="chip" id="lat">…</span>
+  <span class="chip" id="xr">Dropouts 0</span>
+  <span class="chip" id="rrcs">RRCS: off</span>
+</header>
+<div class="offline" id="offline">Lost contact with the bench tool. If it crashed (or you pressed Crash), the Riedel should now be on dry. Restart it: it comes back disarmed.</div>
+<main>
+  <section>
+    <div class="banner disarmed" id="banner">
+      <div>
+        <div class="big" id="bigstate">DISARMED</div>
+        <div class="sub" id="reason">…</div>
+        <div class="sub" id="health">…</div>
+      </div>
+      <div class="row">
+        <button class="arm" id="armBtn" disabled>Arm clean</button>
+        <button class="disarm" id="disarmBtn">Disarm</button>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:14px">
+      <h2>Talkers</h2>
+      <div class="talkers" id="talkers"></div>
+      <p class="muted">Every return from the laptop carries a quiet marker tone, so you can hear (and the analysis can see) when a listener is on the laptop path. A tripped talker stays on dry until it is re-armed.</p>
+    </div>
+    <div class="panel">
+      <h2>Inject a fault</h2>
+      <div class="row">
+        <button data-fault="stop_heartbeat">Stop heartbeat</button>
+        <button data-fault="silence_all" data-seconds="3">Silence all outputs 3 s</button>
+        <button data-fault="mute_returns" data-seconds="3">Mute talker returns 3 s</button>
+        <button data-fault="freeze" data-ms="400">Freeze audio 400 ms</button>
+        <button class="danger" id="crashBtn">Crash the app</button>
+        <button id="clearBtn">Clear faults</button>
+      </div>
+      <p class="muted" style="margin-bottom:0">
+        <b>Stop heartbeat</b>: an app-level fault; the Riedel should drop to dry after the VOX hold time.
+        <b>Silence all outputs</b>: what the Riedel sees if the laptop, soundcard or network dies; PROBE is lost too, so the app disarms.
+        <b>Mute talker returns</b>: heartbeat stays on but voices vanish; shows what the per-talker watchdog must catch.
+        <b>Freeze</b>: misses audio deadlines; shows what the soundcard does when the app hangs.
+        <b>Crash</b>: the process exits; restart it and check it comes back disarmed.
+      </p>
+    </div>
+    <div class="panel">
+      <h2>Event log</h2>
+      <div class="tablewrap"><table><thead><tr><th>Audio time</th><th>Clock</th><th>Event</th><th>Detail</th><th>From</th></tr></thead><tbody id="events"></tbody></table></div>
+    </div>
+  </section>
+  <aside>
+    <div class="panel">
+      <h2>Checks</h2>
+      <div class="kv" id="checks"></div>
+    </div>
+    <div class="panel">
+      <h2>Recording and marks</h2>
+      <button id="recBtn" style="width:100%">Start recording</button>
+      <p class="muted" id="recInfo"></p>
+      <div class="row"><input type="text" id="note" placeholder="Note, Enter to mark"><button id="markBtn">Mark</button></div>
+    </div>
+    <div class="panel">
+      <h2>Headphones</h2>
+      <div class="row" id="monRow"></div>
+      <p class="muted" style="margin-bottom:0">Only if started with --monitor.</p>
+    </div>
+    <div class="panel">
+      <h2>Companion</h2>
+      <p class="muted" style="margin:0">POST <code>/api/arm</code> (optional <code>{"talker": 1}</code>), POST <code>/api/disarm</code>, GET <code>/api/state</code>. Every arm is checked against the same 5 s green rule and logged with where it came from.</p>
+    </div>
+  </aside>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+const $ = s => document.querySelector(s);
+let S = null, built = false, crashArmed = false;
+function esc(v) { return String(v).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c])); }
+function toast(t) { const el = $('#toast'); el.textContent = t; el.classList.add('show'); clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('show'), 2200); }
+async function post(c) {
+  try {
+    const r = await fetch('/cmd', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(Object.assign({source: 'console'}, c))});
+    const j = await r.json(); if (j.message) toast(j.message); else if (!j.ok && j.error) toast(j.error); return j;
+  } catch (e) { toast('No response from the bench tool'); }
+}
+function meter(el, db) { const p = Math.max(0, Math.min(100, (db + 60) / 60 * 100)); el.style.width = p + '%'; el.classList.toggle('hot', db > -12 && db <= -3); el.classList.toggle('clip', db > -3); }
+function build(st) {
+  const w = $('#talkers'); w.innerHTML = '';
+  st.talkers.forEach((t, i) => {
+    const d = document.createElement('div'); d.className = 'talker'; d.dataset.i = i;
+    d.innerHTML = `<div class="name">${i + 1} · ${esc(t.name)}</div><div class="state"></div><div class="bar"><i></i></div>
+      <div class="row"><button data-a="arm">Arm</button><button data-a="trip">Trip</button></div>`;
+    d.querySelector('[data-a=arm]').onclick = () => post({cmd: 'arm', talker: i});
+    d.querySelector('[data-a=trip]').onclick = () => post({cmd: 'trip', talker: i});
+    w.appendChild(d);
+  });
+  const m = $('#monRow'); m.innerHTML = '';
+  const opts = [['listen', 'Listener feed']].concat(st.talkers.map((t, i) => [String(i), t.name + ' return']));
+  opts.forEach(([v, label]) => { const b = document.createElement('button'); b.textContent = label; b.dataset.v = v; b.onclick = () => post({cmd: 'monitor', source_ch: v}); m.appendChild(b); });
+  built = true;
+}
+function render(st) {
+  if (!built) build(st);
+  $('#take').textContent = 'Take ' + st.take;
+  $('#lat').textContent = st.latency_note || '…';
+  $('#xr').textContent = 'Dropouts ' + st.xruns;
+  const r = st.rrcs; $('#rrcs').textContent = !r.configured ? 'RRCS: not used' : (r.ok ? 'RRCS: connected' : 'RRCS: not reachable');
+  const b = $('#banner'); b.className = 'banner ' + (st.armed ? 'armed' : 'disarmed');
+  $('#bigstate').textContent = st.armed ? 'ARMED · HEARTBEAT ON' : 'DISARMED · HEARTBEAT OFF';
+  $('#reason').textContent = st.armed ? 'Listeners can hear clean.' : 'Riedel holds everyone on dry. Last reason: ' + (st.reason || '–');
+  $('#health').textContent = 'Checks: ' + st.health + (st.health === 'all green' ? ` for ${st.green_for_s.toFixed(1)} s` : '');
+  const a = $('#armBtn'); a.disabled = st.armed || !st.can_arm;
+  a.textContent = st.armed ? 'Armed' : (st.can_arm ? 'Arm clean' : (st.health === 'all green' ? `Arm in ${(st.arm_hold_s - st.green_for_s).toFixed(1)} s` : 'Arm (checks not green)'));
+  st.talkers.forEach((t, i) => {
+    const d = document.querySelector(`.talker[data-i="${i}"]`); if (!d) return;
+    d.className = 'talker ' + (t.armed ? 'clean' : 'dry');
+    d.querySelector('.state').textContent = t.armed ? 'Armed: clean' : 'Dry: needs re-arming';
+    meter(d.querySelector('.bar i'), t.level_db);
+  });
+  const c = $('#checks'); c.innerHTML = '';
+  const add = (k, v, ok) => { const a = document.createElement('span'); a.textContent = k; const b = document.createElement('span'); b.textContent = v; if (ok !== undefined) b.className = ok ? 'good' : 'badtxt'; c.append(a, b); };
+  st.probes.forEach((p, i) => add(`PROBE ${i + 1}`, p.ok ? 'returning' : (p.missing_ms == null ? 'never seen' : `missing ${p.missing_ms} ms`), p.ok));
+  add('Heartbeat', st.heartbeat_on ? 'sending' : 'off', st.heartbeat_on);
+  if (st.listen_db !== null) add('Listener feed', st.listen_db.toFixed(0) + ' dBFS');
+  add('Faults active', st.faults.length ? st.faults.join(', ') : 'none', !st.faults.length);
+  if (st.rrcs.configured) add('RRCS ARMED', st.rrcs.armed_state === null || st.rrcs.armed_state === undefined ? '–' : (st.rrcs.armed_state ? 'on' : 'off'));
+  $('#recBtn').textContent = st.recording ? 'Stop recording' : 'Start recording';
+  $('#recInfo').textContent = 'Saved in ' + st.folder + (st.rec_dropped ? ` · dropped ${st.rec_dropped} blocks` : '');
+  document.querySelectorAll('#monRow button').forEach(b => b.style.outline = (String(st.monitor) === b.dataset.v ? '2px solid var(--accent)' : 'none'));
+  $('#events').innerHTML = st.events.slice().reverse().map(e => `<tr><td class="t">${esc(e[0])}</td><td class="t">${esc(e[1])}</td><td>${esc(e[2])}</td><td>${esc(e[3])}</td><td>${esc(e[4])}</td></tr>`).join('');
+}
+$('#armBtn').onclick = () => post({cmd: 'arm'});
+$('#disarmBtn').onclick = () => post({cmd: 'disarm'});
+document.querySelectorAll('[data-fault]').forEach(b => b.onclick = () => post({cmd: 'fault', name: b.dataset.fault, seconds: b.dataset.seconds ? +b.dataset.seconds : undefined, ms: b.dataset.ms ? +b.dataset.ms : undefined}));
+$('#crashBtn').onclick = () => {
+  if (!crashArmed) { crashArmed = true; $('#crashBtn').textContent = 'Click again to crash'; setTimeout(() => { crashArmed = false; $('#crashBtn').textContent = 'Crash the app'; }, 3000); return; }
+  post({cmd: 'fault', name: 'crash'});
+};
+$('#clearBtn').onclick = () => post({cmd: 'clear_faults'});
+$('#recBtn').onclick = () => post({cmd: 'rec', on: !(S && S.recording)});
+function mark() { post({cmd: 'mark', note: $('#note').value}).then(() => { toast('Marked'); $('#note').value = ''; }); }
+$('#markBtn').onclick = mark;
+$('#note').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); mark(); e.target.blur(); } });
+async function tick() {
+  try { const r = await fetch('/state', {cache: 'no-store'}); S = await r.json(); render(S); $('#offline').style.display = 'none'; }
+  catch (e) { $('#offline').style.display = 'block'; }
+  setTimeout(tick, 200);
+}
+tick();
+</script>
+</body>
+</html>

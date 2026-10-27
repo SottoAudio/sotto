@@ -1,0 +1,6 @@
+{
+  "files": ["VENUE_DATE_TAKE.wav"],
+  "talkers": {"caller": 0, "foh_audio": 1, "foh_lx": 2, "backstage": 3, "bolero": 4},
+  "references": {"pa_l": 5, "pa_r": 6, "sub": 7},
+  "segments": {"pa_only": [[30.0, 150.0]], "talk": [[612.4, 615.0]]}
+}

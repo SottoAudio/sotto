@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Generated models (python prototype/tools/get_models.py)
+prototype/models/
+
+# Run outputs
+prototype/recordings/
+prototype/out_*/
+bench_runs/
+failsafe/bench_runs/
+*.zip
+
+# OS
+.DS_Store
+Thumbs.db

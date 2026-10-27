@@ -1,0 +1,46 @@
+{
+  "files": [
+    "demo_scene.wav"
+  ],
+  "talkers": {
+    "caller": 0
+  },
+  "references": {
+    "pa": 1
+  },
+  "_note": "Synthetic stadium scene: computer-voice calls, a made-up band through a PA 70 m away, crowd noise. Hard case: PA bleed as loud as the voice.",
+  "segments": {
+    "pa_only": [
+      [
+        0.5,
+        3.8
+      ]
+    ],
+    "talk": [
+      [
+        4.0,
+        7.6
+      ],
+      [
+        11.02,
+        12.85
+      ],
+      [
+        15.92,
+        19.31
+      ],
+      [
+        22.65,
+        25.74
+      ],
+      [
+        29.27,
+        32.53
+      ],
+      [
+        36.73,
+        39.92
+      ]
+    ]
+  }
+}

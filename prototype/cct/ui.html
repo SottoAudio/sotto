@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice Cleaner Prototype</title>
+<style>
+  :root {
+    --bg: #0f1113; --panel: #171a1d; --panel2: #1e2226; --line: #2a2f35;
+    --text: #e8eaed; --muted: #9aa3ad; --accent: #4fb3ff; --ok: #3ccf7a; --warn: #f2b84b; --bad: #ff5d5d;
+    --meter-bg: #0b0d0f;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f4f5f7; --panel: #ffffff; --panel2: #f0f2f4; --line: #d9dde2;
+      --text: #15181b; --muted: #5d6670; --accent: #0a74c9; --ok: #138a4a; --warn: #a86b00; --bad: #c62828;
+      --meter-bg: #e6e9ec;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { overflow-x: hidden; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 12px 16px;
+           border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 2; }
+  h1 { font-size: 17px; margin: 0 12px 0 0; font-weight: 650; letter-spacing: .2px; }
+  .chip { padding: 3px 9px; border-radius: 999px; font-size: 12.5px; background: var(--panel2);
+          border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .chip.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+  .chip.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+  .chip.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 50%, transparent); }
+  #lat { white-space: normal; }
+  .shadow { margin-left: auto; font-weight: 600; color: var(--muted); font-size: 12.5px; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 14px; padding: 14px 16px 30px; }
+  @media (max-width: 860px) { main { grid-template-columns: minmax(0, 1fr); } .shadow { margin-left: 0; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  .panel + .panel { margin-top: 14px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+              margin: 0 0 10px; font-weight: 650; display: flex; align-items: center; gap: 8px; }
+  .talker h2 { font-size: 16px; text-transform: none; letter-spacing: 0; color: var(--text); }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; border-right: 1px solid var(--line); background: var(--panel2); color: var(--text);
+                padding: 10px 16px; font: inherit; font-weight: 600; cursor: pointer; min-width: 92px; }
+  .seg button:last-child { border-right: 0; }
+  .seg button.on { background: var(--accent); color: #fff; }
+  .seg button:disabled { opacity: .4; cursor: not-allowed; }
+  button.plain { border: 1px solid var(--line); background: var(--panel2); color: var(--text); border-radius: 7px;
+                 padding: 7px 12px; font: inherit; cursor: pointer; }
+  button.plain:hover, .seg button:hover:not(.on):not(:disabled) { filter: brightness(1.15); }
+  button.rec { font-weight: 700; padding: 10px 14px; width: 100%; }
+  button.rec.on { background: var(--bad); border-color: var(--bad); color: #fff; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
+  .meter { display: grid; grid-template-columns: 74px minmax(0, 1fr) 64px; gap: 8px; align-items: center; margin-top: 8px; }
+  .meter .lab { color: var(--muted); font-size: 13px; }
+  .meter .val { text-align: right; font-variant-numeric: tabular-nums; font-size: 13px; }
+  .bar { height: 12px; background: var(--meter-bg); border-radius: 3px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--ok); transition: width .12s linear; }
+  .bar > i.hot { background: var(--warn); } .bar > i.clip { background: var(--bad); }
+  .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+  .stat { background: var(--panel2); border-radius: 8px; padding: 9px 10px; }
+  .stat b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; font-weight: 650; }
+  .stat span { color: var(--muted); font-size: 12px; }
+  .delay { margin-top: 12px; background: var(--panel2); border-radius: 8px; padding: 10px; }
+  .delay .big { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  input[type=text], input[type=number], select { background: var(--bg); color: var(--text); border: 1px solid var(--line);
+         border-radius: 7px; padding: 7px 9px; font: inherit; min-width: 0; }
+  input[type=number] { width: 90px; }
+  .fault { color: var(--bad); font-weight: 600; font-size: 13px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .kbd { font: 12px ui-monospace, Menlo, Consolas, monospace; border: 1px solid var(--line); border-bottom-width: 2px;
+         border-radius: 4px; padding: 0 5px; color: var(--muted); }
+  .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--panel2);
+           border: 1px solid var(--line); padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; }
+  .toast.show { opacity: 1; }
+  .offline { padding: 20px; color: var(--bad); font-weight: 600; display: none; }
+  @media (max-width: 520px) { .stats { grid-template-columns: 1fr 1fr; } .seg button { min-width: 0; padding: 10px 12px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Comms voice cleaner · prototype</h1>
+  <span class="chip" id="src">…</span>
+  <span class="chip" id="cpu">CPU …</span>
+  <span class="chip" id="xr">Dropouts 0</span>
+  <span class="chip" id="lat">…</span>
+  <span class="shadow">Shadow mode: listening copy only, not in the comms path</span>
+</header>
+<div class="offline" id="offline">Lost contact with the app. Is it still running in the terminal?</div>
+<main>
+  <section id="talkers"></section>
+  <aside>
+    <div class="panel">
+      <h2>Headphones</h2>
+      <div class="row" style="margin-top:0">
+        <select id="monTalker" aria-label="Talker to monitor"></select>
+      </div>
+      <div class="row">
+        <div class="seg" id="monSeg">
+          <button data-src="out">Output</button><button data-src="dry">Dry</button><button data-src="split">Split</button>
+        </div>
+      </div>
+      <p class="muted" id="monNote">Split: dry in the left ear, output in the right. <span class="kbd">Space</span> flips Output and Dry.</p>
+    </div>
+    <div class="panel">
+      <h2>PA reference</h2>
+      <div class="meter"><span class="lab">Level</span><div class="bar"><i id="refBar"></i></div><span class="val" id="refVal">–</span></div>
+    </div>
+    <div class="panel">
+      <h2>Recording</h2>
+      <button class="plain rec" id="recBtn">Start recording</button>
+      <p class="muted" id="recInfo">Records each mic, the references and each processed output.</p>
+      <div class="row">
+        <input type="text" id="note" placeholder="Note (optional), Enter to mark" style="flex:1">
+        <button class="plain" id="markBtn">Mark</button>
+      </div>
+      <p class="muted"><span class="kbd">M</span> adds a mark with no note. Marks go to markers.csv for the capture sheet.</p>
+    </div>
+    <div class="panel">
+      <h2>Keys</h2>
+      <p class="muted" style="margin:0"><span class="kbd">1</span> Dry · <span class="kbd">2</span> Echo only · <span class="kbd">3</span> Clean (for the talker in the headphones)<br>
+      <span class="kbd">Space</span> Output ⇄ Dry · <span class="kbd">S</span> Split · <span class="kbd">M</span> Mark</p>
+    </div>
+  </aside>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+let S = null, built = false;
+
+async function post(c) {
+  try {
+    const r = await fetch('/cmd', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(c)});
+    const j = await r.json();
+    if (!j.ok && j.error) toast(j.error);
+    return j;
+  } catch (e) { toast('No response from the app'); }
+}
+function toast(t) { const el = $('#toast'); el.textContent = t; el.classList.add('show'); clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('show'), 1800); }
+function meter(el, db) { el.style.width = pct(db) + '%'; el.classList.toggle('hot', db > -12 && db <= -3); el.classList.toggle('clip', db > -3); }
+function pct(db) { return Math.max(0, Math.min(100, (db + 60) / 60 * 100)); }
+function fmt(db) { return db <= -99 ? '–∞' : db.toFixed(0) + ' dB'; }
+function hms(s) { s = Math.floor(s); return [s / 3600 | 0, (s / 60 | 0) % 60, s % 60].map(v => String(v).padStart(2, '0')).join(':'); }
+
+function build(st) {
+  const wrap = $('#talkers'); wrap.innerHTML = '';
+  const sel = $('#monTalker'); sel.innerHTML = '';
+  st.talkers.forEach((t, i) => {
+    const p = document.createElement('div');
+    p.className = 'panel talker'; p.dataset.i = i;
+    p.innerHTML = `
+      <h2>${t.name} <span class="fault" data-k="fault"></span></h2>
+      <div class="seg" data-k="mode">
+        <button data-m="dry">Dry</button><button data-m="echo">Echo only</button><button data-m="clean">Clean</button>
+      </div>
+      <div class="meter"><span class="lab">Mic</span><div class="bar"><i data-k="micBar"></i></div><span class="val" data-k="micVal"></span></div>
+      <div class="meter"><span class="lab">Output</span><div class="bar"><i data-k="outBar"></i></div><span class="val" data-k="outVal"></span></div>
+      <div class="stats">
+        <div class="stat"><b data-k="erle">–</b><span>Level drop after canceller</span></div>
+        <div class="stat"><b data-k="snr">–</b><span data-k="snrLab">Speech model</span></div>
+        <div class="stat"><b data-k="resets">0</b><span>Canceller resets</span></div>
+      </div>
+      <div class="delay">
+        <div class="muted">PA delay</div>
+        <div class="big" data-k="delay">–</div>
+        <div class="muted" data-k="delayInfo"></div>
+        <div class="row">
+          <button class="plain" data-a="remeasure">Re-measure</button>
+          <input type="number" step="0.1" min="0" max="1000" placeholder="ms" data-k="dms">
+          <button class="plain" data-a="setdelay">Fix delay</button>
+          <button class="plain" data-a="reset">Reset canceller</button>
+        </div>
+      </div>`;
+    p.querySelectorAll('[data-m]').forEach(b => b.onclick = () => post({cmd: 'mode', talker: i, mode: b.dataset.m}));
+    p.querySelector('[data-a=remeasure]').onclick = () => post({cmd: 'remeasure', talker: i}).then(() => toast('Measuring PA delay'));
+    p.querySelector('[data-a=reset]').onclick = () => post({cmd: 'reset', talker: i}).then(() => toast('Canceller reset'));
+    p.querySelector('[data-a=setdelay]').onclick = () => {
+      const v = p.querySelector('[data-k=dms]').value;
+      if (v === '') return toast('Type a delay in ms first');
+      post({cmd: 'delay', talker: i, ms: v}).then(() => toast('Delay fixed at ' + v + ' ms'));
+    };
+    wrap.appendChild(p);
+    const o = document.createElement('option'); o.value = i; o.textContent = t.name; sel.appendChild(o);
+  });
+  sel.onchange = () => post({cmd: 'monitor', talker: +sel.value});
+  $('#monSeg').querySelectorAll('button').forEach(b => b.onclick = () => post({cmd: 'monitor', source: b.dataset.src}));
+  built = true;
+}
+
+function render(st) {
+  if (!built || $('#talkers').children.length !== st.talkers.length) build(st);
+  $('#src').textContent = st.source === 'live' ? 'Live input' : 'File playback';
+  const cpu = $('#cpu'); cpu.textContent = `CPU ${st.proc_ms.toFixed(1)} of ${st.block_ms.toFixed(0)} ms (worst ${st.proc_ms_max.toFixed(1)})`;
+  cpu.className = 'chip ' + (st.proc_ms_max > 9 ? 'bad' : st.proc_ms > 6 ? 'warn' : 'ok');
+  const xr = $('#xr'); xr.textContent = `Dropouts ${st.xruns}` + (st.callback_errors ? ` · errors ${st.callback_errors}` : '');
+  xr.className = 'chip ' + (st.callback_errors ? 'bad' : st.xruns ? 'warn' : 'ok');
+  if (st.last_error) xr.title = st.last_error;
+  $('#lat').textContent = st.latency_note;
+  st.talkers.forEach((t, i) => {
+    const p = $(`#talkers .talker[data-i="${i}"]`); if (!p) return;
+    const k = n => p.querySelector(`[data-k=${n}]`);
+    p.querySelectorAll('[data-m]').forEach(b => {
+      b.classList.toggle('on', b.dataset.m === t.mode);
+      if (b.dataset.m === 'clean') b.disabled = !t.has_dfn;
+    });
+    meter(k('micBar'), t.mic_db); k('micVal').textContent = fmt(t.mic_db);
+    meter(k('outBar'), t.out_db); k('outVal').textContent = fmt(t.out_db);
+    k('erle').textContent = t.erle_db.toFixed(1) + ' dB';
+    k('snr').textContent = !t.has_dfn ? 'Off' : t.speech_snr_db > 0 ? 'Voice' : 'No voice';
+    k('snrLab').textContent = t.has_dfn ? `Speech model (voice-to-noise ${t.speech_snr_db.toFixed(0)} dB)` : 'Speech model';
+    k('resets').textContent = t.resets;
+    k('fault').textContent = t.fault || '';
+    k('delay').textContent = t.delay_ms == null ? 'not set yet' : `${t.delay_ms} ms  ≈ ${t.delay_m} m`;
+    let info = t.delay_mode === 'manual' ? 'Fixed by hand. Re-measure to go back to automatic.' : `Status: ${t.delay_status}`;
+    if (t.delay_measured_ms != null && t.delay_mode !== 'manual') info += ` · last measured ${t.delay_measured_ms} ms`;
+    k('delayInfo').textContent = info;
+  });
+  const m = st.monitor;
+  $('#monSeg').querySelectorAll('button').forEach(b => { b.classList.toggle('on', b.dataset.src === m.source); b.disabled = !m.available; });
+  if ($('#monTalker').value !== String(m.talker)) $('#monTalker').value = m.talker;
+  if (!m.available) $('#monNote').textContent = 'No headphone outputs set (start with --monitor 3,4).';
+  meter($('#refBar'), st.ref_db); $('#refVal').textContent = fmt(st.ref_db);
+  const r = st.rec, rb = $('#recBtn');
+  rb.textContent = r.on ? `Stop recording  ·  ${hms(r.seconds)}` : 'Start recording';
+  rb.classList.toggle('on', r.on);
+  $('#recInfo').textContent = r.on ? `${r.file || ''}${r.dropped_blocks ? ' · dropped ' + r.dropped_blocks + ' blocks' : ''}`
+                                   : (r.take ? `Last take: ${r.folder}` : 'Records each mic, the references and each processed output.');
+}
+
+$('#recBtn').onclick = () => post({cmd: 'rec', on: !(S && S.rec.on)});
+function mark() {
+  const n = $('#note').value;
+  post({cmd: 'mark', note: n}).then(j => { if (j && j.ok) { toast('Marked at ' + hms(j.t)); $('#note').value = ''; } else if (j) toast('Start recording to add marks'); });
+}
+$('#markBtn').onclick = mark;
+$('#note').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); mark(); e.target.blur(); }
+  else if (e.key === 'Escape') e.target.blur();
+  e.stopPropagation();
+});
+document.addEventListener('keydown', e => {
+  if (!S || e.target.matches('input, select')) return;
+  const t = S.monitor.talker;
+  if (e.key === ' ') { e.preventDefault(); post({cmd: 'monitor', source: S.monitor.source === 'out' ? 'dry' : 'out'}); }
+  else if (e.key === '1') post({cmd: 'mode', talker: t, mode: 'dry'});
+  else if (e.key === '2') post({cmd: 'mode', talker: t, mode: 'echo'});
+  else if (e.key === '3') post({cmd: 'mode', talker: t, mode: 'clean'});
+  else if (e.key === 's' || e.key === 'S') post({cmd: 'monitor', source: 'split'});
+  else if (e.key === 'm' || e.key === 'M') mark();
+});
+
+async function tick() {
+  try {
+    const r = await fetch('/state', {cache: 'no-store'});
+    S = await r.json(); render(S); $('#offline').style.display = 'none';
+  } catch (e) { $('#offline').style.display = 'block'; }
+  setTimeout(tick, 200);
+}
+tick();
+</script>
+</body>
+</html>

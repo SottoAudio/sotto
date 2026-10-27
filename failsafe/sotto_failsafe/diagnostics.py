@@ -410,6 +410,20 @@ def _findings(app_state, sysinfo, devs, crash, speed):
                 if bg_per_talker > 1.3 * ui_per_talker and abs(live_per_talker - bg_per_talker) < abs(live_per_talker - ui_per_talker):
                     f.append("The live processing runs at efficiency-core speed although the speed test reaches "
                              "performance-core speed: macOS is holding the processing thread on the slow cores.")
+        eng = app_state.get("engine") or {}
+        gaps = (app_state.get("callback") or {}).get("gaps") or {}
+        if gaps.get("bunched"):
+            f.append(f"The soundcard delivered {gaps['bunched']} of the last {gaps.get('blocks')} blocks bunched together "
+                     f"(gaps {gaps.get('min_ms')} to {gaps.get('max_ms')} ms). Set a small soundcard buffer (Settings, "
+                     "Audio engine), or 20 ms of processing headroom.")
+        pa = eng.get("pa_latency_ms") or {}
+        if pa.get("in") is not None and pa["in"] + pa["out"] > 30:
+            f.append(f"The soundcard adds {pa['in']} ms in and {pa['out']} ms out. A smaller soundcard buffer should "
+                     "bring that down.")
+        rg = eng.get("regroup") or {}
+        if rg.get("underruns"):
+            f.append(f"The soundcard ran out of audio {rg['underruns']} times with a {eng.get('io_buffer')}-sample buffer: "
+                     "go one size up.")
         if app_state.get("callback_errors"):
             f.append(f"The audio callback raised {app_state['callback_errors']} errors (see the log).")
         if app_state.get("xruns"):
@@ -457,6 +471,8 @@ def build_report(app=None, setup_config=None, run_speed_test=True):
     sec("Computer", sysinfo)
     sec("Audio devices (PortAudio, what Sotto can open)", devs)
     if sys.platform == "darwin":
+        from . import coreaudio
+        sec("Core Audio buffers and latency (frames at the device's rate)", safe(coreaudio.devices))
         sec("Audio devices (Core Audio, system_profiler)", safe(core_audio_report))
     try:
         from .app import config_dir

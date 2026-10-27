@@ -138,6 +138,31 @@ disarmed, because changing it moves every talker's delay.
 The engine logs how evenly blocks arrive every 10 s: gap range, bunched (<3 ms) and late
 (>17 ms). The console shows the same figures next to the setting.
 
+## Soundcard buffer and latency
+
+Asking the soundcard for 480-sample (10 ms) callbacks when its own Core Audio buffer is a different
+size (DVS and most devices use powers of two) makes PortAudio add a buffer on each side to cut the
+stream up. That also delivers the 10 ms pieces in bunches. The first M2 Pro run reported 20 ms in
+and 30 ms out from the soundcard alone.
+
+With `--io-buffer N` (Settings › Audio engine › Soundcard buffer), Sotto opens the soundcard at N
+samples and regroups the audio into its 10 ms blocks itself (`regroup.py`):
+
+- **Even timing.** Callbacks arrive evenly, and the soundcard part of the latency should fall to
+  about N plus the driver latency and safety offset each way.
+- **Added delay.** Regrouping adds 480 − gcd(N, 480) samples, the least that guarantees the
+  soundcard never runs dry: 6.7 ms for 160, 9.3 ms for 128, 5 ms for 240.
+- **The engine is unchanged.** The fail-safe core and the processing still run on whole 10 ms
+  blocks.
+
+160 divides 10 ms evenly, so it's the size to try first. Changing the buffer restarts the engine,
+so Sotto starts again disarmed.
+
+`coreaudio.py` reads what macOS says about each device: its buffer and the sizes it allows, driver
+latency and safety offset each way, stream latency, the rate, and whether another app is using it.
+The console shows it under Audio engine, alongside the delay from mic to return. The diagnostics
+file lists it for every device.
+
 ## Toolkit and licence
 
 MIT licence. The engine will be C++ on permissive libraries: RtAudio or miniaudio for Core Audio

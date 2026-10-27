@@ -1223,13 +1223,42 @@ table.t tr.unused td{color:var(--muted)}
     return row('Switch to', `Every device the Mac can see. Greyed-out devices have fewer than the ${e.n_in} inputs and ${e.n_out} outputs these channel settings need.`,
       `<select id="f-appdev">${opts}</select><button class="btn sm" data-act="devswitch">Switch</button><button class="btn sm" data-act="devrefresh">Look again</button>${confirm}`);
   }
-  async function restartOn(idx, name) {
-    const r = await api('/api/engine', { device: idx }).catch(() => ({ ok: false, error: 'Sotto Bench did not answer' }));
+  const IO_CHOICES = [[0, 'Sotto\'s 10 ms blocks (480), as before'], [512, '512 samples'], [256, '256 samples'], [240, '240 samples'], [160, '160 samples'], [128, '128 samples'], [96, '96 samples'], [64, '64 samples']];
+  function appBufferRow(e) {
+    const cur = e.io_buffer && e.io_buffer !== e.block ? e.io_buffer : 0;
+    const rng = e.coreaudio && e.coreaudio.buffer_range;
+    const opts = IO_CHOICES.map(([v, l]) => {
+      const ok = !v || !rng || (v >= rng[0] && v <= rng[1]);
+      return `<option value="${v}"${String(v) === String(UI.ioPick ?? cur) ? ' selected' : ''}${ok ? '' : ' disabled'}>${l}${v ? ` (${(v / 48).toFixed(1)} ms)` : ''}${ok ? '' : ', not allowed by this soundcard'}</option>`;
+    }).join('');
+    const confirm = UI.ioConfirm
+      ? `<div class="note warn" style="margin-top:8px">Changing the soundcard buffer restarts the audio engine. HEARTBEAT stops, so the frame puts every listener on dry, and Sotto starts again disarmed.
+           <div class="row" style="margin-top:8px"><button class="btn sm" data-act="iogo">Restart with ${UI.ioPick > 0 ? UI.ioPick + ' samples' : '10 ms blocks'}</button><button class="btn sm" data-act="iono">Cancel</button></div></div>` : '';
+    return row('Soundcard buffer', `How much audio the soundcard hands Sotto at a time. Smaller is lower latency and arrives evenly; Sotto regroups it into its 10 ms blocks, which adds ${e.regroup_ms ? e.regroup_ms + ' ms now' : 'up to 10 ms'}. 160 samples (3.3 ms) divides evenly into 10 ms. If the log shows dropouts, go one size up.`,
+      `<select id="f-appio">${opts}</select><button class="btn sm" data-act="ioswitch">Apply</button>${confirm}`);
+  }
+  function latencyRow(e) {
+    const pa = e.pa_latency_ms || {}, pr = (APP && APP.processing) || {};
+    const sotto = (e.regroup_ms || 0) + (pr.latency_ms || 0);
+    if (pa.in == null) return '';
+    const total = pa.in + sotto + pa.out;
+    return row('Delay, mic to return', 'Measured from what the audio driver reports, plus Sotto\'s own delay. Add the Dante latency set in Dante Virtual Soundcard (each way).',
+      `<span class="fixed">${total.toFixed(1)} ms</span><span class="muted">soundcard in ${pa.in} ms + Sotto ${sotto.toFixed(1)} ms (${e.regroup_ms ? `regrouping ${e.regroup_ms} ms, ` : ''}processing ${pr.latency_ms ?? '–'} ms) + soundcard out ${pa.out} ms</span>`);
+  }
+  function coreAudioRow(e) {
+    const c = e.coreaudio;
+    if (!c) return '';
+    const f = (x) => x == null ? '–' : x;
+    return row('Core Audio', 'What macOS itself says about the soundcard while Sotto runs. The buffer is one Core Audio cycle; the driver latency and safety offset are added by the driver and macOS.',
+      `<span class="muted">Buffer ${f(c.buffer_frames)} samples${c.buffer_range ? ` (allowed ${c.buffer_range[0]}–${c.buffer_range[1]})` : ''} · driver latency in ${f(c.latency_frames && c.latency_frames.in)} / out ${f(c.latency_frames && c.latency_frames.out)} · safety offset in ${f(c.safety_frames && c.safety_frames.in)} / out ${f(c.safety_frames && c.safety_frames.out)} samples${c.total_ms ? ` · Core Audio total in ${c.total_ms.in} ms / out ${c.total_ms.out} ms` : ''}${c.running_elsewhere ? ' · also in use by another app' : ''}</span>`);
+  }
+  async function restartOn(idx, name, io) {
+    const r = await api('/api/engine', io == null ? { device: idx } : { io_buffer: io }).catch(() => ({ ok: false, error: 'Sotto Bench did not answer' }));
     if (!r.ok) { toast(r.error || 'Could not switch'); return; }
     UI.restarting = name; UI.devConfirm = false; renderSet();
     for (let i = 0; i < 80; i++) {                       // the old engine stops, the new one starts disarmed
       await new Promise(res => setTimeout(res, 500));
-      try { const st = await api('/api/state'); if (st.engine && String(st.engine.device) === String(idx) && st.t < 30) { location.reload(); return; } } catch (e) {}
+      try { const st = await api('/api/state'); if (st.engine && st.t < 30 && (io == null ? String(st.engine.device) === String(idx) : true)) { location.reload(); return; } } catch (e) {}
     }
     UI.restarting = null; renderSet();
     toast('Sotto Bench did not come back. Open it again from the Applications or Downloads folder.');
@@ -1260,6 +1289,9 @@ table.t tr.unused td{color:var(--muted)}
       return box('Audio engine', 'What Sotto Bench is running on now.',
         row('Device', e.simulate ? 'Quit and choose a soundcard on the setup page to leave the simulation.' : 'Switching restarts the audio engine.', `<span class="fixed">${esc(e.simulate ? 'Simulated Riedel frame (no audio hardware)' : (e.device_name || String(e.device)))}</span>`) +
         (e.simulate ? '' : appDeviceRow(e)) +
+        (e.simulate ? '' : appBufferRow(e)) +
+        latencyRow(e) +
+        coreAudioRow(e) +
         (e.app_nap ? row('App Nap', 'macOS slows down apps with no window. Sotto turns this off while it runs.', `<span class="fixed">${esc(e.app_nap)}</span>`) : '') +
         row('Channels open', 'Inputs and outputs Sotto Bench asked the device for.', `<span class="fixed">${e.n_in} in / ${e.n_out} out</span>`) +
         row('Sample rate', '', `<span class="fixed">${e.fs / 1000} kHz</span>`) +
@@ -1536,6 +1568,14 @@ table.t tr.unused td{color:var(--muted)}
         break;
       }
       case 'devno': UI.devConfirm = false; UI.devPick = null; break;
+      case 'ioswitch': {
+        const el = $('#f-appio'); UI.ioPick = el ? +el.value : 0;
+        const e = APP && APP.engine, cur = e && e.io_buffer && e.io_buffer !== e.block ? e.io_buffer : 0;
+        if (UI.ioPick === cur) { toast('Sotto is already using that buffer'); UI.ioConfirm = false; } else UI.ioConfirm = true;
+        break;
+      }
+      case 'iono': UI.ioConfirm = false; UI.ioPick = null; break;
+      case 'iogo': restartOn(null, `${UI.ioPick || 480}-sample buffer`, UI.ioPick || 0); UI.ioConfirm = false; return;
       case 'devgo': { const d = UI.devs.devices.find(x => String(x.index) === String(UI.devPick)); if (d) restartOn(d.index, d.name); return; }
       case 'check': {
         const d = dev(), e2 = P.engine, ok = engineOk();

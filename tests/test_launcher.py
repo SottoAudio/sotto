@@ -225,3 +225,36 @@ class SwitchDeviceTests(unittest.TestCase):
             self.assertTrue(app.quit_ev.is_set())
             with open(os.path.join(d, "config.json")) as f:
                 self.assertEqual(json.load(f)["device"], "2")
+
+
+class SoundcardBufferTests(unittest.TestCase):
+    def test_buffer_choice_restarts_the_engine_and_is_remembered(self):
+        from unittest import mock
+        from sotto_failsafe import app as appmod
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(appmod, "config_dir", return_value=d):
+            with open(os.path.join(d, "config.json"), "w") as f:
+                json.dump({"device": "0", "layout": 2}, f)
+            app = BenchApp(parse_args(["--device", "0", "--port", "8801", "--out-dir", d]))
+            app.engine_info = {"n_in": 62, "n_out": 64}
+            app.coreaudio = {"buffer_range": [64, 4096]}
+            try:
+                self.assertFalse(app.switch_device(io_buffer=100)["ok"])            # not a choice
+                self.assertFalse(app.switch_device(io_buffer=0)["ok"])              # already in use
+                r = app.switch_device(io_buffer=160)
+            finally:
+                app.events_f.close()
+            self.assertTrue(r["ok"], r)
+            self.assertEqual(app.restart_with, {"--io-buffer": "160"})
+            with open(os.path.join(d, "config.json")) as f:
+                self.assertEqual(json.load(f)["io_buffer"], "160")
+        argv = launcher.argv_from(dict(launcher.DEFAULTS, device="0", io_buffer="160"), simulate=False)
+        self.assertEqual(parse_args(argv).io_buffer, 160)
+        self.assertNotIn("--io-buffer", launcher.argv_from(dict(launcher.DEFAULTS, device="0"), simulate=False))
+
+    def test_restart_with_several_changes(self):
+        from unittest import mock
+        with mock.patch.object(launcher.os, "execv") as ex:
+            launcher.restart(["--device", "0", "--port", "8766"], {"--device": "2", "--io-buffer": "128"})
+        cmd = ex.call_args[0][1]
+        tail = cmd[cmd.index("--device"):]
+        self.assertEqual(tail, ["--device", "2", "--port", "8766", "--io-buffer", "128", "--no-browser"])

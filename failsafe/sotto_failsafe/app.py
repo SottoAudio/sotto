@@ -152,6 +152,7 @@ class BenchApp:
         self._was_armed = False
         self.quit_ev = threading.Event()
         self.restart_device = None                       # set by /api/engine: the launcher restarts
+        self.restart_with = {}
         self.srv = None
         self.timing = []
         self.sim = None
@@ -173,6 +174,9 @@ class BenchApp:
         self.cb_ms = 0.0
         self.cb_ms_max = 0.0
         self._cb_last = None                             # when the last block arrived
+        self.regroup = None                              # set when the soundcard runs on a small buffer
+        self._status = None
+        self.coreaudio = None
         self.gaps = self._new_gaps()                     # how evenly the soundcard delivers blocks
         self.gaps_last = None
         LOG.info("Settings: device=%s talkers in %s out %s (%s) | PROBE in %s out %s | HEARTBEAT out %s | PGM in %s | "
@@ -325,6 +329,10 @@ class BenchApp:
             frame = self.rrcs.frame_state()
         s["frame"] = frame
         s["engine"] = getattr(self, "engine_info", None)
+        if s["engine"] is not None:
+            s["engine"] = {**s["engine"], "coreaudio": self.coreaudio,
+                           "regroup": None if self.regroup is None else {
+                               "underruns": self.regroup.underruns, "overruns": self.regroup.overruns}}
         g = self.gaps_last or self.gaps
         s["callback"] = {"ms": round(self.cb_ms, 3), "ms_max": round(self.cb_ms_max, 3), "errors": self.callback_errors,
                          "gaps": {"blocks": g["n"], "min_ms": round(g["min_ms"], 2) if g["n"] else None,
@@ -469,7 +477,22 @@ class BenchApp:
     def _new_gaps():
         return {"n": 0, "min_ms": 1e9, "max_ms": 0.0, "bunched": 0, "late": 0}
 
+    def device_callback(self, indata, outdata, frames, tinfo, status):
+        """The soundcard's callback when it runs on a small buffer: regroup into 10 ms blocks."""
+        self._status = status
+        try:
+            self.regroup.process(indata, outdata, frames, self._regrouped_block)
+        except Exception as e:                       # never leave the outputs undefined
+            outdata.fill(0.0)
+            self.callback_errors += 1
+            if self._cb_exc is None:
+                self._cb_exc = e
+
+    def _regrouped_block(self, inb, outb):
+        self.callback(inb, outb, len(inb), None, self._status)
+
     def callback(self, indata, outdata, frames, tinfo, status):
+        """Sotto's engine for one block (10 ms): straight from the soundcard, or regrouped."""
         t0 = time.perf_counter()
         if self._cb_last is not None:                # time since the last block (should be 10 ms)
             gap = 1000 * (t0 - self._cb_last)
@@ -542,10 +565,17 @@ class BenchApp:
             if a.record:
                 self.command({"cmd": "rec", "on": True, "source": "startup"})
             self.log(Event(0.0, "started", f"take {self.take}; starts DISARMED", "auto"))
+            if a.io_buffer and a.io_buffer != a.block:
+                from .regroup import Regrouper
+                self.regroup = Regrouper(n_in, n_out, a.block, a.io_buffer)
+                LOG.info("Soundcard buffer %d samples, regrouped into %d-sample blocks (adds %.1f ms)",
+                         a.io_buffer, a.block, self.regroup.added_ms)
+            io = a.io_buffer if self.regroup else a.block
+            cb = self.device_callback if self.regroup else self.callback
             if a.simulate:
                 from .sim import SimRiedel, SimStream
                 self.sim = SimRiedel(cfg, vox_hold_ms=a.sim_hold, model_armed=True)
-                stream = SimStream(self.sim, n_in, n_out, a.block, self.callback)
+                stream = SimStream(self.sim, n_in, n_out, io, cb)
                 print(f"SIMULATION: virtual Riedel frame, VOX hold {a.sim_hold:.0f} ms, no audio hardware used")
             else:
                 try:
@@ -553,8 +583,8 @@ class BenchApp:
                              dev, n_in, n_out, cfg.fs, a.block, lat, sd.query_devices(dev))
                 except Exception:
                     LOG.exception("Could not read the soundcard's details before opening it")
-                stream = sd.Stream(device=dev, samplerate=cfg.fs, blocksize=a.block, channels=(n_in, n_out),
-                                   dtype="float32", latency=lat, callback=self.callback)
+                stream = sd.Stream(device=dev, samplerate=cfg.fs, blocksize=io, channels=(n_in, n_out),
+                                   dtype="float32", latency=lat, callback=cb)
             with stream as st:
                 il, ol = st.latency if isinstance(st.latency, tuple) else (0.0, st.latency)
                 self.latency_note = f"interface in {1000 * il:.1f} ms + out {1000 * ol:.1f} ms"
@@ -567,7 +597,11 @@ class BenchApp:
                 self.engine_info = {"device": "simulated" if a.simulate else str(a.device), "device_name": name,
                                     "app_nap": self.app_nap, "simulate": bool(a.simulate),
                                     "fs": cfg.fs, "block": a.block, "n_in": n_in, "n_out": n_out,
-                                    "latency_note": self.latency_note}
+                                    "latency_note": self.latency_note,
+                                    "io_buffer": io, "regroup_ms": round(self.regroup.added_ms, 2) if self.regroup else 0.0,
+                                    "pa_latency_ms": {"in": round(1000 * il, 2), "out": round(1000 * ol, 2)}}
+                if not a.simulate:
+                    self._read_coreaudio(name)
                 LOG.info("Soundcard open: %s (%s)", name, self.latency_note)
                 diagnostics.last_crash(clear=True)       # started fine: the setup page stops showing it
                 print(f"Running ({self.latency_note}). Console: http://{a.host}:{a.port}   Ctrl+C to stop")
@@ -592,6 +626,16 @@ class BenchApp:
             raise
         finally:
             self._shutdown()
+
+    def _read_coreaudio(self, name):
+        """What Core Audio says the device is doing now (buffer, latency, safety offsets)."""
+        try:
+            from . import coreaudio
+            self.coreaudio = coreaudio.find(name)
+            if self.coreaudio:
+                LOG.info("Core Audio, %s: %s", name, self.coreaudio)
+        except Exception:
+            LOG.exception("Could not read Core Audio's view of %s", name)
 
     def _log_stats(self):
         """One line every 10 s: enough to see from the log when and how things went wrong."""
@@ -634,34 +678,56 @@ class BenchApp:
             self.srv = None
         LOG.info("Engine stopped")
 
-    def switch_device(self, device):
-        """Restarts on another soundcard. The new engine starts disarmed, like any start, so the
-        frame falls back to dry until someone re-arms."""
+    IO_BUFFERS = (0, 64, 96, 128, 160, 192, 240, 256, 320, 480, 512)
+
+    def switch_device(self, device=None, io_buffer=None):
+        """Restarts on another soundcard and/or soundcard buffer. The new engine starts disarmed,
+        like any start, so the frame falls back to dry until someone re-arms."""
         if self.a.simulate:
             return {"ok": False, "error": "The simulated frame has no soundcard. Quit and choose a soundcard on the setup page."}
-        devs = device_list()
-        if not devs["ok"]:
-            return {"ok": False, "error": "Could not list audio devices: " + devs["error"]}
-        d = next((x for x in devs["devices"] if str(x["index"]) == str(device)), None)
-        if d is None:
-            return {"ok": False, "error": "That device is no longer there."}
-        need_in, need_out = self.engine_info["n_in"], self.engine_info["n_out"]
-        if d["inputs"] < need_in or d["outputs"] < need_out:
-            return {"ok": False, "error": f"{d['name']} has {d['inputs']} inputs and {d['outputs']} outputs. "
-                                          f"These channel settings need {need_in} in and {need_out} out."}
-        self.log(Event(self.core.t, "device_change", f"restarting on {d['name']}", "console"))
+        changes, saved_changes, what = {}, {}, []
+        if device is not None and str(device) != str(self.a.device):
+            devs = device_list()
+            if not devs["ok"]:
+                return {"ok": False, "error": "Could not list audio devices: " + devs["error"]}
+            d = next((x for x in devs["devices"] if str(x["index"]) == str(device)), None)
+            if d is None:
+                return {"ok": False, "error": "That device is no longer there."}
+            need_in, need_out = self.engine_info["n_in"], self.engine_info["n_out"]
+            if d["inputs"] < need_in or d["outputs"] < need_out:
+                return {"ok": False, "error": f"{d['name']} has {d['inputs']} inputs and {d['outputs']} outputs. "
+                                              f"These channel settings need {need_in} in and {need_out} out."}
+            changes["--device"] = saved_changes["device"] = str(d["index"])
+            what.append(d["name"])
+        if io_buffer is not None:
+            try:
+                io = int(io_buffer)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "The soundcard buffer must be a number of samples."}
+            if io not in self.IO_BUFFERS:
+                return {"ok": False, "error": f"Choose one of {', '.join(str(x) for x in self.IO_BUFFERS if x)} samples."}
+            rng = (self.coreaudio or {}).get("buffer_range")
+            if io and rng and not rng[0] <= io <= rng[1]:
+                return {"ok": False, "error": f"This soundcard allows buffers of {rng[0]} to {rng[1]} samples."}
+            if io != (self.a.io_buffer or 0):
+                changes["--io-buffer"] = saved_changes["io_buffer"] = str(io)
+                what.append(f"a {io}-sample buffer" if io else "10 ms blocks from the soundcard")
+        if not changes:
+            return {"ok": False, "error": "That's what Sotto is already using."}
+        self.log(Event(self.core.t, "engine_change", "restarting on " + " with ".join(what), "console"))
         try:                                             # remembered for the next launch too
             path = os.path.join(config_dir(), "config.json")
             with open(path) as f:
                 saved = json.load(f)
-            saved["device"] = str(d["index"])
+            saved.update(saved_changes)
             with open(path, "w") as f:
                 json.dump(saved, f, indent=2)
         except (OSError, ValueError):
-            pass
-        self.restart_device = str(d["index"])
+            LOG.exception("Could not save the soundcard choice")
+        self.restart_with = changes
+        self.restart_device = changes.get("--device")
         self.quit_ev.set()
-        return {"ok": True, "device": d["name"]}
+        return {"ok": True, "device": " with ".join(what)}
 
     def _start_web(self):
         app = self
@@ -753,7 +819,8 @@ class BenchApp:
                     app.quit_ev.set()
                     res = {"ok": True}
                 elif self.path == "/api/engine":
-                    res = app.switch_device(body.get("device") if isinstance(body, dict) else None)
+                    b = body if isinstance(body, dict) else {}
+                    res = app.switch_device(b.get("device"), b.get("io_buffer"))
                 else:
                     return self._send(404, b"not found", "text/plain")
                 self._send(200, _json(res).encode(), "application/json")
@@ -826,6 +893,9 @@ def build_parser():
     p.add_argument("--no-processing", action="store_true", help="pass the talkers straight through (no echo removal, model or inserts)")
     p.add_argument("--workers", default="auto",
                    help="processing worker processes: auto (up to 3 talkers each), a number, or 0 for a thread in this process")
+    p.add_argument("--io-buffer", type=int, default=0,
+                   help="soundcard buffer in samples (e.g. 128, 160, 256); Sotto regroups into 10 ms blocks. "
+                        "0 = ask the soundcard for 10 ms blocks directly (as before)")
     p.add_argument("--headroom", type=int, default=1, choices=[1, 2, 3],
                    help="blocks of time the processing workers get per block (1 = 20 ms through Sotto, 2 = 30 ms)")
     p.add_argument("--track-delay", choices=["auto", "on", "off"], default="auto",

@@ -45,6 +45,16 @@ else()
         FetchContent_Populate(vst3sdk)
     endif()
 endif()
+if(APPLE AND NOT CMAKE_GENERATOR STREQUAL "Xcode")
+    # The VST3 SDK asks xcodebuild for the Xcode version and stops if there isn't one. With only
+    # Apple's Command Line Tools (no Xcode app) there's no answer, although the compiler is fine.
+    execute_process(COMMAND xcodebuild -version RESULT_VARIABLE _xcb OUTPUT_QUIET ERROR_QUIET)
+    if(NOT _xcb EQUAL 0)
+        message(STATUS "No Xcode app found: building with the Command Line Tools")
+        set(ENV{XCODE_VERSION} "16.0")
+        set(XCODE_VERSION "16.0")
+    endif()
+endif()
 add_subdirectory(${vst3sdk_SOURCE_DIR} ${CMAKE_BINARY_DIR}/vst3sdk EXCLUDE_FROM_ALL)
 set(SDK ${vst3sdk_SOURCE_DIR})
 

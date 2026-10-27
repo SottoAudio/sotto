@@ -113,7 +113,7 @@ def _worker_main(wid, names, settings, model, shm_name, g, in_sem, out_sem, ctrl
         pass
     try:
         from . import macos, processing, vst3
-        macos.keep_responsive("Sotto Voce Bench processing worker")
+        macos.keep_responsive("Sotto Voce processing worker")
         note = "performance cores (processing thread)"
         try:
             lib = vst3.load_library()

@@ -27,7 +27,7 @@ manager and stage manager. The design grows to 64 channels in and out.
 
 | Folder | What it is | Status |
 | --- | --- | --- |
-| [`failsafe/`](failsafe/) | Sotto Voce Bench: the console, the Riedel fail-safe (HEARTBEAT, PROBE, latching arm, fault injection, timing analysis, simulated frame), and the processing with operator profiles and VST3 inserts | Ready for a bench test |
+| [`failsafe/`](failsafe/) | Sotto Voce: the console, the Riedel fail-safe (HEARTBEAT, PROBE, latching arm, fault injection, timing analysis, simulated frame), and the processing with operator profiles and VST3 inserts | Ready for a bench test |
 | [`engine/plugin-test/`](engine/plugin-test/) | The VST3 hosting library Sotto Voce uses for inserts, and `sotto-plugin-test`, which checks a plugin (CEDAR, for example) on its own: latency, settings save/restore, CPU | Built and tested on Mac, Windows and Linux |
 | [`prototype/`](prototype/) | Python prototype of the processing: offline test pipeline, live laptop app in shadow mode, frame-by-frame and batched speech model | Tested on synthetic stadium audio |
 | [`docs/`](docs/) | Design notes | |

@@ -7,22 +7,22 @@ a listener takes to land on dry.
 
 ## Get the app (no Python needed)
 
-1. Download the latest build from the repository's Releases page, under **Sotto Voce Bench (latest
-   build)**: `Sotto-Voce-Bench-mac.zip` or `Sotto-Voce-Bench-windows.zip`. Every change to main is built
+1. Download the latest build from the repository's Releases page, under **Sotto Voce (latest
+   build)**: `Sotto-Voce-mac.zip` or `Sotto-Voce-windows.zip`. Every change to main is built
    automatically on GitHub's Mac and Windows machines and checked before it is published.
 2. Unzip it.
-   - **Mac:** move **Sotto Voce Bench** to Applications. It isn't signed yet, so the first time,
+   - **Mac:** move **Sotto Voce** to Applications. It isn't signed yet, so the first time,
      right-click it, choose **Open**, then **Open** again. On newer macOS you may need System
      Settings, then Privacy & Security, then **Open Anyway**. Allow microphone access when asked;
      that's how macOS lets it hear the virtual soundcard.
-   - **Windows:** open the folder and run **Sotto Voce Bench.exe**. If SmartScreen warns, choose
+   - **Windows:** open the folder and run **Sotto Voce.exe**. If SmartScreen warns, choose
      **More info**, then **Run anyway**.
 3. A setup page opens in your browser. Press **Start with the simulated Riedel** to try it with
    no hardware. For the real test, pick the virtual soundcard, check the channel numbers, and
    press **Start with this soundcard**. Your choices are remembered for next time.
 4. The same tab becomes the console. Press **Quit** (twice) to stop.
 
-Recordings and event logs go to `Documents/Sotto Voce Bench Runs`.
+Recordings and event logs go to `Documents/Sotto Voce Runs`.
 
 ## Running from source (developers)
 
@@ -164,7 +164,7 @@ Changes that move audio restart the engine. HEARTBEAT stops, so the frame puts e
 
 ## When something isn't working: the diagnostics file
 
-Sotto Voce Bench keeps a detailed log while it runs. Each line records the time, the thread, and the function and line of code that wrote it. Errors carry their full traceback. To get help, send the **diagnostics file**. It has everything needed to work out why something isn't working on that computer:
+Sotto Voce keeps a detailed log while it runs. Each line records the time, the thread, and the function and line of code that wrote it. Errors carry their full traceback. To get help, send the **diagnostics file**. It has everything needed to work out why something isn't working on that computer:
 
 - the build and the computer: model, CPU cores, macOS, Low Power Mode, heat, mains or battery, Rosetta;
 - every audio device PortAudio and Core Audio can see, with channel counts;
@@ -182,18 +182,18 @@ There are three ways to make it:
 
 - **Setup page:** Troubleshooting › Download diagnostics. Use this when the engine won't start: the page also shows why the last start failed.
 - **Console:** the Diagnostics button in the header, or Settings › Audio engine › Download diagnostics. The speed test is skipped while Sotto Voce is armed, so it can't make processing late during a show.
-- **Terminal:** `"Sotto Voce Bench.app/Contents/MacOS/Sotto Voce Bench" --diagnostics` (add `--quick` to skip the speed test). The file goes to Downloads. Use this when the app won't open at all.
+- **Terminal:** `"Sotto Voce.app/Contents/MacOS/Sotto Voce" --diagnostics` (add `--quick` to skip the speed test). The file goes to Downloads. Use this when the app won't open at all.
 
-Files, in the settings folder (`~/Library/Application Support/Sotto Voce Bench/logs` on a Mac, `%APPDATA%\Sotto Voce Bench\logs` on Windows):
+Files, in the settings folder (`~/Library/Application Support/Sotto Voce/logs` on a Mac, `%APPDATA%\Sotto Voce\logs` on Windows):
 
 | File | What it is |
 |---|---|
 | `sotto-bench.log` | The log (5 files of 5 MB, oldest dropped). |
-| `last-crash.json` | The last error that stopped Sotto Voce Bench. Shown on the setup page until the next good start. |
+| `last-crash.json` | The last error that stopped Sotto Voce. Shown on the setup page until the next good start. |
 | `crash-native.log` | Python stacks of every thread if the app was killed by a crash in native code (a plugin, the speech model, the audio driver). |
 | `sotto-diagnostics-*.txt` | A copy of every diagnostics file made. |
 
-If the engine can't open the soundcard, Sotto Voce Bench goes back to the setup page and says why, for example "The soundcard doesn't have that many channels". It no longer quits silently.
+If the engine can't open the soundcard, Sotto Voce goes back to the setup page and says why, for example "The soundcard doesn't have that many channels". It no longer quits silently.
 
 ## What this has been tested against
 

@@ -85,7 +85,7 @@ if __name__ == "__main__":
 
 
 class SecondLaunchTests(unittest.TestCase):
-    """Opening Sotto Voce Bench while it's already running must not fail silently."""
+    """Opening Sotto Voce while it's already running must not fail silently."""
 
     def setUp(self):
         import socket

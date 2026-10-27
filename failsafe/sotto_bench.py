@@ -1,4 +1,4 @@
-"""Entry point for the packaged Sotto Voce Bench app (PyInstaller) and for `python sotto_bench.py`."""
+"""Entry point for the packaged Sotto Voce app (PyInstaller) and for `python sotto_bench.py`."""
 import multiprocessing
 import sys
 

@@ -1,7 +1,7 @@
-"""Sotto Voce Bench's log and the diagnostics file.
+"""Sotto Voce's log and the diagnostics file.
 
 The log
-  Everything Sotto Voce Bench does that matters for troubleshooting goes to a rotating log file in the
+  Everything Sotto Voce does that matters for troubleshooting goes to a rotating log file in the
   settings folder (logs/sotto-bench.log, 5 x 5 MB). Each line says when, which thread, and which
   function and line of code wrote it. Errors carry their full traceback (file and line of every
   call). Records go through a queue to a writer thread, so logging never makes a caller wait on
@@ -21,7 +21,7 @@ The diagnostics file
   power, Rosetta), every audio device PortAudio and Core Audio can see, the settings, the
   engine, processing timings, a short speed test, the fail-safe state, recent events, what every
   thread is running right now (file and line), the end of the log, and any crash records.
-  The console, the setup page and `Sotto Voce Bench --diagnostics` all produce it.
+  The console, the setup page and `Sotto Voce --diagnostics` all produce it.
 """
 import faulthandler
 import json
@@ -106,7 +106,7 @@ def setup_logging(level=logging.DEBUG, echo=True):
     sys.excepthook = _excepthook
     threading.excepthook = _thread_excepthook
     b = build_info()
-    LOG.info("==== Sotto Voce Bench starting (pid %s) build %s | Python %s %s | %s %s", os.getpid(),
+    LOG.info("==== Sotto Voce starting (pid %s) build %s | Python %s %s | %s %s", os.getpid(),
              b.get("commit", "?"), platform.python_version(), platform.machine(), platform.system(), platform.release())
     return log_path()
 
@@ -145,7 +145,7 @@ def _thread_excepthook(args):
 def record_crash(exc, where="start-up"):
     """Logs a crash that ends the app and keeps it for the setup page to show next time."""
     tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-    LOG.critical("Sotto Voce Bench stopped during %s: %r", where, exc, exc_info=(type(exc), exc, exc.__traceback__))
+    LOG.critical("Sotto Voce stopped during %s: %r", where, exc, exc_info=(type(exc), exc, exc.__traceback__))
     try:
         os.makedirs(logs_dir(), exist_ok=True)
         with open(os.path.join(logs_dir(), "last-crash.json"), "w", encoding="utf-8") as f:
@@ -175,7 +175,7 @@ def friendly_error(exc):
     s = str(exc)
     low = s.lower()
     if isinstance(exc, OSError) and getattr(exc, "errno", None) in (48, 98, 10048):
-        return "Another program (probably another Sotto Voce Bench) is using Sotto Voce's address (port 8766)."
+        return "Another program (probably another Sotto Voce) is using Sotto Voce's address (port 8766)."
     if "invalid number of channels" in low or "paInvalidChannelCount".lower() in low:
         return "The soundcard doesn't have that many channels. Set Dante Virtual Soundcard to 64 x 64."
     if "invalid sample rate" in low or "paInvalidSampleRate".lower() in low:
@@ -183,7 +183,7 @@ def friendly_error(exc):
     if "error querying device" in low or "no such device" in low or "device unavailable" in low:
         return "The soundcard isn't there any more. Is Dante Virtual Soundcard (or Merging VAD) running?"
     if "unanticipated host error" in low:
-        return "Core Audio refused to open the soundcard. Check microphone permission for Sotto Voce Bench (System Settings, Privacy & Security, Microphone) and that no other app has it in exclusive use."
+        return "Core Audio refused to open the soundcard. Check microphone permission for Sotto Voce (System Settings, Privacy & Security, Microphone) and that no other app has it in exclusive use."
     return s or repr(exc)
 
 
@@ -272,7 +272,7 @@ def busy_snapshot():
     if sys.platform == "win32":
         return _run(["tasklist", "/v", "/fo", "csv"], 10)[:6000]
     me = str(os.getpid())
-    out = ["== Sotto Voce Bench threads (ps -M): one line per thread, CPU % in the CPU column"]
+    out = ["== Sotto Voce threads (ps -M): one line per thread, CPU % in the CPU column"]
     out.append(_run(["ps", "-M", "-p", me], 5) if sys.platform == "darwin" else _run(["ps", "-L", "-o", "tid,pcpu,stat,comm", "-p", me], 5))
     out.append("\n== busiest programs")
     if sys.platform == "darwin":
@@ -376,9 +376,9 @@ def _findings(app_state, sysinfo, devs, crash, speed):
     """Plain-English list of anything that looks wrong."""
     f = []
     if crash:
-        f.append(f"Sotto Voce Bench stopped unexpectedly on {crash.get('time')} during {crash.get('where')}: {crash.get('error')}")
+        f.append(f"Sotto Voce stopped unexpectedly on {crash.get('time')} during {crash.get('where')}: {crash.get('error')}")
     if sysinfo.get("rosetta", "").startswith("yes"):
-        f.append("Sotto Voce Bench is running translated by Rosetta. Download the Apple-silicon build.")
+        f.append("Sotto Voce is running translated by Rosetta. Download the Apple-silicon build.")
     pw = sysinfo.get("power") or {}
     if pw.get("low_power"):
         f.append("Low Power Mode is on: processing will be slow. Turn it off for live work.")

@@ -78,7 +78,7 @@
   <span class="chip" id="rrcs">RRCS: off</span>
   <button id="quitBtn" style="margin-left:auto">Quit</button>
 </header>
-<div class="offline" id="offline">Lost contact with Sotto Voce Bench. If it crashed (or you pressed Crash), the Riedel should now be on dry. Open it again: it comes back disarmed.</div>
+<div class="offline" id="offline">Lost contact with Sotto Voce. If it crashed (or you pressed Crash), the Riedel should now be on dry. Open it again: it comes back disarmed.</div>
 <main>
   <section>
     <div class="banner disarmed" id="banner">
@@ -224,7 +224,7 @@ $('#quitBtn').onclick = async () => {
   if (!quitArmed) { quitArmed = true; $('#quitBtn').textContent = 'Click again to quit'; setTimeout(() => { quitArmed = false; $('#quitBtn').textContent = 'Quit'; }, 3000); return; }
   stopped = true;
   try { await fetch('/quit', {method: 'POST'}); } catch (e) {}
-  document.body.innerHTML = '<p style="padding:24px;font:16px sans-serif">Sotto Voce Bench has stopped. The Riedel is on dry. You can close this tab.</p>';
+  document.body.innerHTML = '<p style="padding:24px;font:16px sans-serif">Sotto Voce has stopped. The Riedel is on dry. You can close this tab.</p>';
 };
 $('#recBtn').onclick = () => post({cmd: 'rec', on: !(S && S.recording)});
 function mark() { post({cmd: 'mark', note: $('#note').value}).then(() => { toast('Marked'); $('#note').value = ''; }); }

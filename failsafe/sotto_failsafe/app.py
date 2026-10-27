@@ -917,7 +917,7 @@ class BenchApp:
             if sys.platform == "darwin":
                 perm = macos.mic_permission()
                 out.append(["ok" if perm == "allowed" else "err",
-                            "Microphone permission: " + {"allowed": "allowed.", "denied": "denied. Allow Sotto Voce Bench in System Settings, Privacy & Security, Microphone.",
+                            "Microphone permission: " + {"allowed": "allowed.", "denied": "denied. Allow Sotto Voce in System Settings, Privacy & Security, Microphone.",
                                                          "not asked": "not asked yet (macOS asks when the soundcard opens).",
                                                          "restricted": "restricted by this Mac's management profile."}.get(perm, perm)])
         g = (self.gaps_last or self.gaps)
@@ -983,12 +983,12 @@ class BenchApp:
             return {"ok": False, "error": f"Couldn't read {os.path.basename(name or 'that file')}: {e!r}"}
 
     def test_choose(self):
-        """macOS's own file dialog, opened by Sotto Voce Bench itself: works whatever the browser allows."""
+        """macOS's own file dialog, opened by Sotto Voce itself: works whatever the browser allows."""
         if sys.platform != "darwin":
             return {"ok": False, "error": "Choosing with Finder only works on a Mac. Use Upload audio file."}
         LOG.info("Opening the macOS file dialog for a test audio file")
         script = ['-e', 'activate', '-e',
-                  'POSIX path of (choose file with prompt "Choose an audio file for Sotto Voce Bench" of type {"public.audio"})']
+                  'POSIX path of (choose file with prompt "Choose an audio file for Sotto Voce" of type {"public.audio"})']
         try:
             r = subprocess.run(["osascript"] + script, capture_output=True, text=True, timeout=600)
         except subprocess.TimeoutExpired:
@@ -1073,7 +1073,7 @@ class BenchApp:
             def _fail(self, e):
                 LOG.exception("HTTP %s %s failed", self.command, self.path)
                 try:
-                    self._send(500, json.dumps({"ok": False, "error": f"Sotto Voce Bench hit an error: {e!r} (details in the log)"}).encode(),
+                    self._send(500, json.dumps({"ok": False, "error": f"Sotto Voce hit an error: {e!r} (details in the log)"}).encode(),
                                "application/json")
                 except Exception:
                     pass

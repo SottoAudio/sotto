@@ -9,7 +9,7 @@ on:
 permissions:
   contents: read
 
-# Tests and the smoke test keep their settings and logs out of the build machine's own Sotto folder.
+# Tests and the smoke test keep their settings and logs out of the build machine's own Sotto Voce folder.
 env:
   SOTTO_CONFIG_DIR: ${{ github.workspace }}/.sotto-test-config
 

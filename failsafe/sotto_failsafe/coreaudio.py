@@ -1,7 +1,7 @@
 """What Core Audio itself says about the audio devices (macOS), standard library ctypes only.
 
 PortAudio reports one latency figure per direction. Core Audio knows what it is made of, and
-those parts decide what Sotto can do about it:
+those parts decide what Sotto Voce can do about it:
 
   buffer_frames        the device's I/O buffer (one Core Audio cycle), and the sizes it allows
   latency_frames       what the driver adds (in and out)

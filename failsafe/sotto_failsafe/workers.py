@@ -1,7 +1,7 @@
 """Processing in separate worker processes, so the audio engine never shares a core (or Python's
 global lock) with the heavy work.
 
-Sotto's own process keeps the audio engine: the soundcard callback (Core Audio's real-time thread),
+Sotto Voce's own process keeps the audio engine: the soundcard callback (Core Audio's real-time thread),
 HEARTBEAT, PROBE, the fail-safe checks and the phones bus. The talkers are split into groups and
 each group is processed by its own worker process, which runs processing.Chains exactly as the
 in-process Processor does.
@@ -9,7 +9,7 @@ in-process Processor does.
 Per 10 ms block the callback (exchange()) copies the group's mic rows and PGM into the worker's
 shared-memory input slot and posts a semaphore; it never waits. It takes back the result for the
 block before, if the worker has written it. A missing result is a miss: that group's talkers get
-dry at the same delay, and three misses in a row make processing unhealthy, which disarms Sotto
+dry at the same delay, and three misses in a row make processing unhealthy, which disarms Sotto Voce
 (latched) so the frame goes to dry, exactly as with the in-process Processor.
 
 Memory ordering: the shared-memory slots carry a block tag. The writer stores the data, then posts a
@@ -113,7 +113,7 @@ def _worker_main(wid, names, settings, model, shm_name, g, in_sem, out_sem, ctrl
         pass
     try:
         from . import macos, processing, vst3
-        macos.keep_responsive("Sotto Bench processing worker")
+        macos.keep_responsive("Sotto Voce processing worker")
         note = "performance cores (processing thread)"
         try:
             lib = vst3.load_library()
@@ -153,7 +153,7 @@ def _worker_main(wid, names, settings, model, shm_name, g, in_sem, out_sem, ctrl
                 continue
             while in_sem.acquire(False):
                 pass
-            # Every block still in time, oldest first. With headroom h, Sotto takes the result for
+            # Every block still in time, oldest first. With headroom h, Sotto Voce takes the result for
             # block k-h when it hands over block k, so blocks older than newest-(h-1) are too
             # late: skip them rather than fall further behind.
             newest = int(latest[0])
@@ -192,7 +192,7 @@ def _worker_main(wid, names, settings, model, shm_name, g, in_sem, out_sem, ctrl
     LOG.info("Processing worker %d ready: %d talkers (%s), process %d, %s", wid + 1, len(names), ", ".join(names),
              os.getpid(), note)
     up.put((wid, "ready", {"pid": os.getpid(), "thread": note}))
-    # The main thread: requests from Sotto, and creating and destroying plugins (VST3 wants
+    # The main thread: requests from Sotto Voce, and creating and destroying plugins (VST3 wants
     # both on the main thread; several plugins abort otherwise).
     while not stop.is_set():
         try:
@@ -230,7 +230,7 @@ def _worker_main(wid, names, settings, model, shm_name, g, in_sem, out_sem, ctrl
     LOG.info("Processing worker %d stopped", wid + 1)
 
 
-# ---------------------------------------------------------------------------- Sotto's side
+# ---------------------------------------------------------------------------- Sotto Voce's side
 class _Worker:
     def __init__(self, pool, wid, rows):
         self.pool, self.wid, self.rows = pool, wid, rows
@@ -265,7 +265,7 @@ class _Worker:
         settings = [self.pool.settings[i] for i in self.rows]
         self.proc = ctx.Process(
             # Not a daemon: the worker's delay tracker starts its own helper process, which Python
-            # forbids daemons. A worker still exits when Sotto does: its control pipe closes.
+            # forbids daemons. A worker still exits when Sotto Voce does: its control pipe closes.
             target=_worker_main, name=f"sotto-worker-{self.wid + 1}", daemon=False,
             args=(self.wid, names, settings, self.pool.model, self.shm.name, self.g, self.in_sem, self.out_sem,
                   child, self.pool.up, self.pool.track_delay))
@@ -347,7 +347,7 @@ class Pool:
             tg[0] = k
             w.latest[0] = k
             w.in_sem.release()                           # wakes the worker (and is a barrier)
-            j = k - h                                    # the result Sotto plays now
+            j = k - h                                    # the result Sotto Voce plays now
             otg, ov, dv = w.outs[j % SLOTS]
             got = False
             if j >= 0 and int(otg[0]) == j:
@@ -384,15 +384,15 @@ class Pool:
         return self.out_buf, self.dry_buf
 
     def set_headroom(self, blocks):
-        """How many blocks the workers get for each block (1 = 10 ms: 20 ms through Sotto; 2 =
-        20 ms: 30 ms through Sotto). Changing it moves every talker's delay, so the app only
+        """How many blocks the workers get for each block (1 = 10 ms: 20 ms through Sotto Voce; 2 =
+        20 ms: 30 ms through Sotto Voce). Changing it moves every talker's delay, so the app only
         allows it while disarmed."""
         h = min(MAX_HEADROOM, max(1, int(blocks)))
         for w in self.workers:
             w.latest[1] = h
         self.grace_until = self.blocks + 2 * MAX_HEADROOM
         if h != self.headroom:
-            LOG.info("Processing headroom: %d block(s), %d ms through Sotto", h, 10 * (h + 1))
+            LOG.info("Processing headroom: %d block(s), %d ms through Sotto Voce", h, 10 * (h + 1))
         self.headroom = h
 
     def health(self):
@@ -438,7 +438,7 @@ class Pool:
     def _watch(self):
         """Notices a worker that died, faults its talkers and starts it again. A worker that keeps
         failing (3 times in a minute, or every time it starts) is left stopped: its talkers stay on
-        dry and processing stays unhealthy, so Sotto can't be armed until it's fixed."""
+        dry and processing stays unhealthy, so Sotto Voce can't be armed until it's fixed."""
         while not self.stop_ev.wait(0.5):
             for w in getattr(self, "workers", []):
                 if w.given_up or w.proc is None or w.proc.is_alive() or self.stop_ev.is_set():
@@ -450,7 +450,7 @@ class Pool:
                 # request must already leave it out.
                 for path in getattr(w, "loading", set()) or set():
                     name = os.path.basename(path).rsplit(".", 1)[0]
-                    self.crashed[path] = (f"{name} crashed Sotto's processing when it was opened ({why}), so it's "
+                    self.crashed[path] = (f"{name} crashed Sotto Voce's processing when it was opened ({why}), so it's "
                                           "no longer loaded. Use another plugin.")
                     LOG.error("Processing worker %d stopped while opening the plugin %s: not loading it again this session",
                               w.wid + 1, path)
@@ -463,7 +463,7 @@ class Pool:
                     w.given_up = True
                     self.ok, self.why = False, f"processing worker {w.wid + 1} can't run: {why}"
                     LOG.critical("Processing worker %d (talkers %s) keeps stopping (%s). Not restarting it: those "
-                                 "talkers stay on dry and Sotto can't be armed. The traceback above says why.",
+                                 "talkers stay on dry and Sotto Voce can't be armed. The traceback above says why.",
                                  w.wid + 1, [i + 1 for i in w.rows], why)
                     continue
                 LOG.error("Processing worker %d (talkers %s) stopped unexpectedly (%s). Restarting it.",

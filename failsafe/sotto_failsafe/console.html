@@ -1,4 +1,4 @@
-<title>Sotto Console</title>
+<title>Sotto Voce Console</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -352,7 +352,7 @@ table.t tr.unused td{color:var(--muted)}
 
 <header class="top" id="top">
   <div class="wrap top-row">
-    <div class="brand"><i></i>Sotto</div>
+    <div class="brand"><i></i>Sotto Voce</div>
     <div class="proj"><span>Project</span><b id="projName"></b></div>
     <div class="stats">
       <span class="stat" id="stEngine"><i class="dotl"></i>Engine <b></b></span>
@@ -404,7 +404,7 @@ table.t tr.unused td{color:var(--muted)}
       <div class="box-b">
         <div class="mkeys" id="mkeys"></div>
         <div class="runner" id="runner" hidden></div>
-        <p class="note">Macros only run when someone presses them. Sotto never goes back to clean on its own.</p>
+        <p class="note">Macros only run when someone presses them. Sotto Voce never goes back to clean on its own.</p>
       </div>
     </div>
 
@@ -465,7 +465,7 @@ table.t tr.unused td{color:var(--muted)}
     clicked: { l: 'As clicked', d: 'Both ears. An input solo is the dry signal as it reaches the DSP; an output solo is the clean return going to the Riedel.' },
     dry: { l: 'Dry', d: 'Both ears hear the dry input of every soloed channel, whichever side you soloed it from.' },
     clean: { l: 'Clean', d: 'Both ears hear the clean return of every soloed channel, whichever side you soloed it from.' },
-    split: { l: 'Split', d: 'Left ear dry, right ear clean, for every soloed channel. Best for judging what Sotto removes.' },
+    split: { l: 'Split', d: 'Left ear dry, right ear clean, for every soloed channel. Best for judging what Sotto Voce removes.' },
   };
 
   const MODES = {
@@ -475,7 +475,7 @@ table.t tr.unused td{color:var(--muted)}
     full: { l: 'Full clean', chain: 'echo canceller → suppressor → speech model', d: 'Echo + noise, then the speech model (DeepFilterNet3, low latency) keeps the voice and removes the rest.' },
   };
   const POS = ['SmartPanel', 'Bolero', '4-wire', 'Other'];
-  // Plugins Sotto can host. In the app this list comes from scanning the VST3 (and AU) folders; control
+  // Plugins Sotto Voce can host. In the app this list comes from scanning the VST3 (and AU) folders; control
   // ranges below are stand-ins until the app reads each plugin's own parameter list.
   const PLUGINS = {
     voxis: { name: 'Voxis', vendor: 'CEDAR', kind: 'Neural voice isolation', fmt: 'VST3, AU', lat: 480, latTxt: 'under 10 ms (CEDAR\'s figure; exact value read when loaded)', params: [
@@ -635,7 +635,7 @@ table.t tr.unused td{color:var(--muted)}
   function requestArm(from, ch = null) {
     const refuse = msg => { S.refusal = msg; log(`Arm refused: ${msg}`, from); toast(`Arm refused: ${msg}`); return false; };
     if (APP) { appCmd({ cmd: 'arm', talker: ch === null ? undefined : ch, source: from }).then(r => { if (!r.ok) toast(`Arm refused: ${r.message || r.error}`); }); return null; }
-    if (!S.alive) return refuse('Sotto is not running');
+    if (!S.alive) return refuse('Sotto Voce is not running');
     if (ch === null) {
       if (!rrcsUp()) return refuse('no RRCS link to the frame, so ARMED cannot be set');
       if (greenFor() < ARM_HOLD) return refuse(S.greenSince === null ? 'checks not green' : `green for ${(greenFor() / 1000).toFixed(1)} s, needs 5 s`);
@@ -649,7 +649,7 @@ table.t tr.unused td{color:var(--muted)}
   function trip(i, why, from) {
     if (APP) { appCmd({ cmd: 'trip', talker: i, source: from }); return; }
     if (!S.alive || !S.chArmed[i]) return;
-    S.chArmed[i] = false; log(`Tripped ${chName(i)}: ${why}. Dry inside Sotto until re-armed`, from);
+    S.chArmed[i] = false; log(`Tripped ${chName(i)}: ${why}. Dry inside Sotto Voce until re-armed`, from);
   }
   function setLogic(src, on) {
     if (src === P.rrcs.armed) S.armedLS = on;
@@ -701,7 +701,7 @@ table.t tr.unused td{color:var(--muted)}
         else s.note = `${dt} ms`;
         break;
       case 'waitGreen': {
-        if (!S.alive) return fail('Sotto is not running');
+        if (!S.alive) return fail('Sotto Voce is not running');
         const g = greenFor();
         if (g >= s.s * 1000) ok(`green ${s.s} s`);
         else if (dt > 30000) fail(`checks did not stay green for ${s.s} s within 30 s`);
@@ -730,12 +730,12 @@ table.t tr.unused td{color:var(--muted)}
   function inject(kind) {
     if (APP) {
       const map = { stop: { name: 'stop_heartbeat' }, silence: { name: 'silence_all', seconds: 3 }, mute: { name: 'mute_returns', seconds: 3 }, freeze: { name: 'freeze', ms: 400 }, crash: { name: 'crash' } };
-      if (map[kind]) { appCmd({ cmd: 'fault', ...map[kind] }); if (kind === 'crash') toast('Sotto Bench quits now (crash test). Open it again to carry on.'); return; }
+      if (map[kind]) { appCmd({ cmd: 'fault', ...map[kind] }); if (kind === 'crash') toast('Sotto Voce quits now (crash test). Open it again to carry on.'); return; }
       const live = P.ch.map((c, i) => i).filter(i => i < P.count && S.chArmed[i]);
       if (!live.length) { toast('No armed channel to trip. Arm first.'); return; }
       trip(live[Math.floor(Math.random() * live.length)], 'test fault', 'test'); return;
     }
-    if (!S.alive) { toast('Sotto is not running. Restart it first.'); return; }
+    if (!S.alive) { toast('Sotto Voce is not running. Restart it first.'); return; }
     const names = { stop: 'Stop heartbeat', silence: 'Laptop silent 3 s', mute: 'Voices vanish 3 s', freeze: 'Freeze 400 ms', chan: "One channel's DSP fails", plugin: 'An insert plugin stalls', rrcs: 'RRCS link drops 10 s', crash: 'Crash' };
     log(`Fault: ${names[kind]}`, 'test');
     if (kind === 'stop') disarm('heartbeat stopped (test fault)', 'test');
@@ -754,13 +754,13 @@ table.t tr.unused td{color:var(--muted)}
       if (!live.length) { toast('No armed channel to trip. Arm first.'); return; }
       trip(live[Math.floor(Math.random() * live.length)], 'output check failed (test fault)', 'auto');
     }
-    if (kind === 'crash') { S.alive = false; S.armed = false; S.chArmed.fill(false); S.greenSince = null; S.reason = 'Sotto crashed.'; if (S.run && S.run.state === 'running') S.run.state = 'failed'; }
+    if (kind === 'crash') { S.alive = false; S.armed = false; S.chArmed.fill(false); S.greenSince = null; S.reason = 'Sotto Voce crashed.'; if (S.run && S.run.state === 'running') S.run.state = 'failed'; }
   }
   function restart() {
     S.alive = true; S.startedAt = S.t; S.frozenUntil = S.silenceUntil = S.muteUntil = -1;
-    S.armed = false; S.greenSince = null; S.probeLast = null; S.reason = 'Restarted after a crash. Sotto always starts disarmed.';
+    S.armed = false; S.greenSince = null; S.probeLast = null; S.reason = 'Restarted after a crash. Sotto Voce always starts disarmed.';
     S.solo.clear(); S.dim = false; $('#phDim').setAttribute('aria-pressed', 'false');   // solos always start empty
-    log('Sotto restarted (disarmed)', 'restart');
+    log('Sotto Voce restarted (disarmed)', 'restart');
   }
 
   // ------------------------------------------------------------ one 10 ms step of the simulation
@@ -823,7 +823,7 @@ table.t tr.unused td{color:var(--muted)}
       else if (S.armed && !S.chArmed[i]) { out = S.lv['i' + n]; oc = S.comp['i' + n]; }
       else {
         const o = opOf(i), r = reduction(modeOf(i)), tr = P.proc.trim + (o ? +o.trim || 0 : 0);
-        const x = insOf(i), ie = x && x.on ? insEffect(x) : { b: 0, n: 0, v: 0 };       // insert: after Sotto's processing
+        const x = insOf(i), ie = x && x.on ? insEffect(x) : { b: 0, n: 0, v: 0 };       // insert: after Sotto Voce's processing
         oc = { v: v - 0.5 + ie.v + tr, b: b - r.b - ie.b + tr, n: nz - r.n - ie.n + tr };
         out = todb(pw(oc.v) + pw(oc.b) + pw(oc.n));
       }
@@ -963,7 +963,7 @@ table.t tr.unused td{color:var(--muted)}
     const tripped = usedIdx.filter(i => S.armed && !S.chArmed[i]);
     if (!S.alive) {
       b.className = 'band dead'; $('#bState').textContent = 'NOT RUNNING'; $('#bSub').textContent = 'Riedel on dry';
-      $('#bWhy').textContent = 'Sotto stopped. Every listener is on dry. Restart, then use Restore all once the checks are green.';
+      $('#bWhy').textContent = 'Sotto Voce stopped. Every listener is on dry. Restart, then use Restore all once the checks are green.';
     } else if (S.armed) {
       b.className = 'band armed'; $('#bState').textContent = 'ARMED'; $('#bSub').textContent = 'HEARTBEAT on';
       const cl = !frameKnown() ? `${usedIdx.length - tripped.length} of ${usedIdx.length} talkers armed. The frame's state needs RRCS to show here.` : frameClean() ? `${usedIdx.length - tripped.length} of ${usedIdx.length} talkers clean.` : 'Waiting for the frame to report clean.';
@@ -974,8 +974,8 @@ table.t tr.unused td{color:var(--muted)}
     }
     $('#holdBar').style.width = (S.armed ? 100 : S.alive ? Math.min(100, g / ARM_HOLD * 100) : 0) + '%';
     const ab = $('#armBtn');
-    if (!S.alive && APP) { ab.textContent = 'Open Sotto Bench again'; ab.disabled = true; ab.dataset.mode = ''; }
-    else if (!S.alive) { ab.textContent = 'Restart Sotto'; ab.disabled = false; ab.dataset.mode = 'restart'; }
+    if (!S.alive && APP) { ab.textContent = 'Open Sotto Voce again'; ab.disabled = true; ab.dataset.mode = ''; }
+    else if (!S.alive) { ab.textContent = 'Restart Sotto Voce'; ab.disabled = false; ab.dataset.mode = 'restart'; }
     else if (S.armed) { ab.textContent = 'Armed'; ab.disabled = true; ab.dataset.mode = ''; }
     else if (g >= ARM_HOLD) { ab.textContent = 'Arm everyone'; ab.disabled = false; ab.dataset.mode = 'arm'; }
     else { ab.textContent = S.greenSince === null ? 'Checks not green' : `Arm in ${((ARM_HOLD - g) / 1000).toFixed(1)} s`; ab.disabled = true; ab.dataset.mode = ''; }
@@ -1049,8 +1049,8 @@ table.t tr.unused td{color:var(--muted)}
   });
   $('#armBtn').onclick = () => { if ($('#armBtn').dataset.mode === 'restart') restart(); else requestArm('console'); };
   $('#disarmBtn').onclick = () => disarm('disarmed by the engineer', 'console');
-  $('#panelArm').onclick = () => { if (!rrcsUp()) { toast('RRCS link is down: the panel key cannot reach Sotto'); return; } S.panelPollAt = S.t + 250; toast('Panel ARM key pressed. Sotto sees it on its next RRCS poll.'); };
-  $('#companionArm').onclick = () => { if (APP) api('/api/arm', {}).then(r => toast(r.ok ? 'Armed from the Companion address' : `Arm refused: ${r.message || r.error}`)).catch(() => toast('Sotto Bench is not answering')); else requestArm('Companion'); };
+  $('#panelArm').onclick = () => { if (!rrcsUp()) { toast('RRCS link is down: the panel key cannot reach Sotto Voce'); return; } S.panelPollAt = S.t + 250; toast('Panel ARM key pressed. Sotto Voce sees it on its next RRCS poll.'); };
+  $('#companionArm').onclick = () => { if (APP) api('/api/arm', {}).then(r => toast(r.ok ? 'Armed from the Companion address' : `Arm refused: ${r.message || r.error}`)).catch(() => toast('Sotto Voce is not answering')); else requestArm('Companion'); };
   document.querySelectorAll('[data-fault]').forEach(b => b.onclick = () => inject(b.dataset.fault));
 
   // ------------------------------------------------------------ phones bus controls
@@ -1137,10 +1137,10 @@ table.t tr.unused td{color:var(--muted)}
     ['project', 'Project', 'Name and notes for this show'],
     ['channels', 'Channels', 'How many talkers, names, patching'],
     ['operators', 'Operators', 'Profiles that follow each person: insert, settings, processing'],
-    ['processing', 'Processing', 'What Sotto removes from each voice'],
+    ['processing', 'Processing', 'What Sotto Voce removes from each voice'],
     ['engine', 'Audio engine', 'Dante Virtual Soundcard or Merging VAD'],
     ['tests', 'Test sources', 'Tone, speech or PA bleed into a channel'],
-    ['plugins', 'Plugins', 'VST3 and AU plugins Sotto can host'],
+    ['plugins', 'Plugins', 'VST3 and AU plugins Sotto Voce can host'],
     ['riedel', 'Riedel and fail-safe', 'RRCS, logic sources, VOX, PROBE'],
     ['macros', 'Macros', 'Steps behind the macro keys'],
   ];
@@ -1201,14 +1201,14 @@ table.t tr.unused td{color:var(--muted)}
     return box('Processing', `The project default for every talker.${own ? ` ${own} talker${own > 1 ? 's have' : ' has'} their own setting, from an operator profile or the Channels page.` : ' Any operator profile or channel can override it.'}`,
       `<div class="modes">${Object.entries(MODES).map(([k, m]) => `<button class="mode" data-act="mode" data-v="${k}" aria-pressed="${pp.mode === k}"><b>${m.l}</b><span class="chain">${m.chain}</span><small>${m.d}</small></button>`).join('')}</div>` +
       row('Echo tail', 'How long the PA bleed can ring on after the PGM. Longer suits bigger rooms but adapts more slowly.', sel('proc.tail', [[128, '128 ms'], [256, '256 ms'], [512, '512 ms']], pp.tail, 'data-t="n"')) +
-      row('Reference delay', 'The PGM reaches the canceller before the bleed reaches the mic. Sotto measures the gap when it starts and locks it.', `<span class="fixed">Auto, locked at start</span>`) +
+      row('Reference delay', 'The PGM reaches the canceller before the bleed reaches the mic. Sotto Voce measures the gap when it starts and locks it.', `<span class="fixed">Auto, locked at start</span>`) +
       row('Bleed suppression', 'Extra removal after the echo canceller (Echo + noise and Full clean).', rng('proc.supp', pp.supp, 0, 24, 1, 'dB')) +
       row('Speech model limit', 'Most the speech model may take away (Full clean). Lower sounds more natural, higher is cleaner.', rng('proc.atten', pp.atten, 6, 40, 1, 'dB')) +
       row('High-pass', 'Removes rumble and handling noise before processing.', sel('proc.hpf', [[0, 'Off'], [80, '80 Hz'], [100, '100 Hz'], [120, '120 Hz']], pp.hpf, 'data-t="n"')) +
       row('Output trim', 'Level change on every clean return.', rng('proc.trim', pp.trim, -12, 6, 0.5, 'dB')) +
-      row('Processing headroom', `How long the processing gets for each 10 ms block. Some soundcards deliver blocks in bunches, two at once and then a gap; with 10 ms a bunched block can come back late, and that talker gets 10 ms of dry. 20 ms absorbs the bunching for 10 ms more delay. ${armedNow ? '<b>Disarm Sotto to change it:</b> it moves every talker\'s delay.' : 'Change it while disarmed: it moves every talker\'s delay.'}`,
-        sel('proc.headroom', [[1, '10 ms (20 ms through Sotto)'], [2, '20 ms (30 ms through Sotto)']], hr, 'data-t="n"' + (armedNow ? ' disabled' : '')) + gapsNote()) +
-      row('Added delay (estimate)', 'Through Sotto, on top of the DVS latency. Latency work comes later.', `<span class="fixed">${lat.toFixed(1)} ms</span><span class="muted">${buf.toFixed(1)} ms in + ${buf.toFixed(1)} ms out${pp.mode === 'full' ? ' + 10 ms speech model frame' : ''}${hr > 1 ? ` + ${10 * (hr - 1)} ms headroom` : ''}</span>`));
+      row('Processing headroom', `How long the processing gets for each 10 ms block. Some soundcards deliver blocks in bunches, two at once and then a gap; with 10 ms a bunched block can come back late, and that talker gets 10 ms of dry. 20 ms absorbs the bunching for 10 ms more delay. ${armedNow ? '<b>Disarm Sotto Voce to change it:</b> it moves every talker\'s delay.' : 'Change it while disarmed: it moves every talker\'s delay.'}`,
+        sel('proc.headroom', [[1, '10 ms (20 ms through Sotto Voce)'], [2, '20 ms (30 ms through Sotto Voce)']], hr, 'data-t="n"' + (armedNow ? ' disabled' : '')) + gapsNote()) +
+      row('Added delay (estimate)', 'Through Sotto Voce, on top of the DVS latency. Latency work comes later.', `<span class="fixed">${lat.toFixed(1)} ms</span><span class="muted">${buf.toFixed(1)} ms in + ${buf.toFixed(1)} ms out${pp.mode === 'full' ? ' + 10 ms speech model frame' : ''}${hr > 1 ? ` + ${10 * (hr - 1)} ms headroom` : ''}</span>`));
   }
   function gapsNote() {
     const g = APP && APP.callback && APP.callback.gaps;
@@ -1220,11 +1220,11 @@ table.t tr.unused td{color:var(--muted)}
   function loadDevices() {
     if (UI.devsLoading) return;
     UI.devsLoading = true;
-    api('/api/devices').then(r => { UI.devs = r; }).catch(() => { UI.devs = { ok: false, error: 'Sotto Bench did not answer', devices: [] }; })
+    api('/api/devices').then(r => { UI.devs = r; }).catch(() => { UI.devs = { ok: false, error: 'Sotto Voce did not answer', devices: [] }; })
       .finally(() => { UI.devsLoading = false; if (UI.sec === 'engine' && !$('#pSet').hidden) renderSet(); });
   }
   function appDeviceRow(e) {
-    if (UI.restarting) return row('Switch to', '', `<span class="fixed">Restarting on ${esc(UI.restarting)}… Sotto starts disarmed.</span>`);
+    if (UI.restarting) return row('Switch to', '', `<span class="fixed">Restarting on ${esc(UI.restarting)}… Sotto Voce starts disarmed.</span>`);
     if (!UI.devs) { loadDevices(); return row('Switch to', '', '<span class="muted">Looking for audio devices…</span>'); }
     if (!UI.devs.ok) return row('Switch to', esc(UI.devs.error || ''), '<button class="btn sm" data-act="devrefresh">Look again</button>');
     const opts = UI.devs.devices.map(d => {
@@ -1233,12 +1233,12 @@ table.t tr.unused td{color:var(--muted)}
     }).join('');
     const pick = UI.devs.devices.find(d => String(d.index) === String(UI.devPick));
     const confirm = UI.devConfirm && pick
-      ? `<div class="note warn" style="margin-top:8px">Switching to <b>${esc(pick.name)}</b> restarts the audio engine. HEARTBEAT stops, so the frame puts every listener on dry, and Sotto starts again disarmed. Re-arm when the checks are green.
+      ? `<div class="note warn" style="margin-top:8px">Switching to <b>${esc(pick.name)}</b> restarts the audio engine. HEARTBEAT stops, so the frame puts every listener on dry, and Sotto Voce starts again disarmed. Re-arm when the checks are green.
            <div class="row" style="margin-top:8px"><button class="btn sm" data-act="devgo">Restart on ${esc(pick.name)}</button><button class="btn sm" data-act="devno">Cancel</button></div></div>` : '';
     return row('Switch to', `Every device the Mac can see. Greyed-out devices have fewer than the ${e.n_in} inputs and ${e.n_out} outputs these channel settings need.`,
       `<select id="f-appdev">${opts}</select><button class="btn sm" data-act="devswitch">Switch</button><button class="btn sm" data-act="devrefresh">Look again</button>${confirm}`);
   }
-  const IO_CHOICES = [[0, 'Sotto\'s 10 ms blocks (480), as before'], [512, '512 samples'], [256, '256 samples'], [240, '240 samples'], [160, '160 samples'], [128, '128 samples'], [96, '96 samples'], [64, '64 samples']];
+  const IO_CHOICES = [[0, 'Sotto Voce\'s 10 ms blocks (480), as before'], [512, '512 samples'], [256, '256 samples'], [240, '240 samples'], [160, '160 samples'], [128, '128 samples'], [96, '96 samples'], [64, '64 samples']];
   function appBufferRow(e) {
     const cur = e.io_buffer && e.io_buffer !== e.block ? e.io_buffer : 0;
     const rng = e.coreaudio && e.coreaudio.buffer_range;
@@ -1247,9 +1247,9 @@ table.t tr.unused td{color:var(--muted)}
       return `<option value="${v}"${String(v) === String(UI.ioPick ?? cur) ? ' selected' : ''}${ok ? '' : ' disabled'}>${l}${v ? ` (${(v / 48).toFixed(1)} ms)` : ''}${ok ? '' : ', not allowed by this soundcard'}</option>`;
     }).join('');
     const confirm = UI.ioConfirm
-      ? `<div class="note warn" style="margin-top:8px">Changing the soundcard buffer restarts the audio engine. HEARTBEAT stops, so the frame puts every listener on dry, and Sotto starts again disarmed.
+      ? `<div class="note warn" style="margin-top:8px">Changing the soundcard buffer restarts the audio engine. HEARTBEAT stops, so the frame puts every listener on dry, and Sotto Voce starts again disarmed.
            <div class="row" style="margin-top:8px"><button class="btn sm" data-act="iogo">Restart with ${UI.ioPick > 0 ? UI.ioPick + ' samples' : '10 ms blocks'}</button><button class="btn sm" data-act="iono">Cancel</button></div></div>` : '';
-    return row('Soundcard buffer', `How much audio the soundcard hands Sotto at a time. Smaller is lower latency and arrives evenly; Sotto regroups it into its 10 ms blocks, which adds ${e.regroup_ms ? e.regroup_ms + ' ms now' : 'up to 10 ms'}. 160 samples (3.3 ms) divides evenly into 10 ms. If the log shows dropouts, go one size up.`,
+    return row('Soundcard buffer', `How much audio the soundcard hands Sotto Voce at a time. Smaller is lower latency and arrives evenly; Sotto Voce regroups it into its 10 ms blocks, which adds ${e.regroup_ms ? e.regroup_ms + ' ms now' : 'up to 10 ms'}. 160 samples (3.3 ms) divides evenly into 10 ms. If the log shows dropouts, go one size up.`,
       `<select id="f-appio">${opts}</select><button class="btn sm" data-act="ioswitch">Apply</button>${confirm}`);
   }
   function latencyRow(e) {
@@ -1257,18 +1257,18 @@ table.t tr.unused td{color:var(--muted)}
     const sotto = (e.regroup_ms || 0) + (pr.latency_ms || 0);
     if (pa.in == null) return '';
     const total = pa.in + sotto + pa.out;
-    return row('Delay, mic to return', 'Measured from what the audio driver reports, plus Sotto\'s own delay. Add the Dante latency set in Dante Virtual Soundcard (each way).',
-      `<span class="fixed">${total.toFixed(1)} ms</span><span class="muted">soundcard in ${pa.in} ms + Sotto ${sotto.toFixed(1)} ms (${e.regroup_ms ? `regrouping ${e.regroup_ms} ms, ` : ''}processing ${pr.latency_ms ?? '–'} ms) + soundcard out ${pa.out} ms</span>`);
+    return row('Delay, mic to return', 'Measured from what the audio driver reports, plus Sotto Voce\'s own delay. Add the Dante latency set in Dante Virtual Soundcard (each way).',
+      `<span class="fixed">${total.toFixed(1)} ms</span><span class="muted">soundcard in ${pa.in} ms + Sotto Voce ${sotto.toFixed(1)} ms (${e.regroup_ms ? `regrouping ${e.regroup_ms} ms, ` : ''}processing ${pr.latency_ms ?? '–'} ms) + soundcard out ${pa.out} ms</span>`);
   }
   function coreAudioRow(e) {
     const c = e.coreaudio;
     if (!c) return '';
     const f = (x) => x == null ? '–' : x;
-    return row('Core Audio', 'What macOS itself says about the soundcard while Sotto runs. The buffer is one Core Audio cycle; the driver latency and safety offset are added by the driver and macOS.',
+    return row('Core Audio', 'What macOS itself says about the soundcard while Sotto Voce runs. The buffer is one Core Audio cycle; the driver latency and safety offset are added by the driver and macOS.',
       `<span class="muted">Buffer ${f(c.buffer_frames)} samples${c.buffer_range ? ` (allowed ${c.buffer_range[0]}–${c.buffer_range[1]})` : ''} · driver latency in ${f(c.latency_frames && c.latency_frames.in)} / out ${f(c.latency_frames && c.latency_frames.out)} · safety offset in ${f(c.safety_frames && c.safety_frames.in)} / out ${f(c.safety_frames && c.safety_frames.out)} samples${c.total_ms ? ` · Core Audio total in ${c.total_ms.in} ms / out ${c.total_ms.out} ms` : ''}${c.running_elsewhere ? ' · also in use by another app' : ''}</span>`);
   }
   async function restartOn(idx, name, io) {
-    const r = await api('/api/engine', io == null ? { device: idx } : { io_buffer: io }).catch(() => ({ ok: false, error: 'Sotto Bench did not answer' }));
+    const r = await api('/api/engine', io == null ? { device: idx } : { io_buffer: io }).catch(() => ({ ok: false, error: 'Sotto Voce did not answer' }));
     if (!r.ok) { toast(r.error || 'Could not switch'); return; }
     UI.restarting = name; UI.devConfirm = false; renderSet();
     for (let i = 0; i < 80; i++) {                       // the old engine stops, the new one starts disarmed
@@ -1276,11 +1276,11 @@ table.t tr.unused td{color:var(--muted)}
       try { const st = await api('/api/state'); if (st.engine && st.t < 30 && (io == null ? String(st.engine.device) === String(idx) : true)) { location.reload(); return; } } catch (e) {}
     }
     UI.restarting = null; renderSet();
-    toast('Sotto Bench did not come back. Open it again from the Applications or Downloads folder.');
+    toast('Sotto Voce did not come back. Open it again from the Applications or Downloads folder.');
   }
   const TKINDS = [['off', 'Off'], ['tone', 'Test tone (1 kHz)'], ['pink', 'Pink noise'], ['speech', 'Speech'], ['bleed', 'Speech with PA bleed'], ['programme', 'Programme (music)'], ['file', 'A WAV file']];
   function secTests() {
-    if (!APP) return box('Test sources', 'In the app, Sotto can play a test tone, pink noise, speech, a programme, a WAV file, or speech with PA bleed into any talker input or into PGM, so you can hear the processing before anything is routed in Dante Controller. This preview has no audio engine.', '');
+    if (!APP) return box('Test sources', 'In the app, Sotto Voce can play a test tone, pink noise, speech, a programme, a WAV file, or speech with PA bleed into any talker input or into PGM, so you can hear the processing before anything is routed in Dante Controller. This preview has no audio engine.', '');
     const T = APP.tests || { playing: {}, allowed: {}, files: [] };
     const armed = APP.armed;
     const files = T.files || [];
@@ -1311,14 +1311,14 @@ table.t tr.unused td{color:var(--muted)}
     }).join('');
     const list = (files.length ? `<ul class="flist">${files.map(x => `<li><span class="mono">${esc(x)}</span><button class="btn sm" data-act="tremove" data-v="${esc(x)}"${armed ? ' disabled' : ''}>Remove</button></li>`).join('')}</ul>` : '<span class="muted">None yet.</span>') +
       `<div class="drop" style="margin-top:8px">${uploadStrip(T, '')}</div>`;
-    return box('Test sources', 'Play test audio into a channel inside Sotto, so you can hear the processing without a mic, a PGM feed or any Dante routing. Solo the channel and listen in Split (dry left, clean right). <b>Speech with PA bleed</b> puts a programme on PGM and the same programme, delayed 40 ms with room reverb, into the mic under the speech: the echo canceller should remove it. Use your own WAVs for both: speech recorded on a comms mic, and a recording of the show as the programme. Test sources only play while Sotto is disarmed; arming switches them all off. The test audio also goes out on that talker\'s return.',
-      (armed ? '<p class="note warn">Sotto is armed: test sources are off. Disarm to use them.</p>' : '') + rows +
+    return box('Test sources', 'Play test audio into a channel inside Sotto Voce, so you can hear the processing without a mic, a PGM feed or any Dante routing. Solo the channel and listen in Split (dry left, clean right). <b>Speech with PA bleed</b> puts a programme on PGM and the same programme, delayed 40 ms with room reverb, into the mic under the speech: the echo canceller should remove it. Use your own WAVs for both: speech recorded on a comms mic, and a recording of the show as the programme. Test sources only play while Sotto Voce is disarmed; arming switches them all off. The test audio also goes out on that talker\'s return.',
+      (armed ? '<p class="note warn">Sotto Voce is armed: test sources are off. Disarm to use them.</p>' : '') + rows +
       row('Uploaded audio files', 'Kept on this computer for next time. WAV at any sample rate, 16, 24 or 32-bit, or 32-bit float. On a Mac also AIFF, MP3, M4A, CAF and FLAC. Up to 2 minutes; longer files are cut.', list) +
       row('', '', `<button class="btn sm" data-act="talloff"${armed ? ' disabled' : ''}>Stop every test source</button>`));
   }
   const AUDIO_ACCEPT = 'audio/*,.wav,.wave,.bwf,.aif,.aiff,.aifc,.caf,.mp3,.m4a,.aac,.flac';
   // Three ways in, so one always works: a real file button (clicked by you, which every browser
-  // allows), dropping a file on the box, and on a Mac the Finder dialog opened by Sotto Bench itself.
+  // allows), dropping a file on the box, and on a Mac the Finder dialog opened by Sotto Voce itself.
   function uploadStrip(T, forWhat) {
     const busy = UI.uploading ? ' disabled' : '', dis = APP.armed ? ' disabled' : '';
     return `<div class="upl" data-drop="1">
@@ -1355,14 +1355,14 @@ table.t tr.unused td{color:var(--muted)}
     try {
       const res = await fetch('/api/testsrc/upload?name=' + encodeURIComponent(file.name), { method: 'POST', body: file });
       uploadDone(await res.json());
-    } catch (e) { uploadDone({ ok: false, error: `Sotto Bench did not answer (${e.message || e})` }); }
+    } catch (e) { uploadDone({ ok: false, error: `Sotto Voce did not answer (${e.message || e})` }); }
   }
   async function chooseWithFinder() {
     UI.uploading = 'Waiting for the Finder dialog… (it may open behind this window)'; renderSet();
-    uploadDone(await api('/api/testsrc/choose', {}).catch(e => ({ ok: false, error: 'Sotto Bench did not answer' })));
+    uploadDone(await api('/api/testsrc/choose', {}).catch(e => ({ ok: false, error: 'Sotto Voce did not answer' })));
   }
   async function testCmd(body) {
-    const r = await api('/api/testsrc', body).catch(() => ({ ok: false, error: 'Sotto Bench did not answer' }));
+    const r = await api('/api/testsrc', body).catch(() => ({ ok: false, error: 'Sotto Voce did not answer' }));
     if (!r.ok) toast(r.error || 'Could not change the test source'); else { APP.tests = r; renderSet(); }
   }
   function phonesRow(e) {
@@ -1378,7 +1378,7 @@ table.t tr.unused td{color:var(--muted)}
   function rateRow(e) {
     const ca = e.coreaudio, rate = (ca && ca.rate) || e.fs;
     const ok = rate === 48000;
-    return row('Sample rate', 'Set by the Dante network: change it for Dante Virtual Soundcard in Dante Controller (Device Config), not here. Sotto follows it; the speech model needs 48 kHz.',
+    return row('Sample rate', 'Set by the Dante network: change it for Dante Virtual Soundcard in Dante Controller (Device Config), not here. Sotto Voce follows it; the speech model needs 48 kHz.',
       `<span class="fixed">${rate / 1000} kHz</span>${ok ? '<span class="pill ok">48 kHz</span>' : '<span class="pill err">set 48 kHz in Dante Controller</span>'}`);
   }
   // ---------------------------------------------------------------- I/O patch (app)
@@ -1436,7 +1436,7 @@ table.t tr.unused td{color:var(--muted)}
     if (UI.cfgLoading) return;
     UI.cfgLoading = true;
     api('/api/config').then(r => { UI.cfg = r; UI.patch = patchFrom(r.saved); UI.patchSaved = JSON.stringify(patchTo(UI.patch)); })
-      .catch(() => { UI.cfg = { error: 'Sotto Bench did not answer' }; })
+      .catch(() => { UI.cfg = { error: 'Sotto Voce did not answer' }; })
       .finally(() => { UI.cfgLoading = false; if (UI.sec === 'channels' && !$('#pSet').hidden) renderSet(); });
   }
   function chSel(key, val, list, bad, extra = []) {
@@ -1452,8 +1452,8 @@ table.t tr.unused td{color:var(--muted)}
       <td><input type="text" data-pk="t${k}.name" value="${esc(t.name)}" placeholder="Talker ${k + 1}" aria-label="Name of talker ${k + 1}"></td>
       <td>${chSel(`t${k}.in`, t.in, TALK_CH, bad)}</td><td>${chSel(`t${k}.out`, t.out, TALK_CH, bad)}</td></tr>`).join('');
     const srows = SYS.map(([key, label, side, optional]) => `<label>${label}${chSel(key, pt[key], SYS_CH, bad, optional ? [[0, 'Off']] : [])}<small class="muted">default ${key === 'mon_l' ? 63 : key === 'mon_r' ? 64 : (chansParse(UI.cfg.defaults[key])[0] || 'off')}</small></label>`).join('');
-    return box('I/O patch', 'Which soundcard channel does each job, numbered as in Dante Controller. Talkers use channels 1–60; 61–64 are kept for the system. Applying checks the soundcard has the channels, then restarts the engine: HEARTBEAT stops, the frame puts listeners on dry, and Sotto starts again disarmed.',
-      row('Talkers', 'How many people Sotto cleans up. New talkers take the next free input and return.', `<select data-pk="count">${TALK_CH.map(c => `<option value="${c}"${c === n ? ' selected' : ''}>${c}</option>`).join('')}</select>`) +
+    return box('I/O patch', 'Which soundcard channel does each job, numbered as in Dante Controller. Talkers use channels 1–60; 61–64 are kept for the system. Applying checks the soundcard has the channels, then restarts the engine: HEARTBEAT stops, the frame puts listeners on dry, and Sotto Voce starts again disarmed.',
+      row('Talkers', 'How many people Sotto Voce cleans up. New talkers take the next free input and return.', `<select data-pk="count">${TALK_CH.map(c => `<option value="${c}"${c === n ? ' selected' : ''}>${c}</option>`).join('')}</select>`) +
       `<div class="scroll"><table class="t ptab"><thead><tr><th>#</th><th>Name</th><th>Input</th><th>Return (clean)</th></tr></thead><tbody>${trows}</tbody></table></div>` +
       `<h4 class="subh">System channels</h4><div class="pgrid">${srows}</div>` +
       (msgs.length ? `<p class="note warn">${msgs.map(esc).join('<br>')}</p>` : '') +
@@ -1481,17 +1481,17 @@ table.t tr.unused td{color:var(--muted)}
   }
   async function toSetup() {
     const r = await api('/api/setup', {}).catch(() => null);
-    if (!r || !r.ok) { toast('Sotto Bench did not answer'); return; }
+    if (!r || !r.ok) { toast('Sotto Voce did not answer'); return; }
     toast('Stopping the engine: back to setup…');
     for (let i = 0; i < 60; i++) {
       await new Promise(res => setTimeout(res, 500));
-      try { const t = await (await fetch('/', { cache: 'no-store' })).text(); if (t.includes('Sotto Bench Setup')) { location.href = '/'; return; } } catch (e) {}
+      try { const t = await (await fetch('/', { cache: 'no-store' })).text(); if (t.includes('Sotto Voce Setup')) { location.href = '/'; return; } } catch (e) {}
     }
   }
   function procNote() {
     const pr = APP && APP.processing;
     if (!pr || !pr.on) return `Processing is off${pr && pr.why ? ': ' + pr.why : ''}. The talkers pass straight through.`;
-    return `Running${pr.model ? '' : ' without the speech model (Full clean works as Echo + noise)'}: ${pr.proc_ms} ms of each 10 ms block, peak ${pr.proc_ms_max} ms. Adds ${pr.latency_ms} ms plus the soundcard.${pr.misses ? ` ${pr.misses} late blocks so far.` : ''}${pr.cpu_ms != null ? ` Computing takes ${pr.cpu_ms} ms of that${pr.proc_ms > 1.5 * pr.cpu_ms + 1 ? ' (the rest is waiting: the computer is holding Sotto back)' : ''}.` : ''}${pr.thread ? ` Processing thread: ${pr.thread}.` : ''}${pr.stage_ms ? ` Echo and suppressor ${pr.stage_ms.front} ms, speech model ${pr.stage_ms.model} ms (${pr.model_rows} talkers), mix and inserts ${pr.stage_ms.back} ms.` : ''}${pr.worker_detail ? ` Runs in ${pr.workers} worker process${pr.workers > 1 ? 'es' : ''}, separate from the audio engine: ` + pr.worker_detail.map(w => `worker ${w.worker} (talker${w.talkers.length > 1 ? 's' : ''} ${w.talkers.join(', ')}) ${w.ready ? `${w.proc_ms ?? '–'} ms` : 'starting'}${w.restarts ? `, restarted ${w.restarts}×` : ''}`).join('; ') + '.' : (pr.on ? ' Runs on a thread inside the audio engine (workers off).' : '')}${powerNote()}`;
+    return `Running${pr.model ? '' : ' without the speech model (Full clean works as Echo + noise)'}: ${pr.proc_ms} ms of each 10 ms block, peak ${pr.proc_ms_max} ms. Adds ${pr.latency_ms} ms plus the soundcard.${pr.misses ? ` ${pr.misses} late blocks so far.` : ''}${pr.cpu_ms != null ? ` Computing takes ${pr.cpu_ms} ms of that${pr.proc_ms > 1.5 * pr.cpu_ms + 1 ? ' (the rest is waiting: the computer is holding Sotto Voce back)' : ''}.` : ''}${pr.thread ? ` Processing thread: ${pr.thread}.` : ''}${pr.stage_ms ? ` Echo and suppressor ${pr.stage_ms.front} ms, speech model ${pr.stage_ms.model} ms (${pr.model_rows} talkers), mix and inserts ${pr.stage_ms.back} ms.` : ''}${pr.worker_detail ? ` Runs in ${pr.workers} worker process${pr.workers > 1 ? 'es' : ''}, separate from the audio engine: ` + pr.worker_detail.map(w => `worker ${w.worker} (talker${w.talkers.length > 1 ? 's' : ''} ${w.talkers.join(', ')}) ${w.ready ? `${w.proc_ms ?? '–'} ms` : 'starting'}${w.restarts ? `, restarted ${w.restarts}×` : ''}`).join('; ') + '.' : (pr.on ? ' Runs on a thread inside the audio engine (workers off).' : '')}${powerNote()}`;
   }
   function powerNote() {
     const w = APP && APP.power;
@@ -1503,7 +1503,7 @@ table.t tr.unused td{color:var(--muted)}
     const m = {
       processing: procNote(),
       operators: 'Changes apply to the running talkers straight away. Each insert\'s settings are saved in its profile.',
-      channels: 'Set which soundcard channels Sotto uses in the I/O patch below. The talker list underneath is for names, operators and processing per talker.',
+      channels: 'Set which soundcard channels Sotto Voce uses in the I/O patch below. The talker list underneath is for names, operators and processing per talker.',
       riedel: 'The Riedel frame\'s RRCS IP address and port are on the setup page: Setup (top right) stops the engine and takes you there. Changes here are saved for the full app.',
     }[sec];
     return m ? `<div class="appnote">${m}</div>` : '';
@@ -1511,17 +1511,17 @@ table.t tr.unused td{color:var(--muted)}
   function secEngine() {
     if (APP && APP.engine) {
       const e = APP.engine;
-      return box('Audio engine', 'What Sotto Bench is running on now.',
+      return box('Audio engine', 'What Sotto Voce is running on now.',
         row('Device', e.simulate ? 'Quit and choose a soundcard on the setup page to leave the simulation.' : 'Switching restarts the audio engine.', `<span class="fixed">${esc(e.simulate ? 'Simulated Riedel frame (no audio hardware)' : (e.device_name || String(e.device)))}</span>`) +
         (e.simulate ? '' : appDeviceRow(e)) +
         (e.simulate ? '' : appBufferRow(e)) +
         (e.simulate ? '' : phonesRow(e)) +
         latencyRow(e) +
         coreAudioRow(e) +
-        (e.app_nap ? row('App Nap', 'macOS slows down apps with no window. Sotto turns this off while it runs.', `<span class="fixed">${esc(e.app_nap)}</span>`) : '') +
-        row('Channels open', 'Inputs and outputs Sotto Bench asked the device for.', `<span class="fixed">${e.n_in} in / ${e.n_out} out</span>`) +
+        (e.app_nap ? row('App Nap', 'macOS slows down apps with no window. Sotto Voce turns this off while it runs.', `<span class="fixed">${esc(e.app_nap)}</span>`) : '') +
+        row('Channels open', 'Inputs and outputs Sotto Voce asked the device for.', `<span class="fixed">${e.n_in} in / ${e.n_out} out</span>`) +
         rateRow(e) +
-        row('Block', 'Sotto\'s processing block.', `<span class="fixed">${e.block} samples (${(1000 * e.block / e.fs).toFixed(1)} ms)</span>`) +
+        row('Block', 'Sotto Voce\'s processing block.', `<span class="fixed">${e.block} samples (${(1000 * e.block / e.fs).toFixed(1)} ms)</span>`) +
         row('Phones bus dim', 'How much the Dim button takes off the headphones.', sel('phones.dim', [[-10, '−10 dB'], [-20, '−20 dB'], [-30, '−30 dB']], P.phones.dim, 'data-t="n"')) +
         row('Phones bus limiter', 'Protects your ears when several solos add up: nothing on the phones goes above this.', sel('phones.limit', LIMITS, P.phones.limit ?? -3, 'data-t="n"')) +
         row('Check the device', 'Checks the soundcard, the sample rate, Core Audio, microphone permission, PROBE, PGM and the talker inputs, without arming.', `<button class="btn sm" data-act="appcheck">Check device</button>`) +
@@ -1529,17 +1529,17 @@ table.t tr.unused td{color:var(--muted)}
         row('Setup page', 'Stops the engine and goes back to the setup page (soundcard, channels, the Riedel frame\'s IP and port). HEARTBEAT stops, so the frame puts every listener on dry. Everything you set is kept.', '<button class="btn sm" data-act="tosetup">Back to setup</button>') +
         row('Latency', 'Reported by the audio driver.', `<span class="fixed">${esc(e.latency_note || 'not reported')}</span>`) +
         row('Recordings', 'Where this run is saved.', `<span class="fixed">${esc(APP.folder || '')}</span>`) +
-        row('Diagnostics', 'One file with everything needed to troubleshoot this computer: the Mac, its audio devices, these settings, timings, a speed test, the log and any crash records. Send it to whoever is helping you. The speed test is skipped while Sotto is armed, so it can\'t disturb a show.', '<button class="btn sm" data-act="diag">Download diagnostics</button>') +
+        row('Diagnostics', 'One file with everything needed to troubleshoot this computer: the Mac, its audio devices, these settings, timings, a speed test, the log and any crash records. Send it to whoever is helping you. The speed test is skipped while Sotto Voce is armed, so it can\'t disturb a show.', '<button class="btn sm" data-act="diag">Download diagnostics</button>') +
         row('Processing', 'Echo canceller, suppressor and speech model, on their own thread.', `<span class="fixed">${esc(procNote())}</span>`) +
         row('Plugin inserts', '', `<span class="fixed">${APP.processing && APP.processing.plugins_available ? 'available (VST3)' : 'not available in this build'}</span>`));
     }
     const e = P.engine, d = dev(), okDev = engineOk();
     const devOpts = Object.entries(DEVICES).filter(([, x]) => x.drivers.includes(e.driver)).map(([k, x]) => [k, `${x.name} (${x.in} in / ${x.out} out)`]);
     const res = UI.check;
-    return box('Audio engine', 'Sotto opens one audio device for every input and output. Dante Virtual Soundcard and Merging VAD both appear to the computer as an ordinary soundcard.',
-      row('Driver', 'On a Mac Sotto uses Core Audio. On Windows it uses ASIO.', `<span class="seg">${Object.entries(DRIVERS).map(([k, l]) => `<button data-act="driver" data-v="${k}" aria-pressed="${e.driver === k}">${l}</button>`).join('')}</span>`) +
-      row('Device', okDev ? 'Has the 64 inputs and outputs Sotto needs.' : 'Sotto needs a device with 64 inputs and 64 outputs so channels 61 to 64 exist.', sel('engine.device', devOpts.length ? devOpts : [['', 'No devices for this driver']], e.device) + (okDev ? '<span class="pill ok">64 × 64</span>' : '<span class="pill err">too few channels</span>')) +
-      row('Sample rate', 'Must match the Dante or AES67 network. Set it in Dante Controller (or the VAD settings); Sotto follows it. 64 channels needs 48 kHz or 44.1 kHz.', sel('engine.rate', [[48000, '48 kHz'], [44100, '44.1 kHz'], [96000, '96 kHz (DVS limit: 32 channels)', true]], e.rate, 'data-t="n"')) +
+    return box('Audio engine', 'Sotto Voce opens one audio device for every input and output. Dante Virtual Soundcard and Merging VAD both appear to the computer as an ordinary soundcard.',
+      row('Driver', 'On a Mac Sotto Voce uses Core Audio. On Windows it uses ASIO.', `<span class="seg">${Object.entries(DRIVERS).map(([k, l]) => `<button data-act="driver" data-v="${k}" aria-pressed="${e.driver === k}">${l}</button>`).join('')}</span>`) +
+      row('Device', okDev ? 'Has the 64 inputs and outputs Sotto Voce needs.' : 'Sotto Voce needs a device with 64 inputs and 64 outputs so channels 61 to 64 exist.', sel('engine.device', devOpts.length ? devOpts : [['', 'No devices for this driver']], e.device) + (okDev ? '<span class="pill ok">64 × 64</span>' : '<span class="pill err">too few channels</span>')) +
+      row('Sample rate', 'Must match the Dante or AES67 network. Set it in Dante Controller (or the VAD settings); Sotto Voce follows it. 64 channels needs 48 kHz or 44.1 kHz.', sel('engine.rate', [[48000, '48 kHz'], [44100, '44.1 kHz'], [96000, '96 kHz (DVS limit: 32 channels)', true]], e.rate, 'data-t="n"')) +
       row('Buffer', 'Smaller is lower latency but needs more headroom. Start at 128 and only go lower after a full-channel test.', `<span class="seg">${[32, 64, 128, 256, 512].map(v => `<button data-act="buffer" data-v="${v}" aria-pressed="${e.buffer === v}">${v}</button>`).join('')}</span><span class="muted mono">${(e.buffer / (e.rate / 1000)).toFixed(2)} ms</span>`) +
       row('Phones bus dim', 'How much the Dim button takes off the headphones.', sel('phones.dim', [[-10, '−10 dB'], [-20, '−20 dB'], [-30, '−30 dB']], P.phones.dim, 'data-t="n"')) +
       row('Phones bus limiter', 'Protects your ears when several solos add up: nothing on the phones goes above this.', sel('phones.limit', LIMITS, P.phones.limit ?? -3, 'data-t="n"')) +
@@ -1550,25 +1550,25 @@ table.t tr.unused td{color:var(--muted)}
           <li>In Dante Virtual Soundcard, set the channel count to <b>64 × 64</b> and the latency to <b>4 ms</b> (6 ms if you hear dropouts). On Windows pick <b>ASIO</b> mode.</li>
           <li>Start DVS, then in Dante Controller check the laptop is synced to the network clock (the Master Antenna is grandmaster) at 48 kHz.</li>
           <li>Route the frame's Dante transmit channels for the talkers to DVS receive 1–60, PGM to receive 62, and the frame's PROBE loop to receive 61. Route DVS transmit 1–60 back to the frame's clean returns, 61 to the VOX 4-wire, 62 into the PROBE loop.</li>
-          <li>Open Sotto, choose <b>Dante Virtual Soundcard</b> here, then Check device.</li>
-          <li>The first time, macOS asks whether Sotto may use the microphone. Allow it: macOS treats every audio input that way, including DVS. If you said no, turn it on in System Settings › Privacy &amp; Security › Microphone.</li>
+          <li>Open Sotto Voce, choose <b>Dante Virtual Soundcard</b> here, then Check device.</li>
+          <li>The first time, macOS asks whether Sotto Voce may use the microphone. Allow it: macOS treats every audio input that way, including DVS. If you said no, turn it on in System Settings › Privacy &amp; Security › Microphone.</li>
         </ol>
         <p class="note">Merging VAD works the same way on a Mac: set the VAD to 64 channels at 48 kHz (AES67) in Merging's settings and pick it here. VAD only speaks RAVENNA and AES67, so the frame side must be AES67.</p>
         <div class="warnbox" style="margin-top:10px">Audinate rate a desktop Mac (they name the Mac mini) for sending and receiving at high channel counts, and a MacBook Pro for recording only. Before a show at 64 × 64, run the full channel count on the show laptop for an hour with the Dante Controller latency and clock pages open.</div>`);
   }
   function secRiedel() {
     const r = P.rrcs, t = UI.rrcsTest;
-    return box('RRCS', 'Sotto talks to the frame over RRCS (XML-RPC). It sets ARMED when it arms, reads the panel arm key, and the macros use it to switch the frame to dry.',
+    return box('RRCS', 'Sotto Voce talks to the frame over RRCS (XML-RPC). It sets ARMED when it arms, reads the panel arm key, and the macros use it to switch the frame to dry.',
       row('Frame address', 'The RRCS server, usually on the Artist frame\'s control network.', txt('rrcs.host', r.host, 'e.g. 10.0.0.10') + `<input type="number" id="f-rrcs-port" data-b="rrcs.port" data-t="n" value="${r.port}" style="width:90px" aria-label="RRCS port"><button class="btn sm" data-act="rrcs">Test link</button>`) +
       (t ? `<ul class="results">${t.map(([c, x]) => `<li class="${c}"><span class="i">${c === 'ok' ? '✓' : '✕'}</span><span>${x}</span></li>`).join('')}</ul>` : '') +
-      row('ARMED logic source', 'Sotto sets it via RRCS when it arms. The frame\'s logic releases it when CLEAN_OK drops.', txt('rrcs.armed', r.armed)) +
-      row('Arm request source', 'A panel key that asks Sotto to arm. Sotto still checks for 5 s of green.', txt('rrcs.armReq', r.armReq)) +
+      row('ARMED logic source', 'Sotto Voce sets it via RRCS when it arms. The frame\'s logic releases it when CLEAN_OK drops.', txt('rrcs.armed', r.armed)) +
+      row('Arm request source', 'A panel key that asks Sotto Voce to arm. Sotto Voce still checks for 5 s of green.', txt('rrcs.armReq', r.armReq)) +
       row('CLEAN_OK', 'Set by the VOX on the HEARTBEAT 4-wire. Read only.', txt('rrcs.cleanOk', r.cleanOk))) +
       box('Fail-safe timing', 'The frame falls back to dry on its own when HEARTBEAT stops. These two numbers decide how fast.',
-        row('VOX hold', 'Set on the HEARTBEAT 4-wire port in Director. Sotto needs to know it to show the countdown.', sel('rrcs.hold', [[200, '200 ms'], [400, '400 ms'], [800, '800 ms']], r.hold, 'data-t="n"')) +
-        row('PROBE timeout', 'How long the PROBE may go missing before Sotto disarms. Fallback lands roughly at this plus the VOX hold; aim for 250–500 ms.', sel('rrcs.probe', [[100, '100 ms'], [200, '200 ms'], [300, '300 ms']], r.probe, 'data-t="n"') + `<span class="muted">worst case about ${r.probe + r.hold + 40} ms to dry</span>`) +
+        row('VOX hold', 'Set on the HEARTBEAT 4-wire port in Director. Sotto Voce needs to know it to show the countdown.', sel('rrcs.hold', [[200, '200 ms'], [400, '400 ms'], [800, '800 ms']], r.hold, 'data-t="n"')) +
+        row('PROBE timeout', 'How long the PROBE may go missing before Sotto Voce disarms. Fallback lands roughly at this plus the VOX hold; aim for 250–500 ms.', sel('rrcs.probe', [[100, '100 ms'], [200, '200 ms'], [300, '300 ms']], r.probe, 'data-t="n"') + `<span class="muted">worst case about ${r.probe + r.hold + 40} ms to dry</span>`) +
         row('Arm hold', 'Checks must be green this long before anyone can arm.', '<span class="fixed">5 s, fixed</span>')) +
-      box('Rules that cannot be changed', '', `<ul class="rules"><li>Sotto starts disarmed, every time.</li><li>HEARTBEAT only goes out while armed and every check is green.</li><li>Any fault latches. Going back to clean is always a person's decision.</li><li>Re-arming is manual (console, panel key or Companion) and needs 5 s of green.</li><li>Sidetone never passes through Sotto.</li></ul>`);
+      box('Rules that cannot be changed', '', `<ul class="rules"><li>Sotto Voce starts disarmed, every time.</li><li>HEARTBEAT only goes out while armed and every check is green.</li><li>Any fault latches. Going back to clean is always a person's decision.</li><li>Re-arming is manual (console, panel key or Companion) and needs 5 s of green.</li><li>Sidetone never passes through Sotto Voce.</li></ul>`);
   }
   function macroWarnings(m) {
     const w = [];
@@ -1631,32 +1631,32 @@ table.t tr.unused td{color:var(--muted)}
     const editor = `<div style="display:grid;gap:12px;min-width:0">
       ${row('Name', 'Shown on the tiles, the strips and the event log.', txt(`operators.${oi}.name`, o.name))}
       ${row('On channel', 'When the person moves position, move the profile. Their settings go with them.', chSel)}
-      ${row('Processing', 'Sotto\'s own processing for this person.', sel(`operators.${oi}.mode`, [['default', `Project default (${MODES[P.proc.mode].l})`], ...Object.entries(MODES).map(([kk, m]) => [kk, m.l])], o.mode))}
+      ${row('Processing', 'Sotto Voce\'s own processing for this person.', sel(`operators.${oi}.mode`, [['default', `Project default (${MODES[P.proc.mode].l})`], ...Object.entries(MODES).map(([kk, m]) => [kk, m.l])], o.mode))}
       ${row('Output trim', 'On top of the project trim.', rng(`operators.${oi}.trim`, o.trim, -12, 6, 0.5, 'dB'))}
-      ${row('Insert plugin', 'Runs after Sotto\'s processing, before the output.', sel(`operators.${oi}.ins.plugin`, [['', 'None'], ...Object.entries(PLUGINS).map(([id, x]) => [id, `${x.vendor} ${x.name}`])], pid) + (pl ? `<span class="seg"><button data-act="oins" data-v="1" aria-pressed="${!!o.ins.on}">On</button><button data-act="oins" data-v="0" aria-pressed="${!o.ins.on}">Off</button></span>` : ''))}
+      ${row('Insert plugin', 'Runs after Sotto Voce\'s processing, before the output.', sel(`operators.${oi}.ins.plugin`, [['', 'None'], ...Object.entries(PLUGINS).map(([id, x]) => [id, `${x.vendor} ${x.name}`])], pid) + (pl ? `<span class="seg"><button data-act="oins" data-v="1" aria-pressed="${!!o.ins.on}">On</button><button data-act="oins" data-v="0" aria-pressed="${!o.ins.on}">Off</button></span>` : ''))}
       ${pl ? row('Insert latency', 'Stays the same when the insert is off, so switching never shifts the timing.', `<span class="fixed">${esc(pl.latTxt)}</span>`) : ''}
       ${plug}
-      ${pl ? '<p class="note">Control ranges here are stand-ins. In the app Sotto reads the plugin\'s own controls, and saves its complete state (including what LEARN has learnt) in this profile.</p>' : ''}
+      ${pl ? '<p class="note">Control ranges here are stand-ins. In the app Sotto Voce reads the plugin\'s own controls, and saves its complete state (including what LEARN has learnt) in this profile.</p>' : ''}
       <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn sm" data-act="odup">Duplicate profile</button>${UI.confirmDel ? `<span class="confirm">Delete ${esc(o.name)}? <button class="btn sm danger" data-act="odelok">Delete</button><button class="btn sm" data-act="mdelno">Keep</button></span>` : '<button class="btn sm danger" data-act="odel">Delete profile</button>'}</div>
     </div>`;
     return box('Operators', lede, `<div class="medit">${list}${editor}</div>`);
   }
   function secPlugins() {
     const used = id => P.operators.filter(o => o.ins.plugin === id).map(o => o.name).join(', ') || '–';
-    return box('Plugins', 'Plugins Sotto found on this computer. This list is simulated; the app scans the VST3 folders (and Audio Units on a Mac) when it starts.',
+    return box('Plugins', 'Plugins Sotto Voce found on this computer. This list is simulated; the app scans the VST3 folders (and Audio Units on a Mac) when it starts.',
       `<div class="scroll"><table class="t"><thead><tr><th>Plugin</th><th>Type</th><th>Format</th><th>Latency</th><th>Used by</th><th>Licence</th></tr></thead><tbody>${Object.entries(PLUGINS).map(([id, x]) => `<tr><td><b>${esc(x.vendor)} ${esc(x.name)}</b></td><td>${esc(x.kind)}</td><td class="n">${esc(x.fmt)}</td><td>${esc(x.latTxt)}</td><td>${esc(used(id))}</td><td>iLok</td></tr>`).join('')}</tbody></table></div>
       <div style="margin-top:10px"><button class="btn sm" data-act="rescan">Rescan plugins</button></div>`) +
       hostingRules();
   }
   function hostingRules() {
-    return box('How Sotto hosts a plugin', '', `<ul class="rules">
-        <li>One insert per operator profile, after Sotto's own processing and before the output trim.</li>
+    return box('How Sotto Voce hosts a plugin', '', `<ul class="rules">
+        <li>One insert per operator profile, after Sotto Voce's own processing and before the output trim.</li>
         <li>Off means bypassed, not unloaded. The plugin keeps running, so switching it on is instant and click-free and it doesn't have to re-learn the noise.</li>
         <li>The bypassed path is delayed by the plugin's latency, so a listener hears no timing change when you switch.</li>
         <li>Each talker gets its own mono instance at the project sample rate.</li>
         <li>The per-talker watchdog checks the output after the plugin. If the plugin stalls or returns invalid audio, only that talker drops to dry until re-armed.</li>
-        <li>If a plugin crashes Sotto, the frame falls back to dry within the VOX hold, and Sotto restarts disarmed.</li>
-        <li>New plugins are scanned in a separate helper process, so one that crashes on load can't stop Sotto starting.</li>
+        <li>If a plugin crashes Sotto Voce, the frame falls back to dry within the VOX hold, and Sotto Voce restarts disarmed.</li>
+        <li>New plugins are scanned in a separate helper process, so one that crashes on load can't stop Sotto Voce starting.</li>
         <li>Licences stay with the maker. CEDAR uses iLok: use a physical iLok on the show laptop, because iLok Cloud needs an internet connection.</li>
       </ul>`);
   }
@@ -1669,13 +1669,13 @@ table.t tr.unused td{color:var(--muted)}
     if (UI.pluginsLoading) return;
     UI.pluginsLoading = true;
     api('/api/plugins' + (rescan ? '?rescan=1' : '')).then(r => { UI.realPlugins = r; })
-      .catch(() => { UI.realPlugins = { ok: false, error: 'Sotto Bench did not answer', plugins: [] }; })
+      .catch(() => { UI.realPlugins = { ok: false, error: 'Sotto Voce did not answer', plugins: [] }; })
       .finally(() => { UI.pluginsLoading = false; buildMain(); if (['operators', 'plugins'].includes(UI.sec) && !$('#pSet').hidden) renderSet(); });
   }
   function loadInsertInfo(k) {
     if (UI.insLoading[k]) return;
     UI.insLoading[k] = true;
-    api('/api/insert?talker=' + k).then(r => { UI.insInfo[k] = r; }).catch(() => { UI.insInfo[k] = { loaded: false, error: 'Sotto Bench did not answer' }; })
+    api('/api/insert?talker=' + k).then(r => { UI.insInfo[k] = r; }).catch(() => { UI.insInfo[k] = { loaded: false, error: 'Sotto Voce did not answer' }; })
       .finally(() => { UI.insLoading[k] = false; if (UI.sec === 'operators' && !$('#pSet').hidden) renderSet(); });
   }
   function secPluginsApp() {
@@ -1686,7 +1686,7 @@ table.t tr.unused td{color:var(--muted)}
     const body = !r.ok ? `<div class="warnbox">${esc(r.error || 'Plugin scan failed')}</div>` : list
       ? `<div class="scroll"><table class="t"><thead><tr><th>Plugin</th><th>Type</th><th>Version</th><th>Used by</th><th>Where</th></tr></thead><tbody>${list}</tbody></table></div>`
       : '<p class="lede">No VST3 effects found. Install the plugin and its licence (for CEDAR, the iLok License Manager with a trial or licence activated), then Rescan.</p>';
-    return box('Plugins', 'VST3 effects Sotto found on this computer. Each is checked in a separate helper process, so a plugin that crashes while loading can\'t take Sotto down.',
+    return box('Plugins', 'VST3 effects Sotto Voce found on this computer. Each is checked in a separate helper process, so a plugin that crashes while loading can\'t take Sotto Voce down.',
       body + '<div style="margin-top:10px"><button class="btn sm" data-act="rescan">Rescan plugins</button></div>') + hostingRules();
   }
   function secOperatorsApp() {
@@ -1708,15 +1708,15 @@ table.t tr.unused td{color:var(--muted)}
       if (k < 0) plugBox = '<p class="note">Put this profile on a channel to load its plugin and adjust it.</p>';
       else if (!info) plugBox = '<p class="note">Loading the plugin…</p>';
       else if (!info.loaded) plugBox = `<div class="warnbox">The plugin didn't load: ${esc(info.error || 'no reason given')}. Check its licence (iLok) and try sotto-plugin-test on it.</div>`;
-      else plugBox = `<div class="plug"><div class="plugh"><b>${esc(info.vendor)} ${esc(info.name)}</b><span class="muted">${esc(info.type)} · latency ${info.latency} samples (${(info.latency / 48).toFixed(2)} ms)${info.mono_native ? '' : ' · runs in stereo, Sotto uses the left output'}</span><span class="sp"></span><button class="btn sm" data-act="owin">Open plugin window</button></div>
+      else plugBox = `<div class="plug"><div class="plugh"><b>${esc(info.vendor)} ${esc(info.name)}</b><span class="muted">${esc(info.type)} · latency ${info.latency} samples (${(info.latency / 48).toFixed(2)} ms)${info.mono_native ? '' : ' · runs in stereo, Sotto Voce uses the left output'}</span><span class="sp"></span><button class="btn sm" data-act="owin">Open plugin window</button></div>
         ${info.params.map(q => row(esc(q.name), '', `<div class="rng"><input type="range" id="pp-${k}-${q.id}" min="0" max="1" step="${q.steps > 0 ? 1 / q.steps : 0.001}" value="${q.norm}" data-pp="${q.id}" data-talker="${k}" data-units="${esc(q.units)}" aria-label="${esc(q.name)}"><output>${esc(q.value)}${q.units ? ' ' + esc(q.units) : ''}</output></div>`)).join('')}</div>`;
     }
     const editor = `<div style="display:grid;gap:12px;min-width:0">
       ${row('Name', 'Shown on the tiles, the strips and the event log.', txt(`operators.${oi}.name`, o.name))}
       ${row('On channel', 'When the person moves position, move the profile. Their settings go with them.', chSel)}
-      ${row('Processing', 'Sotto\'s own processing for this person.', sel(`operators.${oi}.mode`, [['default', `Project default (${MODES[P.proc.mode].l})`], ...Object.entries(MODES).map(([kk, m]) => [kk, m.l])], o.mode))}
+      ${row('Processing', 'Sotto Voce\'s own processing for this person.', sel(`operators.${oi}.mode`, [['default', `Project default (${MODES[P.proc.mode].l})`], ...Object.entries(MODES).map(([kk, m]) => [kk, m.l])], o.mode))}
       ${row('Output trim', 'On top of the project trim.', rng(`operators.${oi}.trim`, o.trim, -12, 6, 0.5, 'dB'))}
-      ${row('Insert plugin', 'Runs after Sotto\'s processing, before the output trim.', sel(`operators.${oi}.ins.plugin`, opts, path) + (path ? `<span class="seg"><button data-act="oins" data-v="1" aria-pressed="${!!o.ins.on}">On</button><button data-act="oins" data-v="0" aria-pressed="${!o.ins.on}">Off</button></span>` : ''))}
+      ${row('Insert plugin', 'Runs after Sotto Voce\'s processing, before the output trim.', sel(`operators.${oi}.ins.plugin`, opts, path) + (path ? `<span class="seg"><button data-act="oins" data-v="1" aria-pressed="${!!o.ins.on}">On</button><button data-act="oins" data-v="0" aria-pressed="${!o.ins.on}">Off</button></span>` : ''))}
       ${plugBox}
       <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn sm" data-act="odup">Duplicate profile</button>${UI.confirmDel ? `<span class="confirm">Delete ${esc(o.name)}? <button class="btn sm danger" data-act="odelok">Delete</button><button class="btn sm" data-act="mdelno">Keep</button></span>` : '<button class="btn sm danger" data-act="odel">Delete profile</button>'}</div>
     </div>`;
@@ -1821,7 +1821,7 @@ table.t tr.unused td{color:var(--muted)}
       case 'driver': P.engine.driver = v; if (!dev().drivers.includes(v)) P.engine.device = 'dvs'; UI.check = null; break;
       case 'buffer': P.engine.buffer = +v; UI.check = null; break;
       case 'devrefresh': UI.devs = null; UI.devConfirm = false; break;
-      case 'appcheck': UI.appCheck = [['ok', 'Checking…']]; api('/api/check').then(r => { UI.appCheck = r.checks; renderSet(); }).catch(() => { UI.appCheck = [['err', 'Sotto Bench did not answer']]; renderSet(); }); break;
+      case 'appcheck': UI.appCheck = [['ok', 'Checking…']]; api('/api/check').then(r => { UI.appCheck = r.checks; renderSet(); }).catch(() => { UI.appCheck = [['err', 'Sotto Voce did not answer']]; renderSet(); }); break;
       case 'tosetup': if (!UI.setupConfirm) { UI.setupConfirm = true; toast('Press Back to setup again to stop the engine'); setTimeout(() => { UI.setupConfirm = false; }, 4000); return; } UI.setupConfirm = false; toSetup(); return;
       case 'patchdefaults': UI.patch = patchFrom(UI.cfg.defaults); UI.patchErr = ''; break;
       case 'patchundo': UI.patch = patchFrom(UI.cfg.saved); UI.patchErr = ''; break;
@@ -1832,8 +1832,8 @@ table.t tr.unused td{color:var(--muted)}
         api('/api/config', changes).then(r => {
           if (!r.ok) { UI.patchErr = r.error; renderSet(); return; }
           UI.restarting = 'the new patch'; toast('Restarting the engine with the new patch…');
-          (async () => { for (let i = 0; i < 80; i++) { await new Promise(res => setTimeout(res, 500)); try { const st = await api('/api/state'); if (st.t < 30) { location.reload(); return; } } catch (e) {} } toast('Sotto Bench did not come back. Open it again.'); })();
-        }).catch(() => { UI.patchErr = 'Sotto Bench did not answer'; renderSet(); });
+          (async () => { for (let i = 0; i < 80; i++) { await new Promise(res => setTimeout(res, 500)); try { const st = await api('/api/state'); if (st.t < 30) { location.reload(); return; } } catch (e) {} } toast('Sotto Voce did not come back. Open it again.'); })();
+        }).catch(() => { UI.patchErr = 'Sotto Voce did not answer'; renderSet(); });
         return;
       }
       case 'tplay': { const f = UI.tf[v]; testCmd(f.kind === 'off' ? { channel: +v, kind: 'off' } : { channel: +v, kind: f.kind, file: f.file || null, programme_file: f.prog || null, level_db: f.level, bleed_db: f.bleed }); return; }
@@ -1844,13 +1844,13 @@ table.t tr.unused td{color:var(--muted)}
       case 'lphones': {
         const el = $('#f-lphones'); const dev = el && el.value !== '' ? +el.value : null;
         api('/api/phones', { device: dev }).then(r => { if (r.ok === false) toast(r.error); else { APP.local_phones = r.state; toast(dev == null ? 'Phones on this Mac: off' : `Phones also on ${r.name}`); renderSet(); } })
-          .catch(() => toast('Sotto Bench did not answer'));
+          .catch(() => toast('Sotto Voce did not answer'));
         return;
       }
       case 'diag': downloadDiagnostics(); return;
       case 'devswitch': {
         const el = $('#f-appdev'); UI.devPick = el ? el.value : null;
-        if (APP && APP.engine && String(UI.devPick) === String(APP.engine.device)) { toast('Sotto is already using that device'); UI.devConfirm = false; }
+        if (APP && APP.engine && String(UI.devPick) === String(APP.engine.device)) { toast('Sotto Voce is already using that device'); UI.devConfirm = false; }
         else UI.devConfirm = true;
         break;
       }
@@ -1858,7 +1858,7 @@ table.t tr.unused td{color:var(--muted)}
       case 'ioswitch': {
         const el = $('#f-appio'); UI.ioPick = el ? +el.value : 0;
         const e = APP && APP.engine, cur = e && e.io_buffer && e.io_buffer !== e.block ? e.io_buffer : 0;
-        if (UI.ioPick === cur) { toast('Sotto is already using that buffer'); UI.ioConfirm = false; } else UI.ioConfirm = true;
+        if (UI.ioPick === cur) { toast('Sotto Voce is already using that buffer'); UI.ioConfirm = false; } else UI.ioConfirm = true;
         break;
       }
       case 'iono': UI.ioConfirm = false; UI.ioPick = null; break;
@@ -1868,7 +1868,7 @@ table.t tr.unused td{color:var(--muted)}
         const d = dev(), e2 = P.engine, ok = engineOk();
         UI.check = [
           [d ? 'ok' : 'err', `Found <b>${esc(d.name)}</b> through ${DRIVERS[e2.driver]}.`],
-          [ok ? 'ok' : 'err', `${d.in} inputs and ${d.out} outputs. ${ok ? 'Channels 61 to 64 are there.' : 'Sotto needs 64 of each.'}`],
+          [ok ? 'ok' : 'err', `${d.in} inputs and ${d.out} outputs. ${ok ? 'Channels 61 to 64 are there.' : 'Sotto Voce needs 64 of each.'}`],
           ['ok', `Running at ${e2.rate / 1000} kHz, buffer ${e2.buffer} samples (${(e2.buffer / (e2.rate / 1000)).toFixed(2)} ms).`],
           [ok ? 'ok' : 'err', ok ? 'PROBE sent on OUT 62 came back on IN 61 in 8 ms.' : 'PROBE could not be sent: no output 62.'],
           [ok ? 'ok' : 'warn', ok ? `PGM present on IN 62 at ${Math.round(S.pgm)} dBFS.` : 'No input 62, so no PGM reference.'],
@@ -1903,16 +1903,16 @@ table.t tr.unused td{color:var(--muted)}
     save(); buildMain(); renderSet();
   });
 
-  // ------------------------------------------------------------ connected to the Sotto Bench app
+  // ------------------------------------------------------------ connected to the Sotto Voce app
   // When the app serves this page, its fail-safe core is the source of truth: the simulation
   // stops, the page shows the app's state, and every button sends a command to the app.
   let APP = null, appMisses = 0;
   const api = (path, body) => fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : { cache: 'no-store' }).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
-  const appCmd = body => api('/cmd', { source: 'console', ...body }).catch(() => ({ ok: false, error: 'Sotto Bench is not answering' }));
+  const appCmd = body => api('/cmd', { source: 'console', ...body }).catch(() => ({ ok: false, error: 'Sotto Voce is not answering' }));
   function soloChanged() {
     if (APP) appCmd({ cmd: 'solo', ids: [...S.solo], mode: P.phones.mode, level_db: P.phones.level, dim: S.dim, dim_db: P.phones.dim, limit_db: P.phones.limit ?? -3 });
   }
-  const EVENT_WORDS = { armed: 'Armed', disarmed: 'Disarmed', arm_refused: 'Arm refused', talker_armed: 'Re-armed', talker_tripped: 'Tripped', fault_injected: 'Fault', fault_ended: 'Fault ended', faults_cleared: 'Faults cleared', started: 'Sotto Bench started', stopped: 'Stopped', recording_started: 'Recording to', recording_stopped: 'Recording stopped', rrcs_armed_set: 'RRCS', rrcs_error: 'RRCS problem', rrcs_set: 'RRCS', callback_error: 'Audio error', mark: 'Mark', solo: 'Phones bus' };
+  const EVENT_WORDS = { armed: 'Armed', disarmed: 'Disarmed', arm_refused: 'Arm refused', talker_armed: 'Re-armed', talker_tripped: 'Tripped', fault_injected: 'Fault', fault_ended: 'Fault ended', faults_cleared: 'Faults cleared', started: 'Sotto Voce started', stopped: 'Stopped', recording_started: 'Recording to', recording_stopped: 'Recording stopped', rrcs_armed_set: 'RRCS', rrcs_error: 'RRCS problem', rrcs_set: 'RRCS', callback_error: 'Audio error', mark: 'Mark', solo: 'Phones bus' };
   function describe(kind, detail) {
     const w = EVENT_WORDS[kind] || sentence(String(kind).replace(/_/g, ' ')).replace(/\.$/, '');
     return detail ? `${w}: ${detail}` : w;
@@ -1945,7 +1945,7 @@ table.t tr.unused td{color:var(--muted)}
   }
   async function poll() {
     try { applyState(await api('/api/state')); appMisses = 0; }
-    catch (e) { if (++appMisses > 4) { S.alive = false; S.armed = false; S.reason = 'Sotto Bench is not answering.'; } }
+    catch (e) { if (++appMisses > 4) { S.alive = false; S.armed = false; S.reason = 'Sotto Voce is not answering.'; } }
   }
   // The app keeps the project (profiles, processing, inserts) so it survives restarts; every
   // change here is sent to it, and it applies it to the running talkers.
@@ -1999,13 +1999,13 @@ table.t tr.unused td{color:var(--muted)}
     applyState(st);
     soloChanged();                                     // solos always start empty
     setInterval(poll, 150);
-    toast(st.engine && st.engine.simulate ? 'Connected to Sotto Bench (simulated frame)' : 'Connected to Sotto Bench');
+    toast(st.engine && st.engine.simulate ? 'Connected to Sotto Voce (simulated frame)' : 'Connected to Sotto Voce');
   }
   async function downloadDiagnostics() {
     if (UI.diagBusy) return;
     UI.diagBusy = true;
     const armed = APP && APP.armed;
-    toast(armed ? 'Making the diagnostics file (quick version: Sotto is armed)…' : 'Making the diagnostics file: about 20 seconds…');
+    toast(armed ? 'Making the diagnostics file (quick version: Sotto Voce is armed)…' : 'Making the diagnostics file: about 20 seconds…');
     try {
       const r = await fetch('/api/diagnostics' + (armed ? '?quick=1' : ''), { cache: 'no-store' });
       if (!r.ok) throw new Error(r.status);
@@ -2014,7 +2014,7 @@ table.t tr.unused td{color:var(--muted)}
       const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 5000);
       toast(`Saved ${name} to your Downloads folder`);
-    } catch (e) { toast('Could not make the diagnostics file: Sotto Bench did not answer'); }
+    } catch (e) { toast('Could not make the diagnostics file: Sotto Voce did not answer'); }
     UI.diagBusy = false;
   }
   $('#diagBtn').onclick = () => downloadDiagnostics();
@@ -2024,7 +2024,7 @@ table.t tr.unused td{color:var(--muted)}
   };
   $('#quitBtn').onclick = async () => {
     try { await api('/quit', {}); } catch (e) {}
-    document.body.innerHTML = '<p style="padding:24px;font:15px var(--f-body)">Sotto Bench has quit. You can close this tab.</p>';
+    document.body.innerHTML = '<p style="padding:24px;font:15px var(--f-body)">Sotto Voce has quit. You can close this tab.</p>';
   };
 
   // ------------------------------------------------------------ start
@@ -2032,7 +2032,7 @@ table.t tr.unused td{color:var(--muted)}
   ro.observe($('#top'));
   buildScale();
   S = fresh(); buildMain();
-  log('Sotto started: disarmed', 'auto');
+  log('Sotto Voce started: disarmed', 'auto');
   // Example state on load: start, run Restore all, then a few seconds of a clean show.
   for (let i = 0; i < 150; i++) step();
   runMacro('restore');

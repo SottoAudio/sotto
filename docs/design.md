@@ -1,4 +1,4 @@
-# Sotto design notes
+# Sotto Voce design notes
 
 These are the decisions so far and the reasons for them. Riedel details come from the RRCS 9.0.1
 interface specification and the Artist 9.0.1 release notes.
@@ -75,10 +75,10 @@ headphones. Dante Virtual Soundcard runs at 64 × 64.
 
 - A profile belongs to a person: their insert plugin and its full state, their processing mode
   and trim. It moves with them to another channel.
-- One VST3 (or AU on Mac) insert per profile, after Sotto's processing. Off means bypassed, not
+- One VST3 (or AU on Mac) insert per profile, after Sotto Voce's processing. Off means bypassed, not
   unloaded, and the bypassed path is delayed by the plugin's latency, so switching never shifts
   timing. The per-talker watchdog checks the output after the plugin.
-- Hosting uses the Steinberg VST3 SDK, MIT-licensed since 3.8, so Sotto stays MIT. JUCE is
+- Hosting uses the Steinberg VST3 SDK, MIT-licensed since 3.8, so Sotto Voce stays MIT. JUCE is
   avoided for the same reason. `engine/plugin-test` proves loading, save/restore and CPU before
   this goes into the engine.
 - Licences stay with the plugin maker (CEDAR uses iLok: a physical iLok on the show laptop).
@@ -99,7 +99,7 @@ Engine.
 
 The audio engine and the processing never share a process.
 
-- **The engine stays in Sotto's own process.** That is the soundcard callback on Core Audio's
+- **The engine stays in Sotto Voce's own process.** That is the soundcard callback on Core Audio's
   real-time thread, HEARTBEAT, PROBE, the fail-safe checks and the phones bus. Its per-block work
   is small (about 0.3 ms).
 - **Worker processes do the processing.** The talkers are split into groups, up to three per worker
@@ -117,7 +117,7 @@ the chain is the same 20 ms as before.
 
 Failure handling forms two layers:
 1. **A worker fails.** A late result is a miss: that group's talkers get dry at the same delay.
-   Three misses in a row make processing unhealthy, so Sotto disarms (latched), HEARTBEAT stops and
+   Three misses in a row make processing unhealthy, so Sotto Voce disarms (latched), HEARTBEAT stops and
    the frame goes to dry. A worker that dies is logged, its talkers are tripped to dry, and it is
    restarted with the current settings. Re-arming stays manual and needs 5 s of green.
 2. **The engine fails.** HEARTBEAT stops and the frame's VOX puts every listener on dry.
@@ -131,7 +131,7 @@ so that group's talkers get 10 ms of dry, which is audible.
 The first M2 Pro run with two workers showed this. Each worker used only 3–5 ms of each 10 ms
 block, yet there were still 1–3 late blocks a second.
 
-Two blocks of headroom absorb the bunching at the cost of 10 ms more delay (30 ms through Sotto
+Two blocks of headroom absorb the bunching at the cost of 10 ms more delay (30 ms through Sotto Voce
 instead of 20). The default stays at one block. Headroom is set in the console, and only while
 disarmed, because changing it moves every talker's delay.
 
@@ -145,7 +145,7 @@ size (DVS and most devices use powers of two) makes PortAudio add a buffer on ea
 stream up. That also delivers the 10 ms pieces in bunches. The first M2 Pro run reported 20 ms in
 and 30 ms out from the soundcard alone.
 
-With `--io-buffer N` (Settings › Audio engine › Soundcard buffer), Sotto opens the soundcard at N
+With `--io-buffer N` (Settings › Audio engine › Soundcard buffer), Sotto Voce opens the soundcard at N
 samples and regroups the audio into its 10 ms blocks itself (`regroup.py`):
 
 - **Even timing.** Callbacks arrive evenly, and the soundcard part of the latency should fall to
@@ -156,7 +156,7 @@ samples and regroups the audio into its 10 ms blocks itself (`regroup.py`):
   blocks.
 
 160 divides 10 ms evenly, so it's the size to try first. Changing the buffer restarts the engine,
-so Sotto starts again disarmed.
+so Sotto Voce starts again disarmed.
 
 `coreaudio.py` reads what macOS says about each device: its buffer and the sizes it allows, driver
 latency and safety offset each way, stream latency, the rate, and whether another app is using it.

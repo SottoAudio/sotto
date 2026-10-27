@@ -1,4 +1,4 @@
-"""Small soundcard buffers regrouped into Sotto's 10 ms blocks: nothing lost or repeated, a fixed
+"""Small soundcard buffers regrouped into Sotto Voce's 10 ms blocks: nothing lost or repeated, a fixed
 delay of exactly the prefill, and the engine always sees whole 480-sample blocks."""
 import os
 import sys

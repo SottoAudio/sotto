@@ -1,4 +1,4 @@
-"""Sotto Bench processing: timing and alignment, modes, the batched speech model, the per-talker
+"""Sotto Voce processing: timing and alignment, modes, the batched speech model, the per-talker
 fault path, operator profiles from the project, and (when the plugin host library has been built)
 a real VST3 insert."""
 import os

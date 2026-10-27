@@ -1,4 +1,4 @@
-"""Sotto's processing in the bench app: echo canceller, residual suppressor, speech model and a
+"""Sotto Voce's processing in the bench app: echo canceller, residual suppressor, speech model and a
 plugin insert per talker, run on its own thread so the audio callback never waits for it.
 
 Per talker, every 10 ms block:
@@ -11,7 +11,7 @@ Every version is computed every block, so switching modes or the insert is insta
 Timing: the callback hands block k to the worker and takes back block k-1, so the processing
 adds one block (10 ms) to the 20 ms the chain itself needs. If a result isn't ready the callback
 sends the dry signal at the same delay and counts a miss; three misses in a row after start-up
-make the engine unhealthy, which disarms Sotto (latched) and the frame goes to dry.
+make the engine unhealthy, which disarms Sotto Voce (latched) and the frame goes to dry.
 
 Per-talker faults (invalid output, a diverging echo canceller, a failing plugin) are reported to
 the app, which trips that talker to dry until it is re-armed.
@@ -254,7 +254,7 @@ class TalkerChain:
 
 class Chains:
     """The per-block work for a group of talkers: front ends, the batched speech model, back ends
-    and inserts. Used on a thread in Sotto's own process (Processor) and inside each processing
+    and inserts. Used on a thread in Sotto Voce's own process (Processor) and inside each processing
     worker process (workers.py). Not thread-safe except where noted: process() runs on one thread;
     configure(), apply(), insert_info(), plugin_param() and plugin_states() may be called from one
     other thread."""
@@ -464,7 +464,7 @@ class Chains:
 
 
 class Processor:
-    """All talkers on one thread in Sotto's own process (workers=0). exchange() is called from the
+    """All talkers on one thread in Sotto Voce's own process (workers=0). exchange() is called from the
     audio callback; the work runs on the processing thread. workers.Pool has the same interface
     and runs the work in separate processes instead."""
 
@@ -563,7 +563,7 @@ class Processor:
                 self._one_block()
             except Exception as e:
                 # Never let the thread die silently: no output means the callback counts misses,
-                # the engine goes unhealthy and Sotto disarms (the frame goes to dry).
+                # the engine goes unhealthy and Sotto Voce disarms (the frame goes to dry).
                 self.errors += 1
                 if self.errors == 1 or self.errors % 100 == 0:
                     LOG.exception("Processing error (%d so far)", self.errors)

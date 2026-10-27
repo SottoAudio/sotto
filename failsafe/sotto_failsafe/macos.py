@@ -1,6 +1,6 @@
-"""Keeps macOS from slowing Sotto Bench down.
+"""Keeps macOS from slowing Sotto Voce down.
 
-Sotto Bench has no window of its own, so macOS treats it as a background app: App Nap throttles
+Sotto Voce has no window of its own, so macOS treats it as a background app: App Nap throttles
 its timers and the scheduler may run its threads on the efficiency cores. Both make the 10 ms
 processing deadline impossible. Two calls fix that (standard library ctypes only, no-ops elsewhere):
 
@@ -38,7 +38,7 @@ def _send(objc, restype, argtypes):
     return f(ctypes.cast(objc.objc_msgSend, ctypes.c_void_p).value)
 
 
-def keep_responsive(reason="Sotto Bench is processing live comms audio"):
+def keep_responsive(reason="Sotto Voce is processing live comms audio"):
     global _activity
     if sys.platform != "darwin":
         return True, "not needed on this system"

@@ -1,4 +1,4 @@
-"""Runs the soundcard on a small buffer while Sotto keeps its 10 ms (480-sample) blocks.
+"""Runs the soundcard on a small buffer while Sotto Voce keeps its 10 ms (480-sample) blocks.
 
 Asking a soundcard for 480-sample callbacks when its own I/O buffer is a different size (Dante
 Virtual Soundcard and most Core Audio devices use powers of two) makes the audio library cut the
@@ -7,12 +7,12 @@ back to back, then a gap. Opening the soundcard at its own small buffer and regr
 the callbacks even and the soundcard latency low.
 
 Every soundcard callback copies its samples into the current block. When a block is full, the
-whole 10 ms of Sotto's engine runs on it (fail-safe core, processing hand-over, phones bus), and
+whole 10 ms of Sotto Voce's engine runs on it (fail-safe core, processing hand-over, phones bus), and
 the 480 output samples join a queue the soundcard reads from.
 
 The queue starts with (480 - gcd(io, 480)) samples of silence. That is the least that guarantees
 it never runs dry: the soundcard always finds enough samples, whatever the phase between its
-buffers and Sotto's blocks. It is the only delay the regrouping adds: 6.7 ms for a 160-sample
+buffers and Sotto Voce's blocks. It is the only delay the regrouping adds: 6.7 ms for a 160-sample
 buffer, 9.3 ms for 128, 5 ms for 240.
 
 Audio-thread safe: every buffer is allocated up front; process() only copies.
@@ -70,7 +70,7 @@ class Regrouper:
 
     def process(self, indata, outdata, frames, run_block):
         """indata (frames, n_in), outdata (frames, n_out) from the soundcard. run_block(inb, outb)
-        is Sotto's 10 ms engine; it is called once for every full block."""
+        is Sotto Voce's 10 ms engine; it is called once for every full block."""
         i = 0
         while i < frames:
             take = min(self.block - self.fill, frames - i)

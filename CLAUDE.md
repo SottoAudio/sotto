@@ -1,4 +1,4 @@
-# Sotto: notes for contributors and coding agents
+# Sotto Voce: notes for contributors and coding agents
 
 - Python 3.10+ for `failsafe/` and `prototype/`; numpy, scipy, onnxruntime, sounddevice. No other
   dependencies without a good reason.

@@ -1,7 +1,7 @@
 # sotto-plugin-test
 
-Loads a VST3 plugin the way Sotto's engine will, outside any DAW, and tells you whether it can be
-a Sotto insert. Use it on the show laptop when you trial a plugin such as CEDAR Voxis, ScreenVox
+Loads a VST3 plugin the way Sotto Voce's engine will, outside any DAW, and tells you whether it can be
+a Sotto Voce insert. Use it on the show laptop when you trial a plugin such as CEDAR Voxis, ScreenVox
 or DNS One.
 
 ## Get it
@@ -28,8 +28,8 @@ On Windows plugins live in `C:\Program Files\Common Files\VST3`. `--list` shows 
 
 It reports:
 
-- **Insert:** whether the plugin runs as a mono insert (Sotto's talkers are mono).
-- **Latency:** in samples and ms, at 48 kHz and a 480-sample (10 ms) block. Sotto delays the
+- **Insert:** whether the plugin runs as a mono insert (Sotto Voce's talkers are mono).
+- **Latency:** in samples and ms, at 48 kHz and a 480-sample (10 ms) block. Sotto Voce delays the
   bypassed path by this much so switching an insert never shifts the timing.
 - **Audio:** that processing returned valid audio, and where the result was written.
 - **Settings:** that the plugin's settings can be saved and loaded back into a fresh copy. This
@@ -38,7 +38,7 @@ It reports:
 - **CPU:** time per 10 ms block for several copies run together (`--instances`, default 4).
   Try `--instances 16` and `--instances 64` to see how far the laptop goes.
 - **Controls:** every control the plugin exposes, with its current value. These are what the
-  Sotto console will show and save in an operator profile.
+  Sotto Voce console will show and save in an operator profile.
 
 Other options: `--set "Attenuation=12 dB"` (or a 0–1 value), `--save-state FILE`,
 `--load-state FILE`, `--compensate` (remove the plugin's latency from `--out`), `--channel N`
@@ -47,7 +47,7 @@ Other options: `--set "Attenuation=12 dB"` (or a 0–1 value), `--save-state FIL
 Exit codes: 0 all good; 1 wrong options or files; 2 the plugin wouldn't load; 3 it wouldn't run
 or returned invalid audio; 4 its settings couldn't be saved or restored.
 
-If a plugin asks for its licence (an iLok window, for example), that's a sign Sotto must let
+If a plugin asks for its licence (an iLok window, for example), that's a sign Sotto Voce must let
 plugin windows appear on first load. Note it down.
 
 ## Build it

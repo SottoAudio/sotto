@@ -1,11 +1,11 @@
-// sotto-plugin-test: load a VST3 plugin the way Sotto's engine will and check it is usable live.
+// sotto-plugin-test: load a VST3 plugin the way Sotto Voce's engine will and check it is usable live.
 //
 //   sotto-plugin-test --list
 //   sotto-plugin-test "/Library/Audio/Plug-Ins/VST3/CEDAR Voxis.vst3" --in caller.wav --out caller_voxis.wav
 //
 // For each plugin it reports: whether it runs as a mono insert, its latency, its controls, whether
 // its settings can be saved and restored (the operator-profile feature), and how much CPU 1..N
-// instances take at the block size Sotto uses. Nothing here is Sotto-specific DSP: it is the
+// instances take at the block size Sotto Voce uses. Nothing here is Sotto Voce DSP: it is the
 // hosting layer, tested on its own before it goes into the engine.
 #include <algorithm>
 #include <chrono>
@@ -42,7 +42,7 @@ using namespace sotto;
 
 namespace {
 
-const char* kUsage = R"(sotto-plugin-test: check a VST3 plugin works as a Sotto insert
+const char* kUsage = R"(sotto-plugin-test: check a VST3 plugin works as a Sotto Voce insert
 
 Usage:
   sotto-plugin-test --list                      list the VST3 plugins on this computer
@@ -307,7 +307,7 @@ int main(int argc, char** argv) {
     } else {
         std::printf("%s %s %s  (%s)\n", ci.vendor().c_str(), ci.name().c_str(), ci.version().c_str(), ci.subCategoriesString().c_str());
         std::printf("  %s\n\n", plugin.c_str());
-        std::printf("Insert      %s\n", A.monoNative ? "runs as a mono insert" : ("no mono mode: Sotto feeds the same signal to all " + std::to_string(A.inCh) + " inputs and uses output 1").c_str());
+        std::printf("Insert      %s\n", A.monoNative ? "runs as a mono insert" : ("no mono mode: Sotto Voce feeds the same signal to all " + std::to_string(A.inCh) + " inputs and uses output 1").c_str());
         std::printf("Latency     %s at %.0f Hz, block %d%s\n", latTxt.c_str(), rate, block, A.tail ? (", tail " + std::to_string(A.tail) + " samples").c_str() : "");
         std::printf("Audio       %s, output peak %.1f dBFS%s\n", processedOk && finite ? "processed cleanly" : "PROBLEM: process failed or returned invalid samples",
                     peakDb(out), outPath.empty() ? "" : (", written to " + outPath).c_str());

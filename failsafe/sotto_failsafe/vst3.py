@@ -1,4 +1,4 @@
-"""VST3 plugin inserts, through Sotto's small C hosting library (engine/plugin-test/vst3host.cpp).
+"""VST3 plugin inserts, through Sotto Voce's small C hosting library (engine/plugin-test/vst3host.cpp).
 
   lib = load_library()               # None if the library isn't there (inserts are then off)
   p = Plugin(lib, path, rate=48000, block=480, state=b"")
@@ -7,7 +7,7 @@
   p.set_param(id, 0.5); p.get_state()
 
 Scanning for plugins is done by the sotto-plugin-test program in its own process, so a plugin
-that crashes while loading can't take Sotto down with it.
+that crashes while loading can't take Sotto Voce down with it.
 """
 import ctypes
 import json
@@ -167,12 +167,12 @@ def trial(path, timeout_s=30):
         if r.returncode == 0:
             res = (True, "opened and ran in a test process")
         elif r.returncode < 0:
-            res = (False, f"{name} crashed when Sotto test-opened it (signal {-r.returncode}), so it isn't loaded.")
+            res = (False, f"{name} crashed when Sotto Voce test-opened it (signal {-r.returncode}), so it isn't loaded.")
         else:
             detail = (r.stderr or r.stdout or "").strip().splitlines()
-            res = (False, f"{name} didn't open in Sotto's test: {detail[-1] if detail else 'exit code ' + str(r.returncode)}")
+            res = (False, f"{name} didn't open in Sotto Voce's test: {detail[-1] if detail else 'exit code ' + str(r.returncode)}")
     except subprocess.TimeoutExpired:
-        res = (False, f"{name} didn't finish opening within {timeout_s} s in Sotto's test, so it isn't loaded.")
+        res = (False, f"{name} didn't finish opening within {timeout_s} s in Sotto Voce's test, so it isn't loaded.")
     except OSError as e:
         res = (True, f"not checked ({e})")
     _trials[key] = res

@@ -60,7 +60,7 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(state["frame"]["source"], "simulated")
             self.assertTrue(state["engine"]["simulate"])
             with urllib.request.urlopen("http://127.0.0.1:8797/", timeout=2) as r:
-                self.assertIn(b"<title>Sotto Console</title>", r.read())
+                self.assertIn(b"<title>Sotto Voce Console</title>", r.read())
             with urllib.request.urlopen("http://127.0.0.1:8797/bench", timeout=2) as r:
                 self.assertEqual(r.status, 200)
 
@@ -85,7 +85,7 @@ if __name__ == "__main__":
 
 
 class SecondLaunchTests(unittest.TestCase):
-    """Opening Sotto Bench while it's already running must not fail silently."""
+    """Opening Sotto Voce while it's already running must not fail silently."""
 
     def setUp(self):
         import socket

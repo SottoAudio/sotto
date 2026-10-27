@@ -1,4 +1,4 @@
-"""Test sources: audio Sotto plays into its own inputs, so the processing can be heard and checked
+"""Test sources: audio Sotto Voce plays into its own inputs, so the processing can be heard and checked
 without a mic, a PGM feed or any Dante routing.
 
 Kinds (per input channel; talker inputs and the PGM input only):
@@ -12,7 +12,7 @@ Kinds (per input channel; talker inputs and the PGM input only):
   programme    the built-in programme (for the PGM input): chords, bass and drums, made here
   file         a WAV file you load (looped)
 
-Fail-safe: test sources only play while Sotto is disarmed. Arming switches them all off (and the
+Fail-safe: test sources only play while Sotto Voce is disarmed. Arming switches them all off (and the
 app logs it). They can't be put on a PROBE input, so they can't make a check go green.
 
 Audio-thread safety: every signal is made or loaded when it's chosen (on the web server's thread);
@@ -158,14 +158,14 @@ def parse_wav(data):
         x = np.frombuffer(raw, "<f8").astype(np.float32)
     else:
         raise ValueError(f"this WAV's format ({'float' if tag == 3 else 'PCM' if tag == 1 else f'type {tag}'}, "
-                         f"{bits}-bit) isn't one Sotto reads")
+                         f"{bits}-bit) isn't one Sotto Voce reads")
     return np.nan_to_num(x.reshape(-1, ch)), rate
 
 
 def to_wav(data, name="audio"):
     """Other audio formats (AIFF, MP3, M4A, CAF, FLAC...) converted with macOS's own afconvert."""
     if sys.platform != "darwin":
-        raise ValueError("Sotto reads WAV files on this computer. Save the audio as a WAV and upload that.")
+        raise ValueError("Sotto Voce reads WAV files on this computer. Save the audio as a WAV and upload that.")
     ext = os.path.splitext(name)[1] or ".audio"
     with tempfile.TemporaryDirectory() as d:
         src, dst = os.path.join(d, "in" + ext), os.path.join(d, "out.wav")

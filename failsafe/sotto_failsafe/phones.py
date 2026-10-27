@@ -1,7 +1,7 @@
 """Phones on this computer: the phones bus (solo) also played on the computer's own headphones or
 speakers, so you can listen without a Dante headphone device.
 
-The soundcard Sotto runs on (Dante Virtual Soundcard) and the computer's own output run on
+The soundcard Sotto Voce runs on (Dante Virtual Soundcard) and the computer's own output run on
 different clocks, so a small buffer sits between them: about 20 ms is kept, and when the clocks
 drift apart a few samples are skipped or repeated. That's fine for listening, but it isn't for
 show audio, which keeps going out on the soundcard's phones outputs as before.

@@ -1,4 +1,4 @@
-"""Download the DeepFilterNet3 low-latency model and build the frame-by-frame versions Sotto uses.
+"""Download the DeepFilterNet3 low-latency model and build the frame-by-frame versions Sotto Voce uses.
 
   python tools/get_models.py
 

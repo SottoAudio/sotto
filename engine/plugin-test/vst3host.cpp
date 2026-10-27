@@ -1,4 +1,4 @@
-// sotto_vst3host: a small C library that hosts VST3 plugins as mono inserts, for Sotto's engine
+// sotto_vst3host: a small C library that hosts VST3 plugins as mono inserts, for Sotto Voce's engine
 // (called from Python with ctypes in the bench app; linked directly by the C++ engine later).
 //
 // Threads: svh_process runs on the audio/processing thread. svh_set_param, svh_get_state and

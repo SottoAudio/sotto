@@ -29,7 +29,9 @@ jobs:
           - os: windows-latest
             name: windows
             sep: ";"
-    runs-on: ${{ matrix.os }}
+    # Mac builds from main (and manual runs) go to our own Mac when the MAC_RUNNER repository
+    # variable is 'self'; pull requests always use GitHub's machines.
+    runs-on: ${{ matrix.name == 'mac' && ((vars.MAC_RUNNER == 'self' && github.event_name != 'pull_request') && fromJSON('["self-hosted","macOS","ARM64","sotto-mac"]') || 'macos-15') || matrix.os }}
     defaults:
       run:
         shell: bash
@@ -46,6 +48,9 @@ jobs:
         with:
           path: prototype/models
           key: dfn3-ll-${{ hashFiles('prototype/tools/get_models.py', 'prototype/tools/make_streaming.py', 'prototype/tools/make_batchable.py', 'prototype/tools/pb.py') }}
+      - name: Make sure CMake is there (our own Mac may not have it)
+        run: command -v cmake || pip install cmake
+
       - name: Download and convert the speech model
         run: python prototype/tools/get_models.py
 

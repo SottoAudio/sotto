@@ -27,7 +27,7 @@ jobs:
             name: windows
           - os: ubuntu-latest
             name: linux
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.name == 'mac' && ((vars.MAC_RUNNER == 'self' && github.event_name != 'pull_request') && fromJSON('["self-hosted","macOS","ARM64","sotto-mac"]') || 'macos-15') || matrix.os }}
     defaults:
       run:
         shell: bash
@@ -36,6 +36,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Make sure CMake is there (our own Mac may not have it)
+        run: command -v cmake || pip install cmake
       - name: Configure
         run: cmake -S engine/plugin-test -B build -DCMAKE_BUILD_TYPE=Release -DSOTTO_BUILD_SDK_EXAMPLES=ON > configure.log 2>&1 || { echo "::error title=Configure (${{ matrix.name }})::$(tail -c 3000 configure.log | tr '\n' ' ')"; exit 1; }
       - name: Build

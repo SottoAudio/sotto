@@ -42,7 +42,7 @@ jobs:
         shell: bash
         run: |
           # Failures are also written as an annotation, so they can be read without the full log.
-          python -m unittest discover -s tests -v > test.log 2>&1; rc=$?
+          rc=0; python -m unittest discover -s tests -v > test.log 2>&1 || rc=$?
           tail -40 test.log
           if [ $rc -ne 0 ]; then
             python - <<'PY'

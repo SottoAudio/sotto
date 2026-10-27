@@ -5,16 +5,30 @@ straight through the laptop. It sends the HEARTBEAT and PROBE tones that the rea
 and it never goes back to clean on its own. Buttons inject faults, and the tool times how long
 a listener takes to land on dry.
 
-## Install and try it without hardware
+## Get the app (no Python needed)
 
-1. Install Python 3.12 from python.org.
-2. Double-click `setup_mac.command`.
-3. Double-click `try_simulation.command`. The console opens at http://127.0.0.1:8766. It runs
-   against a simulated Riedel frame: the frame loops PROBE back, runs a VOX with a 400 ms hold on
-   HEARTBEAT, and switches a listener between the laptop path and dry.
+1. Download the latest build from the repository's Releases page, under **Sotto Bench (latest
+   build)**: `Sotto-Bench-mac.zip` or `Sotto-Bench-windows.zip`. Every change to main is built
+   automatically on GitHub's Mac and Windows machines and checked before it is published.
+2. Unzip it.
+   - **Mac:** move **Sotto Bench** to Applications. It isn't signed yet, so the first time,
+     right-click it, choose **Open**, then **Open** again. On newer macOS you may need System
+     Settings, then Privacy & Security, then **Open Anyway**. Allow microphone access when asked;
+     that's how macOS lets it hear the virtual soundcard.
+   - **Windows:** open the folder and run **Sotto Bench.exe**. If SmartScreen warns, choose
+     **More info**, then **Run anyway**.
+3. A setup page opens in your browser. Press **Start with the simulated Riedel** to try it with
+   no hardware. For the real test, pick the virtual soundcard, check the channel numbers, and
+   press **Start with this soundcard**. Your choices are remembered for next time.
+4. The same tab becomes the console. Press **Quit** (twice) to stop.
 
-Windows: `py -3 -m venv .venv`, then `.venv\Scripts\pip install -r requirements.txt`, then
-`.venv\Scripts\python -m sotto_failsafe --simulate`.
+Recordings and event logs go to `Documents/Sotto Bench Runs`.
+
+## Running from source (developers)
+
+Mac: double-click `setup_mac.command`, then `try_simulation.command`. Anywhere:
+`pip install -r requirements.txt`, then `python sotto_bench.py`, which opens the same setup page.
+To skip the setup page, use `python -m sotto_failsafe --simulate` or the full options below.
 
 ## What it sends and expects
 
@@ -80,13 +94,10 @@ Arm, then use each fault button a few times, re-arming between them:
 | Freeze audio 400 ms | the app hanging | shows whether the soundcard goes silent or repeats audio (it must go silent) |
 | Crash the app | the process dying | listener lands on dry; the restarted tool comes back disarmed |
 
-Then work out the timings:
+Then press **Stop recording and time the faults** in the console. From source,
+`python -m sotto_failsafe.analyse <take folder>` does the same.
 
-```
-python -m sotto_failsafe.analyse bench_runs/<take>
-```
-
-For each fault this prints how long the listener stayed on the laptop path, the longest silence
+For each fault this shows how long the listener stayed on the laptop path, the longest silence
 they heard, and when the dry audio arrived. It also saves them to `fallback_timing.csv`. The
 crash test can't be timed by the tool itself, because it stops recording; record the listener
 on something else for that one.

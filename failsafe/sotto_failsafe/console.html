@@ -76,8 +76,9 @@
   <span class="chip" id="lat">…</span>
   <span class="chip" id="xr">Dropouts 0</span>
   <span class="chip" id="rrcs">RRCS: off</span>
+  <button id="quitBtn" style="margin-left:auto">Quit</button>
 </header>
-<div class="offline" id="offline">Lost contact with the bench tool. If it crashed (or you pressed Crash), the Riedel should now be on dry. Restart it: it comes back disarmed.</div>
+<div class="offline" id="offline">Lost contact with Sotto Bench. If it crashed (or you pressed Crash), the Riedel should now be on dry. Open it again: it comes back disarmed.</div>
 <main>
   <section>
     <div class="banner disarmed" id="banner">
@@ -115,6 +116,12 @@
       </p>
     </div>
     <div class="panel">
+      <h2>Fallback timing</h2>
+      <div class="row"><button id="timeBtn">Stop recording and time the faults</button></div>
+      <div class="tablewrap" style="margin-top:10px"><table><thead><tr><th>Fault</th><th>At (s)</th><th>Laptop path gone</th><th>Silence heard</th><th>Dry back</th></tr></thead><tbody id="timing"><tr><td colspan="5" class="muted">Needs a listener feed input and a recording. Inject some faults first.</td></tr></tbody></table></div>
+      <p class="muted" style="margin-bottom:0">Times are from the fault to what the listener heard. Saved as fallback_timing.csv in the take folder.</p>
+    </div>
+    <div class="panel">
       <h2>Event log</h2>
       <div class="tablewrap"><table><thead><tr><th>Audio time</th><th>Clock</th><th>Event</th><th>Detail</th><th>From</th></tr></thead><tbody id="events"></tbody></table></div>
     </div>
@@ -144,7 +151,7 @@
 <div class="toast" id="toast"></div>
 <script>
 const $ = s => document.querySelector(s);
-let S = null, built = false, crashArmed = false;
+let S = null, built = false, crashArmed = false, stopped = false;
 function esc(v) { return String(v).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c])); }
 function toast(t) { const el = $('#toast'); el.textContent = t; el.classList.add('show'); clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('show'), 2200); }
 async function post(c) {
@@ -197,6 +204,10 @@ function render(st) {
   $('#recBtn').textContent = st.recording ? 'Stop recording' : 'Start recording';
   $('#recInfo').textContent = 'Saved in ' + st.folder + (st.rec_dropped ? ` · dropped ${st.rec_dropped} blocks` : '');
   document.querySelectorAll('#monRow button').forEach(b => b.style.outline = (String(st.monitor) === b.dataset.v ? '2px solid var(--accent)' : 'none'));
+  if (st.timing && st.timing.length) {
+    const ms = v => v === null || v === undefined ? '–' : v + ' ms';
+    $('#timing').innerHTML = st.timing.map(r => `<tr><td>${esc(r.event)}</td><td class="t">${esc(r.at_s)}</td><td class="t">${ms(r.switch_ms)}</td><td class="t">${ms(r.silence_ms)}</td><td class="t">${ms(r.dry_back_ms)}</td></tr>`).join('');
+  }
   $('#events').innerHTML = st.events.slice().reverse().map(e => `<tr><td class="t">${esc(e[0])}</td><td class="t">${esc(e[1])}</td><td>${esc(e[2])}</td><td>${esc(e[3])}</td><td>${esc(e[4])}</td></tr>`).join('');
 }
 $('#armBtn').onclick = () => post({cmd: 'arm'});
@@ -207,11 +218,20 @@ $('#crashBtn').onclick = () => {
   post({cmd: 'fault', name: 'crash'});
 };
 $('#clearBtn').onclick = () => post({cmd: 'clear_faults'});
+$('#timeBtn').onclick = () => { toast('Timing the faults…'); post({cmd: 'analyse'}); };
+let quitArmed = false;
+$('#quitBtn').onclick = async () => {
+  if (!quitArmed) { quitArmed = true; $('#quitBtn').textContent = 'Click again to quit'; setTimeout(() => { quitArmed = false; $('#quitBtn').textContent = 'Quit'; }, 3000); return; }
+  stopped = true;
+  try { await fetch('/quit', {method: 'POST'}); } catch (e) {}
+  document.body.innerHTML = '<p style="padding:24px;font:16px sans-serif">Sotto Bench has stopped. The Riedel is on dry. You can close this tab.</p>';
+};
 $('#recBtn').onclick = () => post({cmd: 'rec', on: !(S && S.recording)});
 function mark() { post({cmd: 'mark', note: $('#note').value}).then(() => { toast('Marked'); $('#note').value = ''; }); }
 $('#markBtn').onclick = mark;
 $('#note').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); mark(); e.target.blur(); } });
 async function tick() {
+  if (stopped) return;
   try { const r = await fetch('/state', {cache: 'no-store'}); S = await r.json(); render(S); $('#offline').style.display = 'none'; }
   catch (e) { $('#offline').style.display = 'block'; }
   setTimeout(tick, 200);

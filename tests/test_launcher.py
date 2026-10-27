@@ -258,3 +258,58 @@ class SoundcardBufferTests(unittest.TestCase):
         cmd = ex.call_args[0][1]
         tail = cmd[cmd.index("--device"):]
         self.assertEqual(tail, ["--device", "2", "--port", "8766", "--io-buffer", "128", "--no-browser"])
+
+
+class ConsoleConfigTests(unittest.TestCase):
+    def _app(self, d, *extra):
+        app = BenchApp(parse_args(["--simulate", "--no-processing", "--port", "8802", "--out-dir", d, *extra]))
+        app.events_f.close()
+        app.log = lambda e: None
+        return app
+
+    def test_patch_change_restarts_with_this_runs_options(self):
+        from unittest import mock
+        from sotto_failsafe import app as appmod
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(appmod, "config_dir", return_value=d), \
+                mock.patch.object(launcher, "config_dir", return_value=d):
+            app = self._app(d)
+            r = app.reconfigure({"pgm_in": "2"})                          # clashes with talker 2
+            self.assertFalse(r["ok"])
+            self.assertIn("Input 2", r["error"])
+            self.assertIsNone(app.restart_argv)
+            self.assertFalse(app.reconfigure({"bogus": "1"})["ok"])
+            r = app.reconfigure({"talker_in": "1-2", "talker_out": "1-2", "names": "a,b"})
+            self.assertTrue(r["ok"], r)
+            a2 = parse_args(app.restart_argv)
+            self.assertEqual((a2.talker_in, a2.talker_out, a2.names), ("1-2", "1-2", "a,b"))
+            self.assertEqual((a2.port, a2.out_dir, a2.no_processing, a2.simulate), (8802, d, True, True))
+            self.assertTrue(app.quit_ev.is_set())
+            self.assertEqual(launcher.load_config()["talker_in"], "1-2")    # remembered
+
+    def test_back_to_setup(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            app = self._app(d)
+            self.assertTrue(app.back_to_setup()["ok"])
+            self.assertTrue(app.to_setup and app.quit_ev.is_set())
+        calls = []
+
+        def fake_setup(open_browser=True, start_error=None):
+            calls.append(1)
+            return None
+        with mock.patch.object(launcher, "run_setup", side_effect=fake_setup), \
+                mock.patch.object(launcher, "run_engine", return_value="setup"):
+            self.assertEqual(launcher._main(["--simulate", "--port", "8803", "--no-browser"]), 0)
+        self.assertEqual(calls, [1])                                        # the console went back to setup
+
+    def test_phones_limiter_ceiling(self):
+        import numpy as np
+        from sotto_failsafe.core import FailsafeCore
+        from sotto_failsafe.app import config_from_args
+        core = FailsafeCore(config_from_args(parse_args(["--simulate"])))
+        core.set_solo(["i1", "i2"], "clicked", level_db=12, limit_db=-10)
+        x = np.full((480, 63), 0.9, np.float32)
+        out = np.zeros((480, 64), np.float32)
+        for _ in range(3):
+            core.process(x, out)
+        self.assertLessEqual(float(np.max(np.abs(out[:, 62]))), 10 ** (-10 / 20) + 1e-6)

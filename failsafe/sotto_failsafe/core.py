@@ -60,7 +60,7 @@ class FailsafeCore:
         self.blocks = 0
         self.levels = {"talkers": [-120.0] * n, "listen": -120.0}
         self.monitor_source = None
-        self.solo = {"ids": [], "mode": "clicked", "level_db": 0.0, "dim": False, "dim_db": -20.0}
+        self.solo = {"ids": [], "mode": "clicked", "level_db": 0.0, "dim": False, "dim_db": -20.0, "limit_db": -3.0}
         self._solo_plan = ([], [])     # (left taps, right taps); a tap is ("i" or "o", 0-based channel)
         self._solo_gain = 0.0
         self._limit = 1.0
@@ -91,7 +91,7 @@ class FailsafeCore:
         self.faults[name] = None if seconds is None else t + float(seconds)
         self.log.append(Event(t, "fault_injected", f"{name}" + (f" for {seconds} s" if seconds else ""), "console"))
 
-    def set_solo(self, ids=None, mode=None, level_db=None, dim=None, dim_db=None):
+    def set_solo(self, ids=None, mode=None, level_db=None, dim=None, dim_db=None, limit_db=None):
         """ids like "i3" (input 3) or "o3" (output 3), counted from 1. Modes: clicked, dry, clean, split
         (dry left, clean right). Dry/clean swap a talker's input for its return and back."""
         s = dict(self.solo)
@@ -105,6 +105,8 @@ class FailsafeCore:
             s["dim"] = bool(dim)
         if dim_db is not None:
             s["dim_db"] = max(-60.0, min(0.0, float(dim_db)))
+        if limit_db is not None:                       # the phones limiter's ceiling (protects ears)
+            s["limit_db"] = max(-24.0, min(0.0, float(limit_db)))
         cfg = self.cfg
         tin, tout = list(cfg.talker_in), list(cfg.talker_out)
 
@@ -155,7 +157,7 @@ class FailsafeCore:
         g = np.linspace(self._solo_gain, target, frames, endpoint=False) + (target - self._solo_gain) / frames
         self._solo_gain = target
         l_sig, r_sig = mix(left) * g, mix(right) * g
-        ceiling = 10 ** (-3 / 20)
+        ceiling = 10 ** (s.get("limit_db", -3.0) / 20)
         peak = max(float(np.max(np.abs(l_sig))) if frames else 0.0, float(np.max(np.abs(r_sig))) if frames else 0.0)
         need = 1.0 if peak <= ceiling else ceiling / peak
         self._limit = min(need, min(1.0, self._limit * 10 ** (6 / 20 * frames / cfg.fs)))   # instant attack, 6 dB/s release

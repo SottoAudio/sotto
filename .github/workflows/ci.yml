@@ -39,4 +39,19 @@ jobs:
         run: python prototype/tools/get_models.py
 
       - name: Run tests
-        run: python -m unittest discover -s tests -v
+        shell: bash
+        run: |
+          # Failures are also written as an annotation, so they can be read without the full log.
+          rc=0; python -m unittest discover -s tests -v > test.log 2>&1 || rc=$?
+          tail -40 test.log
+          if [ $rc -ne 0 ]; then
+            python - <<'PY'
+          import re
+          t = open("test.log", encoding="utf-8", errors="replace").read()
+          blocks = re.split(r"\n={60,}\n", t)
+          bad = [b for b in blocks if b.startswith(("FAIL:", "ERROR:"))]
+          msg = ("\n\n".join(bad) or t[-3000:])[:6000]
+          print("::error title=Tests failed (${{ matrix.os }})::" + msg.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A"))
+          PY
+            exit $rc
+          fi

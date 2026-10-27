@@ -36,6 +36,7 @@ from cct.stream_dfn import StreamSTFT, BatchedDFN            # noqa: E402
 from scipy.signal import butter, sosfilt                     # noqa: E402
 
 from . import macos                                          # noqa: E402
+from .diagnostics import LOG                                 # noqa: E402
 
 FS = 48000
 HOP = 480
@@ -276,6 +277,7 @@ class Processor:
         self.proc_ms = 0.0
         self.proc_ms_max = 0.0
         self.stage_ms = {"front": 0.0, "model": 0.0, "back": 0.0}   # where the time goes
+        self.errors = 0
         self.cpu_ms = 0.0                                # thread CPU time: if far below proc_ms, the
         self.thread_note = ""                            # thread is waiting, not computing
         self.faults = []                                 # (talker, why), drained by the app
@@ -362,69 +364,83 @@ class Processor:
 
     def _loop(self):
         _, self.thread_note = macos.fast_thread()
+        LOG.info("Processing thread started for %d talkers (%s)", self.n, self.thread_note)
         while not self.stop_ev.is_set():
             try:
-                tag, mics, ref = self.q_in.get(timeout=0.2)
-                while True:                              # running late: skip to the newest block
-                    try:
-                        tag, mics, ref = self.q_in.get_nowait()
-                    except queue.Empty:
-                        break
-            except queue.Empty:
-                continue
-            t0, c0 = time.perf_counter(), time.thread_time()
-            self._apply_pending()
-            self.refs_ring.write(ref[None])
-            self.ref_db = _db(float(np.mean(ref * ref)))
-            fronts = []
-            t_front = time.perf_counter()
-            for i, c in enumerate(self.chains):
-                Z, versions, fault = c.front(mics[i].astype(np.float64), self.refs_ring)
-                c.level_in = _db(float(np.mean(mics[i] ** 2)))
-                fronts.append((Z, versions))
-                if fault:
-                    self.faults.append((i, fault))
-            t_model = time.perf_counter()
-            Zc = None
-            # The speech model is the expensive part: run it only while someone is on Full clean
-            # (or crossfading to or from it). Rows that rejoin start from a clean model state.
-            need = [c.s.mode == "full" or c.w[MODES.index("full")] > 0 for c in self.chains]
-            if self.dfn is not None and any(need):
-                for i, n_ in enumerate(need):
-                    if n_ and not self._dfn_rows[i]:
-                        self.dfn.reset_row(i)
-                    self._dfn_rows[i] = n_
-                Zs = np.stack([f[0] for f in fronts])
-                try:
-                    Zc = self.dfn.process_specs(Zs, rows=[i for i, n_ in enumerate(need) if n_])
-                except Exception as e:                   # the model failing is a fault for everyone
-                    Zc = None
+                self._one_block()
+            except Exception as e:
+                # Never let the thread die silently: no output means the callback counts misses,
+                # the engine goes unhealthy and Sotto disarms (the frame goes to dry).
+                self.errors += 1
+                if self.errors == 1 or self.errors % 100 == 0:
+                    LOG.exception("Processing error (%d so far)", self.errors)
                     for i in range(self.n):
-                        self.faults.append((i, f"speech model error: {e!r}"))
-            t_back = time.perf_counter()
-            outs, drys = np.zeros((self.n, HOP)), np.zeros((self.n, HOP))
-            for i, c in enumerate(self.chains):
-                y, dry, fault = c.back(fronts[i][1], None if Zc is None else Zc[i], fronts[i][0])
-                if fault:
-                    self.faults.append((i, fault))
-                outs[i], drys[i] = y, dry
-                c.level_out = _db(float(np.mean(y ** 2)))
-            try:
-                self.q_out.put_nowait((tag, outs, drys))
-            except queue.Full:
-                pass
-            t_end = time.perf_counter()
-            dt = 1000 * (t_end - t0)
-            for k, a_, b_ in (("front", t_front, t_model), ("model", t_model, t_back), ("back", t_back, t_end)):
-                self.stage_ms[k] = 0.98 * self.stage_ms[k] + 0.02 * 1000 * (b_ - a_)
-            self.cpu_ms = 0.98 * self.cpu_ms + 0.02 * 1000 * (time.thread_time() - c0)
-            self.proc_ms = 0.98 * self.proc_ms + 0.02 * dt
-            self.proc_ms_max = max(self.proc_ms_max * 0.999, dt)
-            while self._to_close:
+                        self.faults.append((i, f"processing error: {e!r}"))
+
+    def _one_block(self):
+        try:
+            tag, mics, ref = self.q_in.get(timeout=0.2)
+            while True:                              # running late: skip to the newest block
                 try:
-                    self._to_close.pop().close()
-                except Exception:
-                    pass
+                    tag, mics, ref = self.q_in.get_nowait()
+                except queue.Empty:
+                    break
+        except queue.Empty:
+            return
+        t0, c0 = time.perf_counter(), time.thread_time()
+        self._apply_pending()
+        self.refs_ring.write(ref[None])
+        self.ref_db = _db(float(np.mean(ref * ref)))
+        fronts = []
+        t_front = time.perf_counter()
+        for i, c in enumerate(self.chains):
+            Z, versions, fault = c.front(mics[i].astype(np.float64), self.refs_ring)
+            c.level_in = _db(float(np.mean(mics[i] ** 2)))
+            fronts.append((Z, versions))
+            if fault:
+                self.faults.append((i, fault))
+        t_model = time.perf_counter()
+        Zc = None
+        # The speech model is the expensive part: run it only while someone is on Full clean
+        # (or crossfading to or from it). Rows that rejoin start from a clean model state.
+        need = [c.s.mode == "full" or c.w[MODES.index("full")] > 0 for c in self.chains]
+        if self.dfn is not None and any(need):
+            for i, n_ in enumerate(need):
+                if n_ and not self._dfn_rows[i]:
+                    self.dfn.reset_row(i)
+                self._dfn_rows[i] = n_
+            Zs = np.stack([f[0] for f in fronts])
+            try:
+                Zc = self.dfn.process_specs(Zs, rows=[i for i, n_ in enumerate(need) if n_])
+            except Exception as e:                   # the model failing is a fault for everyone
+                LOG.exception("Speech model error")
+                Zc = None
+                for i in range(self.n):
+                    self.faults.append((i, f"speech model error: {e!r}"))
+        t_back = time.perf_counter()
+        outs, drys = np.zeros((self.n, HOP)), np.zeros((self.n, HOP))
+        for i, c in enumerate(self.chains):
+            y, dry, fault = c.back(fronts[i][1], None if Zc is None else Zc[i], fronts[i][0])
+            if fault:
+                self.faults.append((i, fault))
+            outs[i], drys[i] = y, dry
+            c.level_out = _db(float(np.mean(y ** 2)))
+        try:
+            self.q_out.put_nowait((tag, outs, drys))
+        except queue.Full:
+            pass
+        t_end = time.perf_counter()
+        dt = 1000 * (t_end - t0)
+        for k, a_, b_ in (("front", t_front, t_model), ("model", t_model, t_back), ("back", t_back, t_end)):
+            self.stage_ms[k] = 0.98 * self.stage_ms[k] + 0.02 * 1000 * (b_ - a_)
+        self.cpu_ms = 0.98 * self.cpu_ms + 0.02 * 1000 * (time.thread_time() - c0)
+        self.proc_ms = 0.98 * self.proc_ms + 0.02 * dt
+        self.proc_ms_max = max(self.proc_ms_max * 0.999, dt)
+        while self._to_close:
+            try:
+                self._to_close.pop().close()
+            except Exception:
+                pass
 
     def stop(self):
         self.stop_ev.set()

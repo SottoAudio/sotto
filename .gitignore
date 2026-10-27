@@ -22,3 +22,4 @@ Thumbs.db
 build/
 failsafe/build/
 failsafe/dist/
+failsafe/sotto_failsafe/build_info.json

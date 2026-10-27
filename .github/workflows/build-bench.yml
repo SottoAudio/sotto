@@ -93,10 +93,13 @@ jobs:
         run: |
           set -o pipefail
           MODELS=../prototype/models/DeepFilterNet3_ll_stream_batch
+          # Which build this is, for the diagnostics file.
+          python -c "import json, datetime, os; json.dump({'commit': os.environ['GITHUB_SHA'][:7], 'built': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'), 'run': os.environ['GITHUB_RUN_NUMBER'], 'ref': os.environ['GITHUB_REF_NAME'], 'platform': '${{ matrix.name }}'}, open('sotto_failsafe/build_info.json', 'w'))"
           ARGS=(--noconfirm --name "Sotto Bench" --paths ../prototype
                 --add-data "sotto_failsafe/console.html${{ matrix.sep }}sotto_failsafe"
                 --add-data "sotto_failsafe/console_bench.html${{ matrix.sep }}sotto_failsafe"
                 --add-data "sotto_failsafe/setup.html${{ matrix.sep }}sotto_failsafe"
+                --add-data "sotto_failsafe/build_info.json${{ matrix.sep }}sotto_failsafe"
                 --add-data "$MODELS${{ matrix.sep }}models/DeepFilterNet3_ll_stream_batch"
                 --add-binary "../$LIB${{ matrix.sep }}."
                 --add-binary "../$EXE${{ matrix.sep }}."
@@ -144,7 +147,16 @@ jobs:
           assert t0["name"] == "Show caller" and t0["insert"]["name"].endswith("ADelay"), t0
           print("insert loaded in the built app:", t0["insert"], "| processing", st["processing"]["proc_ms"], "ms per block")
           PY
+          curl -sf "http://127.0.0.1:8790/api/diagnostics" -o diag.txt || fail "diagnostics download failed"
+          for s in "What looks wrong" "Computer" "Speed test" "Busy threads" "Threads right now" "Log (last"; do
+            grep -q "==== $s" diag.txt || fail "diagnostics file has no '$s' section"
+          done
+          grep -q "Processing thread started" diag.txt || fail "the log in the diagnostics file is empty"
+          sed -n '/==== Speed test/,/^====/p' diag.txt | head -40
           curl -sf -X POST http://127.0.0.1:8790/quit
+          sleep 2
+          "$APP" --diagnostics --quick > cli.txt 2>&1 || fail "--diagnostics failed: $(cat cli.txt)"
+          grep -q "Diagnostics written to" cli.txt || fail "--diagnostics wrote nothing: $(cat cli.txt)"
           sleep 2
 
       - name: Zip

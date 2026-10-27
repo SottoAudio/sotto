@@ -14,7 +14,9 @@ import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from . import diagnostics
 from .app import BenchApp, channel_clashes, config_from_args, device_list, parse_args
+LOG = diagnostics.LOG
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = 8766
@@ -84,8 +86,10 @@ def argv_from(cfg, simulate):
     return argv
 
 
-def run_setup(open_browser=True):
-    """Serves the setup page until the user starts or quits. Returns bench argv, or None to quit."""
+def run_setup(open_browser=True, start_error=None):
+    """Serves the setup page until the user starts or quits. Returns bench argv, or None to quit.
+    start_error: why the last start failed, shown on the page."""
+    LOG.info("Setup page on http://127.0.0.1:%s/%s", PORT, f" (last start failed: {start_error})" if start_error else "")
     with open(os.path.join(HERE, "setup.html"), "rb") as f:
         page = f.read()
     done = threading.Event()
@@ -103,18 +107,46 @@ def run_setup(open_browser=True):
             self.wfile.write(body)
 
         def do_GET(self):
+            try:
+                self._get()
+            except Exception as e:
+                LOG.exception("Setup page request %s failed", self.path)
+                self._send(500, json.dumps({"ok": False, "error": repr(e)}).encode())
+
+        def do_POST(self):
+            try:
+                self._post()
+            except Exception as e:
+                LOG.exception("Setup page request %s failed", self.path)
+                self._send(500, json.dumps({"ok": False, "error": repr(e)}).encode())
+
+        def _get(self):
             if self.path in ("/", "/index.html"):
                 self._send(200, page, "text/html; charset=utf-8")
             elif self.path == "/setup/devices":
-                self._send(200, json.dumps(list_devices()).encode())
+                d = list_devices()
+                LOG.info("Devices listed for the setup page: %s", d if not d.get("ok") else
+                         "; ".join(f"{x['index']}: {x['name']} ({x['inputs']}/{x['outputs']})" for x in d["devices"]))
+                self._send(200, json.dumps(d).encode())
             elif self.path == "/setup/config":
-                self._send(200, json.dumps({"config": load_config(), "runs_dir": runs_dir()}).encode())
+                self._send(200, json.dumps({"config": load_config(), "runs_dir": runs_dir(), "start_error": start_error,
+                                            "last_crash": diagnostics.last_crash(),
+                                            "log": diagnostics.log_path()}).encode())
+            elif self.path.startswith("/setup/diagnostics"):
+                text = diagnostics.build_report(None, setup_config=load_config(), run_speed_test="quick" not in self.path)
+                diagnostics.save_report(text)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Disposition", f'attachment; filename="{diagnostics.report_filename()}"')
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(text.encode("utf-8"))
             elif self.path == "/api/state":
                 self._send(503, b'{"setup": true}')           # console not running yet
             else:
                 self._send(404, b"not found", "text/plain")
 
-        def do_POST(self):
+        def _post(self):
             n = int(self.headers.get("Content-Length", 0))
             try:
                 body = json.loads(self.rfile.read(n) or b"{}")
@@ -131,8 +163,10 @@ def run_setup(open_browser=True):
                 except (SystemExit, ValueError) as e:
                     clash = f"Check the channel numbers ({e})"
                 if clash:
+                    LOG.warning("Setup refused: %s", clash)
                     return self._send(200, json.dumps({"ok": False, "error": clash}).encode())
                 save_config(cfg)
+                LOG.info("Setup: start %s with %s", "the simulation" if simulate else f"device {cfg['device']}", argv)
                 result["argv"] = argv
                 self._send(200, b'{"ok": true}')
                 done.set()
@@ -204,41 +238,88 @@ def pick_port():
 
 
 def main(argv=None):
+    diagnostics.setup_logging()
+    try:
+        return _main(argv)
+    except (SystemExit, KeyboardInterrupt):
+        raise
+    except BaseException as e:
+        diagnostics.record_crash(e, "start-up")
+        raise
+    finally:
+        diagnostics.stop_logging()
+
+
+def write_diagnostics(argv):
+    """Sotto Bench --diagnostics [--quick]: writes the diagnostics file to Downloads and exits."""
+    text = diagnostics.build_report(None, setup_config=load_config(), run_speed_test="--quick" not in argv)
+    paths = diagnostics.save_report(text, diagnostics.downloads_dir())
+    print("Diagnostics written to:\n  " + "\n  ".join(paths))
+    return 0
+
+
+def _main(argv=None):
     global PORT
     argv = list(sys.argv[1:] if argv is None else argv)
     argv = [x for x in argv if not x.startswith("-psn_")]          # old macOS Finder launch argument
+    LOG.info("Launched with %s (executable %s)", argv, sys.executable)
+    if "--diagnostics" in argv:
+        return write_diagnostics(argv)
     open_browser = "--no-browser" not in argv
     argv = [x for x in argv if x != "--no-browser"]
     if "--port" not in argv and not any(x in argv for x in ("--list", "-h", "--help")):
         port, running = pick_port()
         if running:
             # Opened a second time (Sotto Bench has no window of its own): show the one that's running.
+            LOG.info("Already running on port %s: opening it", port)
             print(f"Sotto Bench is already running: http://127.0.0.1:{port}/")
             if open_browser:
                 webbrowser.open(f"http://127.0.0.1:{port}/")
             return 0
         if port != PORT:
+            LOG.warning("Port %s is in use by another program; using %s", PORT, port)
             print(f"Port {PORT} is in use by another program; using {port}")
             PORT = port
             if argv:
                 argv += ["--port", str(port)]
-    if not argv:
-        argv = run_setup(open_browser)
-        if argv is None:
-            return 0
-    else:
+    if argv:                                           # started with options (Terminal, a restart)
         if "--out-dir" not in argv:
             argv += ["--out-dir", runs_dir()]
         if open_browser:
             port = argv[argv.index("--port") + 1] if "--port" in argv else str(PORT)
             threading.Timer(1.5, lambda: webbrowser.open(f"http://127.0.0.1:{port}/")).start()
-    a = parse_args(argv)
-    if a.list:
-        from .app import list_devices as print_devices
-        return print_devices()
+        a = parse_args(argv)
+        if a.list:
+            from .app import list_devices as print_devices
+            return print_devices()
+        return run_engine(argv, a)
+    # Started like an app: the setup page, then the engine. If the engine can't start, back to the
+    # setup page with the reason, instead of quitting silently.
+    error = None
+    while True:
+        argv = run_setup(open_browser, start_error=error)
+        if argv is None:
+            LOG.info("Quit from the setup page")
+            return 0
+        open_browser = False                           # the page is already open
+        try:
+            return run_engine(argv, parse_args(argv))
+        except SystemExit as e:
+            if not str(e) or str(e) == "0":
+                raise
+            error = str(e)
+            LOG.warning("Engine didn't start: %s", error)
+        except Exception as e:
+            diagnostics.record_crash(e, "starting the engine")
+            error = diagnostics.friendly_error(e)
+
+
+def run_engine(argv, a):
     app = BenchApp(a)
     app.run()
     if app.restart_device is not None:                 # the console switched soundcard
+        LOG.info("Restarting on device %s", app.restart_device)
+        diagnostics.stop_logging()
         restart(argv, app.restart_device)
     return 0
 

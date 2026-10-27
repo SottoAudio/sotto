@@ -82,3 +82,50 @@ class LauncherTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SecondLaunchTests(unittest.TestCase):
+    """Opening Sotto Bench while it's already running must not fail silently."""
+
+    def setUp(self):
+        import socket
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        self.port = s.getsockname()[1]
+        s.close()
+        self.saved = launcher.PORT
+        launcher.PORT = self.port
+
+    def tearDown(self):
+        launcher.PORT = self.saved
+
+    def _serve(self, code, body):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                self.send_response(code)
+                self.end_headers()
+                self.wfile.write(body)
+
+        srv = ThreadingHTTPServer(("127.0.0.1", self.port), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+
+    def test_free_port_is_used(self):
+        self.assertEqual(launcher.pick_port(), (self.port, False))
+
+    def test_sotto_already_running_is_reused(self):
+        self._serve(503, b'{"setup": true}')
+        self.assertEqual(launcher.pick_port(), (self.port, True))
+
+    def test_other_program_on_the_port_moves_sotto(self):
+        self._serve(200, b"<html>someone else</html>")
+        port, running = launcher.pick_port()
+        self.assertFalse(running)
+        self.assertNotEqual(port, self.port)
+        self.assertTrue(launcher.port_free(port))

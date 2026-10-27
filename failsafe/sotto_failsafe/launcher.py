@@ -6,8 +6,11 @@ over to its console. With command-line options it skips the setup page and start
 """
 import json
 import os
+import socket
 import sys
 import threading
+import urllib.error
+import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -143,11 +146,66 @@ def run_setup(open_browser=True):
     return result["argv"]
 
 
+def port_free(port):
+    """True if nothing is listening on 127.0.0.1:port."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)        # same as the HTTP server
+    try:
+        s.bind(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def sotto_on(port):
+    """True if the program on this port is Sotto Bench (its setup page or its console)."""
+    try:
+        body = urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state", timeout=2).read()
+    except urllib.error.HTTPError as e:                           # the setup page answers 503
+        body = e.read()
+    except Exception:
+        return False
+    try:
+        j = json.loads(body)
+    except ValueError:
+        return False
+    return isinstance(j, dict) and ("setup" in j or "armed" in j)
+
+
+def pick_port():
+    """Returns (port, already_running). Sotto Bench normally uses 8766. If Sotto Bench is already
+    running there, the caller just opens it. If something else has the port, use the next free one."""
+    if port_free(PORT):
+        return PORT, False
+    if sotto_on(PORT):
+        return PORT, True
+    for p in range(PORT + 1, PORT + 34):
+        if port_free(p):
+            return p, False
+    return PORT, False                                            # let the error say what's wrong
+
+
 def main(argv=None):
+    global PORT
     argv = list(sys.argv[1:] if argv is None else argv)
     argv = [x for x in argv if not x.startswith("-psn_")]          # old macOS Finder launch argument
     open_browser = "--no-browser" not in argv
     argv = [x for x in argv if x != "--no-browser"]
+    if "--port" not in argv and not any(x in argv for x in ("--list", "-h", "--help")):
+        port, running = pick_port()
+        if running:
+            # Opened a second time (Sotto Bench has no window of its own): show the one that's running.
+            print(f"Sotto Bench is already running: http://127.0.0.1:{port}/")
+            if open_browser:
+                webbrowser.open(f"http://127.0.0.1:{port}/")
+            return 0
+        if port != PORT:
+            print(f"Port {PORT} is in use by another program; using {port}")
+            PORT = port
+            if argv:
+                argv += ["--port", str(port)]
     if not argv:
         argv = run_setup(open_browser)
         if argv is None:

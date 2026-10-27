@@ -94,6 +94,37 @@ class PoolTests(unittest.TestCase):
         finally:
             pool.stop()
 
+    def test_headroom_absorbs_bunched_callbacks(self):
+        """Some soundcards deliver 10 ms blocks in bunches (two back to back, then a 20 ms gap).
+        With one block of headroom the second of each pair finds no result; with two it does."""
+        n = 2
+        pool = W.Pool(["a", "b"], [P.Settings(mode="bypass", hpf_hz=0) for _ in range(n)],
+                      model=None, workers=1, track_delay=False)
+        try:
+            def bunched(blocks):
+                outs = []
+                t0 = time.perf_counter()
+                for b in range(blocks):
+                    m = np.zeros((n, 480), np.float32)
+                    if b == 40:
+                        m[:, 0] = 0.5
+                    o, _ = pool.exchange(m, np.zeros(480, np.float32))
+                    outs.append(o.copy())
+                    if b % 2:                          # pairs: 0 ms apart, then a 20 ms gap
+                        time.sleep(max(0.0, t0 + (b + 1) * 0.01 - time.perf_counter()))
+                return np.concatenate(outs, axis=1)
+
+            bunched(100)
+            self.assertGreater(pool.misses, 20)                   # 1 block of headroom: late every other block
+            pool.set_headroom(2)
+            before = pool.misses
+            y = bunched(120)
+            self.assertEqual(pool.misses - before, 0)            # 2 blocks: none late
+            self.assertEqual(int(np.argmax(np.abs(y[0]))), 40 * 480 + 960 + 480)   # 10 ms more delay
+            self.assertEqual(pool.state()["latency_ms"], 30.0)
+        finally:
+            pool.stop()
+
     def test_workers_can_run_the_delay_tracker(self):
         # The delay tracker starts a helper process of its own, which daemon processes can't.
         # (The first M2 bench run failed exactly here: both workers stopped at start.)

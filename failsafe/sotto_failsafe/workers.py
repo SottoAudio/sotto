@@ -38,7 +38,8 @@ from .diagnostics import LOG
 
 HOP = 480
 SLOTS = 4
-HEADER = 16                                     # int64 latest tag, int64 spare
+HEADER = 16                                     # int64 latest tag, int64 headroom (blocks)
+MAX_HEADROOM = 3
 
 
 def auto_workers(n_talkers, cores=None):
@@ -166,6 +167,7 @@ def _worker_main(wid, names, settings, model, shm_name, g, in_sem, out_sem, ctrl
     up.put((wid, "ready", {"pid": os.getpid(), "thread": note}))
     errors = 0
     next_state = 0.0
+    next_tag = 0
 
     def send_state():
         up.put((wid, "state", {**work.timing(), "talkers": work.talker_states(), "errors": errors,
@@ -177,27 +179,33 @@ def _worker_main(wid, names, settings, model, shm_name, g, in_sem, out_sem, ctrl
                 next_state = time.monotonic() + 0.5
                 send_state()
             continue
-        while in_sem.acquire(False):                 # running late: skip to the newest block
+        while in_sem.acquire(False):
             pass
-        tag = int(latest[0])
-        tg, mics_v, ref_v = ins[tag % SLOTS]
-        if int(tg[0]) != tag:
-            continue
-        mics, ref = mics_v.copy(), ref_v.copy()
-        if int(tg[0]) != tag:                        # overwritten while copying: too late anyway
-            continue
-        try:
-            o, d = work.process(mics, ref)
-            otg, ov, dv = outs[tag % SLOTS]
-            ov[:] = o
-            dv[:] = d
-            out_sem.release()                        # barrier: the data is visible before the tag
-            otg[0] = tag
-        except Exception as e:
-            errors += 1
-            if errors == 1 or errors % 100 == 0:
-                LOG.exception("Worker %d: processing error (%d so far)", wid + 1, errors)
-                up.put((wid, "faults", [(i, f"processing error: {e!r}") for i in range(len(names))]))
+        # Every block still in time, oldest first. With headroom h, Sotto takes the result for
+        # block k-h when it hands over block k, so blocks older than newest-(h-1) are too late:
+        # skip them rather than fall further behind.
+        newest = int(latest[0])
+        h = min(MAX_HEADROOM, max(1, int(latest[1])))
+        for tag in range(max(next_tag, newest - (h - 1)), newest + 1):
+            tg, mics_v, ref_v = ins[tag % SLOTS]
+            if int(tg[0]) != tag:
+                continue
+            mics, ref = mics_v.copy(), ref_v.copy()
+            if int(tg[0]) != tag:                    # overwritten while copying: too late anyway
+                continue
+            try:
+                o, d = work.process(mics, ref)
+                otg, ov, dv = outs[tag % SLOTS]
+                ov[:] = o
+                dv[:] = d
+                out_sem.release()                    # barrier: the data is visible before the tag
+                otg[0] = tag
+            except Exception as e:
+                errors += 1
+                if errors == 1 or errors % 100 == 0:
+                    LOG.exception("Worker %d: processing error (%d so far)", wid + 1, errors)
+                    up.put((wid, "faults", [(i, f"processing error: {e!r}") for i in range(len(names))]))
+        next_tag = newest + 1
         f = work.take_faults()
         if f:
             up.put((wid, "faults", f))
@@ -258,7 +266,7 @@ class _Worker:
 class Pool:
     """The same interface as processing.Processor, with the work in worker processes."""
 
-    def __init__(self, names, settings, model=None, workers=None, track_delay=True, ready_timeout=60.0):
+    def __init__(self, names, settings, model=None, workers=None, track_delay=True, ready_timeout=60.0, headroom=1):
         self.names = list(names)
         self.n = len(self.names)
         self.settings = list(settings)
@@ -273,8 +281,9 @@ class Pool:
         for w in self.workers:
             for j, i in enumerate(w.rows):
                 self.of[i] = (w, j)
-        self.history = [np.zeros((self.n, HOP), np.float32) for _ in range(3)]
-        self.hist_i = 0
+        self.history = [np.zeros((self.n, HOP), np.float32) for _ in range(MAX_HEADROOM + 2)]
+        self.headroom = 1
+        self.grace_until = 0                             # no misses counted while headroom changes
         self.out_buf = np.zeros((self.n, HOP), np.float32)
         self.dry_buf = np.zeros((self.n, HOP), np.float32)
         self.blocks = 0
@@ -286,6 +295,7 @@ class Pool:
         self.ok = True
         self.why = ""
         self.live = False                                # counting misses only once every worker is up
+        self.set_headroom(headroom)
         self._rid = itertools.count(1)
         self._waiting = {}
         self._wait_lock = threading.Lock()
@@ -309,40 +319,39 @@ class Pool:
 
     # ------------------------------------------------------------ audio callback side
     def exchange(self, mics, ref):
-        """Never waits. Returns (outputs, dry) for the block handed over one callback ago."""
+        """Never waits. Hands over block k and returns (outputs, dry) for block k-headroom."""
         k = self.blocks
         self.blocks += 1
-        h = self.history[self.hist_i % 3]
-        h[:] = mics
-        self.hist_i += 1
+        h = self.headroom
+        nh = len(self.history)
+        self.history[k % nh][:] = mics
         missed = False
         for w in self.workers:
-            slot = k % SLOTS
-            tg, mv, rv = w.ins[slot]
+            tg, mv, rv = w.ins[k % SLOTS]
             mv[:] = mics[w.rows[0]:w.rows[-1] + 1]
             rv[:] = ref
             tg[0] = k
             w.latest[0] = k
             w.in_sem.release()                           # wakes the worker (and is a barrier)
-            # the result for block k-1
-            otg, ov, dv = w.outs[(k - 1) % SLOTS]
+            j = k - h                                    # the result Sotto plays now
+            otg, ov, dv = w.outs[j % SLOTS]
             got = False
-            if int(otg[0]) == k - 1:
+            if j >= 0 and int(otg[0]) == j:
                 w.out_sem.acquire(False)                 # barrier before reading the data
                 self.out_buf[w.rows[0]:w.rows[-1] + 1] = ov
                 self.dry_buf[w.rows[0]:w.rows[-1] + 1] = dv
-                got = int(otg[0]) == k - 1
+                got = int(otg[0]) == j
             if not got:
                 missed = True
-                # dry at the same delay as the processed path: input k-2
-                old = self.history[self.hist_i % 3] if self.hist_i >= 3 else None
+                # dry at the same delay as the processed path: the chain's own 10 ms + headroom
                 rows = slice(w.rows[0], w.rows[-1] + 1)
-                if old is None:
-                    self.out_buf[rows] = 0
-                    self.dry_buf[rows] = 0
-                else:
+                if k - h - 1 >= 0:
+                    old = self.history[(k - h - 1) % nh]
                     self.out_buf[rows] = old[rows]
                     self.dry_buf[rows] = old[rows]
+                else:
+                    self.out_buf[rows] = 0
+                    self.dry_buf[rows] = 0
         if not missed:
             self.miss_run = 0
             self.good_run += 1
@@ -350,7 +359,7 @@ class Pool:
                 self.ok, self.why = True, ""
         else:
             self.good_run = 0
-            if self.live and self.blocks > 50:
+            if self.live and self.blocks > 50 and k >= self.grace_until:
                 self.misses += 1
                 self.miss_run += 1
                 self.max_miss_run = max(self.max_miss_run, self.miss_run)
@@ -359,6 +368,18 @@ class Pool:
         if not self.live and all(w.ready for w in self.workers):
             self.live = True
         return self.out_buf, self.dry_buf
+
+    def set_headroom(self, blocks):
+        """How many blocks the workers get for each block (1 = 10 ms: 20 ms through Sotto; 2 =
+        20 ms: 30 ms through Sotto). Changing it moves every talker's delay, so the app only
+        allows it while disarmed."""
+        h = min(MAX_HEADROOM, max(1, int(blocks)))
+        for w in self.workers:
+            w.latest[1] = h
+        self.grace_until = self.blocks + 2 * MAX_HEADROOM
+        if h != self.headroom:
+            LOG.info("Processing headroom: %d block(s), %d ms through Sotto", h, 10 * (h + 1))
+        self.headroom = h
 
     def health(self):
         return self.ok, self.why
@@ -527,7 +548,8 @@ class Pool:
         stage = {k: max(((s.get("stage_ms") or {}).get(k) or 0) for s in ws) for k in ("front", "model", "back")}
         return {
             "on": True, "model": bool(self.model), "workers": len(self.workers), "misses": self.misses, "ok": self.ok,
-            "why": self.why, "latency_ms": round(1000 * (2 * HOP) / 48000, 1),
+            "why": self.why, "latency_ms": round(1000 * ((self.headroom + 1) * HOP) / 48000, 1),
+            "headroom": self.headroom,
             "proc_ms": num("proc_ms"), "proc_ms_max": num("proc_ms_max"), "cpu_ms": num("cpu_ms"), "stage_ms": stage,
             "model_rows": sum((s.get("model_rows") or 0) for s in ws), "pgm_db": num("pgm_db") if ws else -120,
             "thread": ws[0].get("thread", "") if ws else "",

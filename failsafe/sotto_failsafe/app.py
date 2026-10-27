@@ -172,6 +172,9 @@ class BenchApp:
         self._cb_exc = None                              # the audio thread's last error, logged by the main loop
         self.cb_ms = 0.0
         self.cb_ms_max = 0.0
+        self._cb_last = None                             # when the last block arrived
+        self.gaps = self._new_gaps()                     # how evenly the soundcard delivers blocks
+        self.gaps_last = None
         LOG.info("Settings: device=%s talkers in %s out %s (%s) | PROBE in %s out %s | HEARTBEAT out %s | PGM in %s | "
                  "phones %s | block %s | processing %s | RRCS %s | simulate %s",
                  a.device, a.talker_in, a.talker_out, ",".join(cfg.talker_names), a.probe_in, a.probe_out,
@@ -322,7 +325,10 @@ class BenchApp:
             frame = self.rrcs.frame_state()
         s["frame"] = frame
         s["engine"] = getattr(self, "engine_info", None)
-        s["callback"] = {"ms": round(self.cb_ms, 3), "ms_max": round(self.cb_ms_max, 3), "errors": self.callback_errors}
+        g = self.gaps_last or self.gaps
+        s["callback"] = {"ms": round(self.cb_ms, 3), "ms_max": round(self.cb_ms_max, 3), "errors": self.callback_errors,
+                         "gaps": {"blocks": g["n"], "min_ms": round(g["min_ms"], 2) if g["n"] else None,
+                                  "max_ms": round(g["max_ms"], 2), "bunched": g["bunched"], "late": g["late"]}}
         s["power"] = getattr(self, "power", {})
         s["processing"] = self.proc.state() if self.proc is not None else {"on": False, "why": self.proc_note}
         if self.proc is not None:
@@ -365,7 +371,8 @@ class BenchApp:
             # freeze the other.
             from . import workers as W
             n = None if workers in (None, "", "auto") else int(workers)
-            self.proc = W.Pool(labels, settings, model=model, workers=n, track_delay=self._track_delay())
+            self.proc = W.Pool(labels, settings, model=model, workers=n, track_delay=self._track_delay(),
+                               headroom=self.a.headroom)
         self.core.extra_health = self.proc.health
         self.log(Event(0.0, "processing_on", f"speech model {'loaded' if model else 'not found: echo removal only'}; "
                        f"plugin inserts {'available' if self.vst3 else 'not available'}", "auto"))
@@ -394,7 +401,19 @@ class BenchApp:
         res = self.proc.apply(settings, labels)
         for kind, detail in res.get("events", []):
             self.log(Event(self.core.t, kind, detail, "console"))
-        return {"ok": True, "applied": True, "errors": res.get("errors", [])}
+        errors = list(res.get("errors", []))
+        if hasattr(self.proc, "set_headroom"):
+            try:
+                hr = int((project.get("proc") or {}).get("headroom") or self.a.headroom)
+            except (TypeError, ValueError):
+                hr = self.a.headroom
+            if hr != self.proc.headroom:
+                if self.core.arm.armed:              # it moves every talker's delay: never mid-show
+                    errors.append("Disarm Sotto before changing the processing headroom: it moves every talker's delay.")
+                else:
+                    self.proc.set_headroom(hr)
+                    self.log(Event(self.core.t, "headroom", f"{10 * hr} ms ({10 * (hr + 1)} ms through Sotto)", "console"))
+        return {"ok": True, "applied": True, "errors": errors}
 
     def insert_info(self, talker):
         if self.proc is None or not 0 <= talker < self.proc.n:
@@ -446,8 +465,25 @@ class BenchApp:
         return self.plugins_cache
 
     # ------------------------------------------------------------ audio
+    @staticmethod
+    def _new_gaps():
+        return {"n": 0, "min_ms": 1e9, "max_ms": 0.0, "bunched": 0, "late": 0}
+
     def callback(self, indata, outdata, frames, tinfo, status):
         t0 = time.perf_counter()
+        if self._cb_last is not None:                # time since the last block (should be 10 ms)
+            gap = 1000 * (t0 - self._cb_last)
+            g = self.gaps
+            g["n"] += 1
+            if gap < g["min_ms"]:
+                g["min_ms"] = gap
+            if gap > g["max_ms"]:
+                g["max_ms"] = gap
+            if gap < 3.0:
+                g["bunched"] += 1
+            elif gap > 17.0:
+                g["late"] += 1
+        self._cb_last = t0
         try:
             if self.proc is not None and frames == 480:
                 cfg = self.cfg
@@ -559,6 +595,11 @@ class BenchApp:
 
     def _log_stats(self):
         """One line every 10 s: enough to see from the log when and how things went wrong."""
+        g, self.gaps = self.gaps, self._new_gaps()
+        if g["n"]:
+            self.gaps_last = g
+            LOG.info("block timing (last 10 s): %d blocks, gap %.2f to %.2f ms, %d bunched (<3 ms), %d late (>17 ms)",
+                     g["n"], g["min_ms"], g["max_ms"], g["bunched"], g["late"])
         try:
             st = self.core.state()
             pr = self.proc.state() if self.proc is not None else {}
@@ -785,6 +826,8 @@ def build_parser():
     p.add_argument("--no-processing", action="store_true", help="pass the talkers straight through (no echo removal, model or inserts)")
     p.add_argument("--workers", default="auto",
                    help="processing worker processes: auto (up to 3 talkers each), a number, or 0 for a thread in this process")
+    p.add_argument("--headroom", type=int, default=1, choices=[1, 2, 3],
+                   help="blocks of time the processing workers get per block (1 = 20 ms through Sotto, 2 = 30 ms)")
     p.add_argument("--track-delay", choices=["auto", "on", "off"], default="auto",
                    help="measure the PA delay into each talker's mic (auto: on unless --simulate)")
     p.add_argument("--project", help="project file shared with the console (default: in the app's settings folder)")

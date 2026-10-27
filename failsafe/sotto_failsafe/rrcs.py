@@ -11,6 +11,8 @@ import threading
 import time
 import xmlrpc.client
 
+from .diagnostics import LOG
+
 
 class _TimeoutTransport(xmlrpc.client.Transport):
     """Per-call timeout without touching the process-wide socket default."""
@@ -90,16 +92,20 @@ class RRCSLink:
     def set_logic_safe(self, name, state):
         try:
             self.set_logic(name, state)
+            LOG.info("RRCS: set %s=%s on %s", name, state, self.url)
             return True
         except Exception as e:
+            LOG.exception("RRCS: could not set %s=%s on %s", name, state, self.url)
             self.last_error = repr(e)
             return False
 
     def set_armed_safe(self, state):
         try:
             self.set_armed(state)
+            LOG.info("RRCS: ARMED=%s on %s", state, self.url)
             return True
         except Exception as e:      # never let RRCS trouble affect audio or the fallback
+            LOG.exception("RRCS: could not set ARMED=%s on %s", state, self.url)
             self.last_error = repr(e)
             return False
 
@@ -115,6 +121,8 @@ class RRCSLink:
         while not self._stop.wait(self.poll_s):
             try:
                 states = self.read_logic_sources()
+                if not self.ok:
+                    LOG.info("RRCS: connected to %s", self.url)
                 self.ok = True
                 self.last_error = None
                 if self.arm_request_name:
@@ -124,6 +132,8 @@ class RRCSLink:
                     if cur is not None:
                         self._prev_request = cur
             except Exception as e:
+                if self.ok or self.last_error != repr(e):      # log each new problem once, not every poll
+                    LOG.warning("RRCS: polling %s failed: %r", self.url, e)
                 self.ok = False
                 self.last_error = repr(e)
                 time.sleep(1.0)

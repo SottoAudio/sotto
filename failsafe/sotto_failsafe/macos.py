@@ -19,6 +19,7 @@ _activity = None                    # the token must be kept, or the activity en
 NS_ACTIVITY_USER_INITIATED = 0x00FFFFFF
 NS_ACTIVITY_LATENCY_CRITICAL = 0xFF00000000
 QOS_CLASS_USER_INTERACTIVE = 0x21
+QOS = {"user_interactive": 0x21, "user_initiated": 0x19, "default": 0x15, "utility": 0x11, "background": 0x09}
 
 
 def _objc():
@@ -62,6 +63,13 @@ def keep_responsive(reason="Sotto Bench is processing live comms audio"):
 
 
 def fast_thread():
+    ok, msg = set_thread_qos("user_interactive")
+    return ok, ("performance cores" if ok else msg)
+
+
+def set_thread_qos(name):
+    """Sets the calling thread's macOS quality of service ('background' keeps it on the efficiency
+    cores, 'user_interactive' prefers the performance cores)."""
     if sys.platform != "darwin":
         return True, "not needed on this system"
     try:
@@ -69,10 +77,10 @@ def fast_thread():
         f = libc.pthread_set_qos_class_self_np
         f.restype = ctypes.c_int
         f.argtypes = [ctypes.c_uint, ctypes.c_int]
-        rc = f(QOS_CLASS_USER_INTERACTIVE, 0)
-        return (rc == 0), ("performance cores" if rc == 0 else f"couldn't raise thread priority (error {rc})")
+        rc = f(QOS[name], 0)
+        return (rc == 0), (name if rc == 0 else f"couldn't set thread priority {name} (error {rc})")
     except Exception as e:
-        return False, f"couldn't raise thread priority: {e!r}"
+        return False, f"couldn't set thread priority: {e!r}"
 
 
 THERMAL = ("normal", "warm", "hot (slowing down)", "critical (slowing down)")

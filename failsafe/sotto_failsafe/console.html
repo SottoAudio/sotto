@@ -346,6 +346,7 @@ table.t tr.unused td{color:var(--muted)}
       <span class="stat" id="stEngine"><i class="dotl"></i>Engine <b></b></span>
       <span class="stat" id="stRrcs"><i class="dotl"></i>RRCS <b></b></span>
       <span class="clock" id="clock"></span>
+      <button class="btn sm" id="diagBtn" data-app-only hidden title="Download a diagnostics file to send for troubleshooting">Diagnostics</button>
       <button class="btn sm" id="quitBtn" data-app-only hidden>Quit</button>
     </div>
   </div>
@@ -1255,6 +1256,7 @@ table.t tr.unused td{color:var(--muted)}
         row('Block', '', `<span class="fixed">${e.block} samples (${(1000 * e.block / e.fs).toFixed(1)} ms)</span>`) +
         row('Latency', 'Reported by the audio driver.', `<span class="fixed">${esc(e.latency_note || 'not reported')}</span>`) +
         row('Recordings', 'Where this run is saved.', `<span class="fixed">${esc(APP.folder || '')}</span>`) +
+        row('Diagnostics', 'One file with everything needed to troubleshoot this computer: the Mac, its audio devices, these settings, timings, a speed test, the log and any crash records. Send it to whoever is helping you. The speed test is skipped while Sotto is armed, so it can\'t disturb a show.', '<button class="btn sm" data-act="diag">Download diagnostics</button>') +
         row('Processing', 'Echo canceller, suppressor and speech model, on their own thread.', `<span class="fixed">${esc(procNote())}</span>`) +
         row('Plugin inserts', '', `<span class="fixed">${APP.processing && APP.processing.plugins_available ? 'available (VST3)' : 'not available in this build'}</span>`));
     }
@@ -1516,6 +1518,7 @@ table.t tr.unused td{color:var(--muted)}
       case 'driver': P.engine.driver = v; if (!dev().drivers.includes(v)) P.engine.device = 'dvs'; UI.check = null; break;
       case 'buffer': P.engine.buffer = +v; UI.check = null; break;
       case 'devrefresh': UI.devs = null; UI.devConfirm = false; break;
+      case 'diag': downloadDiagnostics(); return;
       case 'devswitch': {
         const el = $('#f-appdev'); UI.devPick = el ? el.value : null;
         if (APP && APP.engine && String(UI.devPick) === String(APP.engine.device)) { toast('Sotto is already using that device'); UI.devConfirm = false; }
@@ -1654,6 +1657,23 @@ table.t tr.unused td{color:var(--muted)}
     setInterval(poll, 150);
     toast(st.engine && st.engine.simulate ? 'Connected to Sotto Bench (simulated frame)' : 'Connected to Sotto Bench');
   }
+  async function downloadDiagnostics() {
+    if (UI.diagBusy) return;
+    UI.diagBusy = true;
+    const armed = APP && APP.armed;
+    toast(armed ? 'Making the diagnostics file (quick version: Sotto is armed)…' : 'Making the diagnostics file: about 20 seconds…');
+    try {
+      const r = await fetch('/api/diagnostics' + (armed ? '?quick=1' : ''), { cache: 'no-store' });
+      if (!r.ok) throw new Error(r.status);
+      const name = (/filename="([^"]+)"/.exec(r.headers.get('Content-Disposition') || '') || [])[1] || 'sotto-diagnostics.txt';
+      const url = URL.createObjectURL(await r.blob());
+      const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      toast(`Saved ${name} to your Downloads folder`);
+    } catch (e) { toast('Could not make the diagnostics file: Sotto Bench did not answer'); }
+    UI.diagBusy = false;
+  }
+  $('#diagBtn').onclick = () => downloadDiagnostics();
   $('#quitBtn').onclick = async () => {
     try { await api('/quit', {}); } catch (e) {}
     document.body.innerHTML = '<p style="padding:24px;font:15px var(--f-body)">Sotto Bench has quit. You can close this tab.</p>';

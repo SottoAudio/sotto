@@ -138,6 +138,39 @@ they heard, and when the dry audio arrived. It also saves them to `fallback_timi
 crash test can't be timed by the tool itself, because it stops recording; record the listener
 on something else for that one.
 
+## When something isn't working: the diagnostics file
+
+Sotto Bench keeps a detailed log while it runs. Each line records the time, the thread, and the function and line of code that wrote it. Errors carry their full traceback. To get help, send the **diagnostics file**. It has everything needed to work out why something isn't working on that computer:
+
+- the build and the computer: model, CPU cores, macOS, Low Power Mode, heat, mains or battery, Rosetta;
+- every audio device PortAudio and Core Audio can see, with channel counts;
+- the setup choices, options and channel layout;
+- the engine, plus processing timings per stage;
+- a short speed test: the processing run offline on the efficiency cores, at normal priority, and on the performance cores;
+- the fail-safe state and recent events;
+- which threads and programs are using the CPU;
+- what every thread is running at that moment (file and line);
+- the end of the log, and any crash records.
+
+At the top, a **What looks wrong** list sums up the usual problems in plain English.
+
+There are three ways to make it:
+
+- **Setup page:** Troubleshooting › Download diagnostics. Use this when the engine won't start: the page also shows why the last start failed.
+- **Console:** the Diagnostics button in the header, or Settings › Audio engine › Download diagnostics. The speed test is skipped while Sotto is armed, so it can't make processing late during a show.
+- **Terminal:** `"Sotto Bench.app/Contents/MacOS/Sotto Bench" --diagnostics` (add `--quick` to skip the speed test). The file goes to Downloads. Use this when the app won't open at all.
+
+Files, in the settings folder (`~/Library/Application Support/Sotto Bench/logs` on a Mac, `%APPDATA%\Sotto Bench\logs` on Windows):
+
+| File | What it is |
+|---|---|
+| `sotto-bench.log` | The log (5 files of 5 MB, oldest dropped). |
+| `last-crash.json` | The last error that stopped Sotto Bench. Shown on the setup page until the next good start. |
+| `crash-native.log` | Python stacks of every thread if the app was killed by a crash in native code (a plugin, the speech model, the audio driver). |
+| `sotto-diagnostics-*.txt` | A copy of every diagnostics file made. |
+
+If the engine can't open the soundcard, Sotto Bench goes back to the setup page and says why, for example "The soundcard doesn't have that many channels". It no longer quits silently.
+
 ## What this has been tested against
 
 A simulated frame (VOX hold 400 ms, logic 20 ms, 4 ms network), in the automated tests and a

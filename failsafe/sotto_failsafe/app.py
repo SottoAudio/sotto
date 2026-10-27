@@ -21,11 +21,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
 
-from . import macos
+from . import diagnostics, macos
 from .arming import Event
 from .core import Config, FailsafeCore
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+LOG = diagnostics.LOG
 
 
 def config_dir():
@@ -167,15 +168,29 @@ class BenchApp:
             self.project = None
         self._plugin_states_dirty = False
         self._last_state_save = 0.0
+        self.callback_errors = 0
+        self._cb_exc = None                              # the audio thread's last error, logged by the main loop
+        self.cb_ms = 0.0
+        self.cb_ms_max = 0.0
+        LOG.info("Settings: device=%s talkers in %s out %s (%s) | PROBE in %s out %s | HEARTBEAT out %s | PGM in %s | "
+                 "phones %s | block %s | processing %s | RRCS %s | simulate %s",
+                 a.device, a.talker_in, a.talker_out, ",".join(cfg.talker_names), a.probe_in, a.probe_out,
+                 a.heartbeat_out, a.pgm_in, a.monitor, a.block, "off" if a.no_processing else "on",
+                 a.rrcs_host or "none", a.simulate)
 
     # ------------------------------------------------------------ events
     def log(self, e: Event):
+        LOG.info("event %s: %s (%s, audio time %.3f s)", e.kind, e.detail, e.source, e.t)
         row = [f"{e.t:.4f}", datetime.now().strftime("%H:%M:%S.%f")[:-3], e.kind, e.detail, e.source]
         self.events.writerow(row)
         self.events_f.flush()
         self.recent = (self.recent + [row])[-60:]
 
     def _drain(self):
+        exc, self._cb_exc = self._cb_exc, None
+        if exc is not None:
+            LOG.error("Audio callback error (%d so far); outputs were silenced for that block", self.callback_errors,
+                      exc_info=(type(exc), exc, exc.__traceback__))
         while self.core.log:
             self.log(self.core.log.pop(0))
         armed = self.core.arm.armed
@@ -307,6 +322,7 @@ class BenchApp:
             frame = self.rrcs.frame_state()
         s["frame"] = frame
         s["engine"] = getattr(self, "engine_info", None)
+        s["callback"] = {"ms": round(self.cb_ms, 3), "ms_max": round(self.cb_ms_max, 3), "errors": self.callback_errors}
         s["power"] = getattr(self, "power", {})
         s["processing"] = self.proc.state() if self.proc is not None else {"on": False, "why": self.proc_note}
         if self.proc is not None:
@@ -324,6 +340,7 @@ class BenchApp:
             from . import processing
             from . import vst3
         except Exception as e:                       # e.g. no onnxruntime/scipy: stay a pass-through bench
+            LOG.exception("Processing could not start")
             self.proc_note = f"off: {e!r}"
             self.log(Event(0.0, "processing_off", self.proc_note, "auto"))
             return
@@ -331,11 +348,13 @@ class BenchApp:
         try:
             self.vst3 = vst3.load_library()
         except OSError as e:
+            LOG.exception("The plugin host library could not be loaded")
             self.vst3 = None
             self.log(Event(0.0, "plugins_off", repr(e), "auto"))
         names = list(self.cfg.talker_names)
         settings, labels = processing.settings_from_project(self.project, names)
         model = processing.model_dir()
+        LOG.info("Processing: speech model %s, plugin host %s", model, getattr(self.vst3, "path", None))
         self.proc = processing.Processor(labels, settings, model=model, vst3_lib=self.vst3,
                                          track_delay=not self.a.simulate)
         self.core.extra_health = self.proc.health
@@ -383,6 +402,7 @@ class BenchApp:
                 plugins.append((plug, name, True))
                 self.log(Event(self.core.t, "insert_loaded", f"{labels[i]}: {name}, latency {plug.latency} samples", "console"))
             except Exception as e:
+                LOG.exception("Insert %s could not be loaded for %s", want, labels[i])
                 c.insert_error = str(e)
                 errors.append(f"{labels[i]}: {e}")
                 plugins.append((None, "", True))
@@ -451,6 +471,7 @@ class BenchApp:
 
     # ------------------------------------------------------------ audio
     def callback(self, indata, outdata, frames, tinfo, status):
+        t0 = time.perf_counter()
         try:
             if self.proc is not None and frames == 480:
                 cfg = self.cfg
@@ -475,7 +496,13 @@ class BenchApp:
                 self.rec.push(np.stack(cols, axis=1))
         except Exception as e:                       # never leave the outputs undefined
             outdata.fill(0.0)
-            self.core.log.append(Event(self.core.t, "callback_error", repr(e), "auto"))
+            self.callback_errors += 1
+            if self._cb_exc is None:
+                self._cb_exc = e                         # logged with its traceback by the main loop
+                self.core.log.append(Event(self.core.t, "callback_error", repr(e), "auto"))
+        dt = 1000 * (time.perf_counter() - t0)
+        self.cb_ms = 0.98 * self.cb_ms + 0.02 * dt
+        self.cb_ms_max = max(self.cb_ms_max * 0.999, dt)
 
     def run(self):
         a, cfg = self.a, self.cfg
@@ -494,60 +521,101 @@ class BenchApp:
             lat = float(lat)
         except ValueError:
             pass
-        self._start_processing()
-        self._start_web()
-        if self.rrcs:
-            self.rrcs.start()
-        if a.record:
-            self.command({"cmd": "rec", "on": True, "source": "startup"})
-        self.log(Event(0.0, "started", f"take {self.take}; starts DISARMED", "auto"))
-        if a.simulate:
-            from .sim import SimRiedel, SimStream
-            self.sim = SimRiedel(cfg, vox_hold_ms=a.sim_hold, model_armed=True)
-            stream = SimStream(self.sim, n_in, n_out, a.block, self.callback)
-            print(f"SIMULATION: virtual Riedel frame, VOX hold {a.sim_hold:.0f} ms, no audio hardware used")
-        else:
-            stream = sd.Stream(device=dev, samplerate=cfg.fs, blocksize=a.block, channels=(n_in, n_out),
-                               dtype="float32", latency=lat, callback=self.callback)
-        with stream as st:
-            il, ol = st.latency if isinstance(st.latency, tuple) else (0.0, st.latency)
-            self.latency_note = f"interface in {1000 * il:.1f} ms + out {1000 * ol:.1f} ms"
-            name = "simulated"
-            if not a.simulate:
+        LOG.info("App Nap: %s", self.app_nap)
+        try:
+            self._start_processing()
+            self._start_web()
+            if self.rrcs:
+                self.rrcs.start()
+            if a.record:
+                self.command({"cmd": "rec", "on": True, "source": "startup"})
+            self.log(Event(0.0, "started", f"take {self.take}; starts DISARMED", "auto"))
+            if a.simulate:
+                from .sim import SimRiedel, SimStream
+                self.sim = SimRiedel(cfg, vox_hold_ms=a.sim_hold, model_armed=True)
+                stream = SimStream(self.sim, n_in, n_out, a.block, self.callback)
+                print(f"SIMULATION: virtual Riedel frame, VOX hold {a.sim_hold:.0f} ms, no audio hardware used")
+            else:
                 try:
-                    name = sd.query_devices(st.device[0] if isinstance(st.device, (tuple, list)) else st.device)["name"]
+                    LOG.info("Opening soundcard %r: %d in / %d out at %d Hz, block %d, latency %r. Device reports: %s",
+                             dev, n_in, n_out, cfg.fs, a.block, lat, sd.query_devices(dev))
                 except Exception:
-                    name = str(a.device)
-            self.engine_info = {"device": "simulated" if a.simulate else str(a.device), "device_name": name,
-                                "app_nap": self.app_nap, "simulate": bool(a.simulate),
-                                "fs": cfg.fs, "block": a.block, "n_in": n_in, "n_out": n_out,
-                                "latency_note": self.latency_note}
-            print(f"Running ({self.latency_note}). Console: http://{a.host}:{a.port}   Ctrl+C to stop")
-            print(f"Events and recordings: {self.dir}")
+                    LOG.exception("Could not read the soundcard's details before opening it")
+                stream = sd.Stream(device=dev, samplerate=cfg.fs, blocksize=a.block, channels=(n_in, n_out),
+                                   dtype="float32", latency=lat, callback=self.callback)
+            with stream as st:
+                il, ol = st.latency if isinstance(st.latency, tuple) else (0.0, st.latency)
+                self.latency_note = f"interface in {1000 * il:.1f} ms + out {1000 * ol:.1f} ms"
+                name = "simulated"
+                if not a.simulate:
+                    try:
+                        name = sd.query_devices(st.device[0] if isinstance(st.device, (tuple, list)) else st.device)["name"]
+                    except Exception:
+                        name = str(a.device)
+                self.engine_info = {"device": "simulated" if a.simulate else str(a.device), "device_name": name,
+                                    "app_nap": self.app_nap, "simulate": bool(a.simulate),
+                                    "fs": cfg.fs, "block": a.block, "n_in": n_in, "n_out": n_out,
+                                    "latency_note": self.latency_note}
+                LOG.info("Soundcard open: %s (%s)", name, self.latency_note)
+                diagnostics.last_crash(clear=True)       # started fine: the setup page stops showing it
+                print(f"Running ({self.latency_note}). Console: http://{a.host}:{a.port}   Ctrl+C to stop")
+                print(f"Events and recordings: {self.dir}")
+                try:
+                    next_power = next_stats = 0.0
+                    while not self.quit_ev.is_set():
+                        time.sleep(0.05)
+                        self._drain()
+                        self._save_plugin_states()
+                        now = time.monotonic()
+                        if now >= next_power:              # Low Power Mode, heat, battery
+                            self.power = macos.power_state()
+                            next_power = now + 10
+                        if now >= next_stats:
+                            self._log_stats()
+                            next_stats = now + 10
+                except KeyboardInterrupt:
+                    print("\nStopping ...")
+        except Exception:
+            LOG.exception("The engine stopped with an error")
+            raise
+        finally:
+            self._shutdown()
+
+    def _log_stats(self):
+        """One line every 10 s: enough to see from the log when and how things went wrong."""
+        try:
+            st = self.core.state()
+            pr = self.proc.state() if self.proc is not None else {}
+            lv_in = st.get("levels_in") or [-120]
+            LOG.info("stats: armed=%s health=%r | callback %.2f ms (max %.2f), errors %d, xruns %s | processing %s ms "
+                     "(cpu %s, stages %s, max %s) misses %s ok=%s %s | loudest input %.0f dB | power %s",
+                     st.get("armed"), st.get("health"), self.cb_ms, self.cb_ms_max, self.callback_errors, st.get("xruns"),
+                     pr.get("proc_ms"), pr.get("cpu_ms"), pr.get("stage_ms"), pr.get("proc_ms_max"), pr.get("misses"),
+                     pr.get("ok"), pr.get("why", ""), max(lv_in), getattr(self, "power", {}))
+        except Exception:
+            LOG.exception("Could not write the stats line")
+
+    def _shutdown(self):
+        """Stops everything that run() started, whether it ended normally or with an error."""
+        try:
+            self._drain()
+            self.log(Event(self.core.t, "stopped", "", "auto"))
+        except Exception:
+            LOG.exception("Could not write the last events")
+        for what, fn in (("recorder", self.rec.stop),
+                         ("plugin settings", lambda: self.proc is not None and self._save_plugin_states(force=True)),
+                         ("processing", lambda: self.proc is not None and self.proc.stop()),
+                         ("RRCS", lambda: self.rrcs and (self.rrcs.set_armed_safe(False), self.rrcs.stop())),
+                         ("event log", self.events_f.close)):
             try:
-                next_power = 0.0
-                while not self.quit_ev.is_set():
-                    time.sleep(0.05)
-                    self._drain()
-                    self._save_plugin_states()
-                    if time.monotonic() >= next_power:      # Low Power Mode, heat, battery
-                        self.power = macos.power_state()
-                        next_power = time.monotonic() + 10
-            except KeyboardInterrupt:
-                print("\nStopping ...")
-        self._drain()
-        self.log(Event(self.core.t, "stopped", "", "auto"))
-        self.rec.stop()
-        if self.proc is not None:
-            self._save_plugin_states(force=True)
-            self.proc.stop()
-        if self.rrcs:
-            self.rrcs.set_armed_safe(False)
-            self.rrcs.stop()
-        self.events_f.close()
+                fn()
+            except Exception:
+                LOG.exception("Could not stop the %s cleanly", what)
         if self.srv:
             self.srv.shutdown()
             self.srv.server_close()
+            self.srv = None
+        LOG.info("Engine stopped")
 
     def switch_device(self, device):
         """Restarts on another soundcard. The new engine starts disarmed, like any start, so the
@@ -597,6 +665,26 @@ class BenchApp:
                 self.wfile.write(body)
 
             def do_GET(self):
+                try:
+                    self._get()
+                except Exception as e:
+                    self._fail(e)
+
+            def do_POST(self):
+                try:
+                    self._post()
+                except Exception as e:
+                    self._fail(e)
+
+            def _fail(self, e):
+                LOG.exception("HTTP %s %s failed", self.command, self.path)
+                try:
+                    self._send(500, json.dumps({"ok": False, "error": f"Sotto Bench hit an error: {e!r} (details in the log)"}).encode(),
+                               "application/json")
+                except Exception:
+                    pass
+
+            def _get(self):
                 if self.path in ("/", "/index.html"):
                     self._send(200, page, "text/html; charset=utf-8")
                 elif self.path == "/bench":                  # classic bench console: recording and fault timing
@@ -609,6 +697,19 @@ class BenchApp:
                     self._send(200, json.dumps(app.plugins(rescan="rescan" in self.path)).encode(), "application/json")
                 elif self.path == "/api/devices":
                     self._send(200, json.dumps(device_list()).encode(), "application/json")
+                elif self.path.startswith("/api/diagnostics"):
+                    # The speed test loads the computer for ~15 s: never while armed (it could make
+                    # processing late and disarm Sotto mid-show).
+                    full = "quick" not in self.path and not app.core.arm.armed
+                    text = diagnostics.build_report(app, run_speed_test=full)
+                    diagnostics.save_report(text, app.dir)
+                    name = diagnostics.report_filename()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(text.encode("utf-8"))
                 elif self.path.startswith("/api/insert"):
                     from urllib.parse import urlparse, parse_qs
                     q = parse_qs(urlparse(self.path).query)
@@ -616,7 +717,7 @@ class BenchApp:
                 else:
                     self._send(404, b"not found", "text/plain")
 
-            def do_POST(self):
+            def _post(self):
                 n = int(self.headers.get("Content-Length", 0))
                 try:
                     body = json.loads(self.rfile.read(n) or b"{}")

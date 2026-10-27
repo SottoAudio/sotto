@@ -28,12 +28,23 @@
   .muted { color: var(--muted); font-size: 13px; } .err { color: var(--bad); font-weight: 600; }
   .check { display: flex; gap: 8px; align-items: center; color: var(--text); font-size: 14px; } .check input { width: auto; }
   .starting { display: none; padding: 30px; text-align: center; font-size: 17px; }
+  .alert { border-color: var(--bad); } .alert p { margin: 6px 0 0; }
+  details pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 10px; max-height: 260px; overflow: auto; }
+  a { color: var(--accent); } [hidden] { display: none !important; }
+  a.button { display: inline-block; text-decoration: none; font-weight: 650; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); color: var(--text); padding: 11px 16px; }
 </style>
 </head>
 <body>
 <main id="form">
   <h1>Sotto Bench</h1>
   <p class="lead">Fail-safe bench test. Try it with a simulated Riedel frame first, then connect the virtual soundcard for the real test.</p>
+
+  <div class="panel alert" id="problem" hidden>
+    <h2 id="problemTitle">Sotto Bench couldn't start</h2>
+    <p id="problemText"></p>
+    <details id="problemMore" hidden><summary class="muted">Technical detail</summary><pre id="problemTrace"></pre></details>
+    <p class="muted">Download the diagnostics file (below) and send it to whoever is helping you.</p>
+  </div>
 
   <div class="panel">
     <h2>Try it without hardware</h2>
@@ -65,6 +76,13 @@
     <p class="muted" id="runsDir"></p>
     <div class="row"><button class="primary" id="devBtn">Start with this soundcard</button><span class="err" id="err"></span></div>
   </div>
+  <div class="panel">
+    <h2>Troubleshooting</h2>
+    <p class="muted" style="margin-top:0">The diagnostics file has everything needed to work out why something isn't working on this computer: the computer and its audio devices, your settings, a short speed test, the log, and any crash records. It takes about 20 seconds.</p>
+    <div class="row"><a class="button" id="diagBtn" href="/setup/diagnostics" download>Download diagnostics</a>
+      <a href="/setup/diagnostics?quick=1" download class="muted">Quick version (no speed test)</a></div>
+    <p class="muted" id="logPath"></p>
+  </div>
   <div class="row"><button id="quitBtn">Quit Sotto Bench</button></div>
 </main>
 <div class="starting" id="starting">Starting… the console opens here in a moment.</div>
@@ -78,7 +96,23 @@ async function init() {
   fields.forEach(f => $('#' + f).value = saved[f] || '');
   $('#record').checked = saved.record !== false;
   $('#runsDir').textContent = 'Recordings and event logs go to ' + c.runs_dir;
+  if (c.log) $('#logPath').textContent = 'Sotto Bench keeps a detailed log at ' + c.log;
+  showProblem(c);
   await loadDevices();
+}
+function showProblem(c) {
+  const box = $('#problem');
+  if (c.start_error) {
+    $('#problemTitle').textContent = 'The soundcard didn\'t start';
+    $('#problemText').textContent = c.start_error;
+  } else if (c.last_crash) {
+    $('#problemTitle').textContent = 'Sotto Bench stopped unexpectedly last time';
+    $('#problemText').textContent = `${c.last_crash.time}, during ${c.last_crash.where}: ${c.last_crash.error}`;
+  } else { box.hidden = true; return; }
+  const tb = c.last_crash && c.last_crash.traceback;
+  $('#problemMore').hidden = !tb;
+  if (tb) $('#problemTrace').textContent = tb;
+  box.hidden = false;
 }
 async function loadDevices() {
   const sel = $('#device');
@@ -117,6 +151,10 @@ async function start(simulate) {
   for (let i = 0; i < 60; i++) {
     await new Promise(res => setTimeout(res, 500));
     try { const s = await fetch('/api/state', {cache: 'no-store'}); if (s.ok) { location.reload(); return; } } catch (e) {}
+    try {                                       // the engine didn't start: the setup page is back
+      const c = await (await fetch('/setup/config', {cache: 'no-store'})).json();
+      if (c.start_error) { $('#starting').style.display = 'none'; $('#form').style.display = ''; saved = c.config; showProblem(c); window.scrollTo(0, 0); return; }
+    } catch (e) {}
   }
   $('#starting').textContent = 'The console did not start. Check the soundcard and try opening Sotto Bench again.';
 }

@@ -143,3 +143,37 @@ def scan(timeout_s=60):
                     pass
     return {"ok": exe is not None, "error": None if exe else "sotto-plugin-test is not installed with this build",
             "plugins": found}
+
+
+_trials = {}
+
+
+def trial(path, timeout_s=30):
+    """Opens the plugin and runs audio through it once in a throwaway process (the sotto-plugin-test
+    program), so a plugin that crashes or hangs never gets near the processing. Remembered for the
+    session (per file version). Returns (ok, message)."""
+    try:
+        key = (path, os.path.getmtime(path))
+    except OSError:
+        return False, "the plugin isn't there any more"
+    if key in _trials:
+        return _trials[key]
+    exe = find(EXENAME)
+    if not exe:
+        return True, "not checked (sotto-plugin-test isn't in this build)"
+    name = os.path.basename(path).rsplit(".", 1)[0]
+    try:
+        r = subprocess.run([exe, path, "--json", "--instances", "1"], capture_output=True, text=True, timeout=timeout_s)
+        if r.returncode == 0:
+            res = (True, "opened and ran in a test process")
+        elif r.returncode < 0:
+            res = (False, f"{name} crashed when Sotto test-opened it (signal {-r.returncode}), so it isn't loaded.")
+        else:
+            detail = (r.stderr or r.stdout or "").strip().splitlines()
+            res = (False, f"{name} didn't open in Sotto's test: {detail[-1] if detail else 'exit code ' + str(r.returncode)}")
+    except subprocess.TimeoutExpired:
+        res = (False, f"{name} didn't finish opening within {timeout_s} s in Sotto's test, so it isn't loaded.")
+    except OSError as e:
+        res = (True, f"not checked ({e})")
+    _trials[key] = res
+    return res

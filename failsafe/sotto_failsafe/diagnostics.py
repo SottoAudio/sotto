@@ -416,6 +416,11 @@ def _findings(app_state, sysinfo, devs, crash, speed):
             f.append(f"The soundcard delivered {gaps['bunched']} of the last {gaps.get('blocks')} blocks bunched together "
                      f"(gaps {gaps.get('min_ms')} to {gaps.get('max_ms')} ms). Set a small soundcard buffer (Settings, "
                      "Audio engine), or 20 ms of processing headroom.")
+        d = gaps.get("delay_ms")
+        if d and d[1] - d[0] > 15:
+            f.append(f"The audio callback ran between {d[0]} and {d[1]} ms after the audio was captured: it is being held "
+                     f"up by up to {d[1] - d[0]:.0f} ms (the longest gap between soundcard callbacks was "
+                     f"{gaps.get('device_gap_max_ms')} ms). Check what else uses the soundcard, and the busy threads below.")
         pa = eng.get("pa_latency_ms") or {}
         if pa.get("in") is not None and pa["in"] + pa["out"] > 30:
             f.append(f"The soundcard adds {pa['in']} ms in and {pa['out']} ms out. A smaller soundcard buffer should "

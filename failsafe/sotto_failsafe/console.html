@@ -114,7 +114,8 @@ textarea{width:100%;resize:vertical;min-height:70px}
 .tsrc .now{grid-column:1/-1;font-size:12px;color:var(--muted)}
 .ptab select{min-width:72px}.ptab input{min-width:160px}select.clash{border-color:var(--led-red,#d33);box-shadow:0 0 0 2px rgba(220,50,50,.25)}.subh{margin:14px 0 8px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 .pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}.pgrid label{display:flex;flex-direction:column;gap:4px;font-size:13px}
-.tsrc label{display:flex;gap:8px;align-items:center;margin:0}.tsrc label input{flex:1;min-width:80px}
+.tsrc label{display:flex;gap:8px;align-items:center;margin:0}.tsrc label input{flex:1;min-width:80px}.tsrc label select{flex:1}
+.flist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}.flist li{display:flex;gap:10px;align-items:center;justify-content:space-between}
 @media (max-width:640px){.tsrc{grid-template-columns:1fr 1fr}}
 .strip .num{font:600 12.5px/1 var(--f-mono);color:var(--muted)}
 .strip .nm{min-width:0;display:flex;gap:6px;align-items:baseline}
@@ -1210,7 +1211,8 @@ table.t tr.unused td{color:var(--muted)}
     const g = APP && APP.callback && APP.callback.gaps;
     if (!g || !g.blocks) return '';
     const pr = APP.processing || {};
-    return `<span class="muted">Last 10 s: blocks ${g.min_ms}–${g.max_ms} ms apart, ${g.bunched} bunched, ${g.late} late from the soundcard; ${pr.misses || 0} late from processing so far.</span>`;
+    const d = g.delay_ms;
+    return `<span class="muted">Last 10 s: blocks ${g.min_ms}–${g.max_ms} ms apart, ${g.bunched} bunched, ${g.late} late from the soundcard${d ? `; callbacks ran ${d[0]}–${d[1]} ms after capture (longest gap between them ${g.device_gap_max_ms} ms)` : ''}; ${pr.misses || 0} late from processing so far.</span>`;
   }
   function loadDevices() {
     if (UI.devsLoading) return;
@@ -1275,29 +1277,57 @@ table.t tr.unused td{color:var(--muted)}
   }
   const TKINDS = [['off', 'Off'], ['tone', 'Test tone (1 kHz)'], ['pink', 'Pink noise'], ['speech', 'Speech'], ['bleed', 'Speech with PA bleed'], ['programme', 'Programme (music)'], ['file', 'A WAV file']];
   function secTests() {
-    if (!APP) return box('Test sources', 'In the app, Sotto can play a test tone, pink noise, speech, or speech with PA bleed into any talker input or into PGM, so you can hear the processing before anything is routed in Dante Controller. This preview has no audio engine.', '');
+    if (!APP) return box('Test sources', 'In the app, Sotto can play a test tone, pink noise, speech, a programme, a WAV file, or speech with PA bleed into any talker input or into PGM, so you can hear the processing before anything is routed in Dante Controller. This preview has no audio engine.', '');
     const T = APP.tests || { playing: {}, allowed: {}, files: [] };
     const armed = APP.armed;
     const files = T.files || [];
+    // One dropdown for any audio choice: the built-in option (if any), every uploaded WAV, and upload.
+    const audioSel = (ch, field, val, first) => `<select data-tf="${field}" data-ch="${ch}"${armed ? ' disabled' : ''}>${
+      [first || ['', files.length ? 'Choose a WAV file…' : 'No WAV files yet']].concat(files.map(x => [x, x])).concat([['__upload__', 'Upload a WAV file…']])
+        .map(([v, l]) => `<option value="${esc(v)}"${v === (val || '') ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
     const rows = Object.entries(T.allowed).map(([ch, what]) => {
       const now = T.playing[ch];
-      const f = UI.tf[ch] || (UI.tf[ch] = { kind: now ? now.kind : 'off', level: now ? now.level_db : -20, file: now && now.file || '', bleed: -6 });
+      const f = UI.tf[ch] || (UI.tf[ch] = { kind: now ? now.kind : 'off', level: now ? now.level_db : -20, file: now && now.file || '', prog: now && now.programme_file || '', bleed: now && now.bleed_db != null ? now.bleed_db : -6 });
       const isPgm = what === 'PGM';
       const label = isPgm ? 'PGM (reference)' : chName(+what.split(' ')[1] - 1);
-      const needsFile = f.kind === 'file' || ((f.kind === 'speech' || f.kind === 'bleed') && files.length);
-      const fileSel = needsFile ? `<select data-tf="file" data-ch="${ch}">${(f.kind === 'file' ? [] : [['', f.kind === 'bleed' || f.kind === 'speech' ? 'Speech made by this Mac' : '']]).concat(files.map(x => [x, x])).map(([v, l]) => `<option value="${esc(v)}"${v === f.file ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>` : '<span></span>';
+      let pick = '<span></span>', extra = '';
+      if (f.kind === 'file') pick = audioSel(ch, 'file', f.file);
+      else if (f.kind === 'speech' || f.kind === 'bleed') pick = audioSel(ch, 'file', f.file, ['', 'Speech made by this Mac']);
+      else if (f.kind === 'programme') pick = audioSel(ch, 'prog', f.prog, ['', 'Built-in programme (music)']);
+      if (f.kind === 'bleed') extra = `<label class="muted" style="grid-column:1/-1">Programme that bleeds (also played on PGM) ${audioSel(ch, 'prog', f.prog, ['', 'Built-in programme (music)'])}</label>`;
+      const needs = f.kind === 'file' && !f.file;
       return `<div class="tsrc"><b>Input ${ch} · ${esc(label)}</b>
         <select data-tf="kind" data-ch="${ch}"${armed ? ' disabled' : ''}>${TKINDS.filter(([k]) => !(isPgm && k === 'bleed')).map(([k, l]) => `<option value="${k}"${k === f.kind ? ' selected' : ''}>${l}</option>`).join('')}</select>
-        ${fileSel}
-        <button class="btn sm" data-act="tplay" data-v="${ch}"${armed || (f.kind === 'off' && !now) ? ' disabled' : ''}>${f.kind === 'off' ? 'Stop' : now ? 'Update' : 'Play'}</button>
+        ${pick}
+        <button class="btn sm" data-act="tplay" data-v="${ch}"${armed || needs || (f.kind === 'off' && !now) ? ' disabled' : ''}>${f.kind === 'off' ? 'Stop' : now ? 'Update' : 'Play'}</button>
+        ${extra}
         <label class="muted" style="grid-column:1/3">Level <input type="range" min="-50" max="0" step="1" value="${f.level}" data-tf="level" data-ch="${ch}"> <span class="mono">${f.level} dBFS</span></label>
         ${f.kind === 'bleed' ? `<label class="muted" style="grid-column:3/-1">PA bleed <input type="range" min="-20" max="20" step="1" value="${f.bleed}" data-tf="bleed" data-ch="${ch}"> <span class="mono">${f.bleed > 0 ? '+' : ''}${f.bleed} dB</span></label>` : ''}
         <span class="now">${now ? 'Playing: ' + esc(now.what) : 'Live input'}</span></div>`;
     }).join('');
-    return box('Test sources', 'Play test audio into a channel inside Sotto, so you can hear the processing without a mic, a PGM feed or any Dante routing. Solo the channel and listen in Split (dry left, clean right). <b>Speech with PA bleed</b> puts a programme on PGM and the same programme, delayed 40 ms with room reverb, into the mic under the speech: the echo canceller should remove it. Test sources only play while Sotto is disarmed; arming switches them all off. The test audio also goes out on that talker\'s return.',
+    const list = files.length ? `<ul class="flist">${files.map(x => `<li><span class="mono">${esc(x)}</span><button class="btn sm" data-act="tremove" data-v="${esc(x)}"${armed ? ' disabled' : ''}>Remove</button></li>`).join('')}</ul>` : '<span class="muted">None yet. Choose “Upload a WAV file…” in any dropdown above.</span>';
+    return box('Test sources', 'Play test audio into a channel inside Sotto, so you can hear the processing without a mic, a PGM feed or any Dante routing. Solo the channel and listen in Split (dry left, clean right). <b>Speech with PA bleed</b> puts a programme on PGM and the same programme, delayed 40 ms with room reverb, into the mic under the speech: the echo canceller should remove it. Use your own WAVs for both: speech recorded on a comms mic, and a recording of the show as the programme. Test sources only play while Sotto is disarmed; arming switches them all off. The test audio also goes out on that talker\'s return.',
       (armed ? '<p class="note warn">Sotto is armed: test sources are off. Disarm to use them.</p>' : '') + rows +
-      row('Your own recording', 'A WAV file (any sample rate, up to 2 minutes): speech recorded on a comms mic is the best test.', `<input type="file" accept=".wav,audio/wav" id="tfUpload"><button class="btn sm" data-act="tupload">Load</button>`) +
+      `<input type="file" accept=".wav,audio/wav,audio/x-wav" id="tfPick" hidden>` +
+      row('Uploaded WAV files', 'Kept on this computer for next time. Any sample rate, 16, 24 or 32-bit, up to 2 minutes.', list) +
       row('', '', `<button class="btn sm" data-act="talloff"${armed ? ' disabled' : ''}>Stop every test source</button>`));
+  }
+  function pickWav(ch, field) {
+    UI.pick = { ch, field };
+    const inp = $('#tfPick'); if (inp) { inp.value = ''; inp.click(); }
+  }
+  async function uploadWav(file) {
+    const pk = UI.pick; UI.pick = null;
+    if (!file) { renderSet(); return; }
+    toast(`Uploading ${file.name}…`);
+    try {
+      const r = await (await fetch('/api/testsrc/upload?name=' + encodeURIComponent(file.name), { method: 'POST', body: file })).json();
+      if (!r.ok) { toast(r.error); renderSet(); return; }
+      APP.tests = r;
+      if (pk && UI.tf[pk.ch]) UI.tf[pk.ch][pk.field] = r.name;
+      toast(`Uploaded ${r.name} (${r.seconds} s)`);
+    } catch (e) { toast('Sotto Bench did not answer'); }
+    renderSet();
   }
   async function testCmd(body) {
     const r = await api('/api/testsrc', body).catch(() => ({ ok: false, error: 'Sotto Bench did not answer' }));
@@ -1726,7 +1756,13 @@ table.t tr.unused td{color:var(--muted)}
     const pk = e.target.closest('select[data-pk]');
     if (pk) { patchSet(pk.dataset.pk, pk.value); UI.patchErr = ''; renderSet(); return; }
     const t = e.target.closest('[data-tf]');
-    if (t) { const f = UI.tf[t.dataset.ch]; const k = t.dataset.tf; if (k === 'kind' || k === 'file') { f[k] = t.value; if (k === 'kind') renderSet(); } return; }
+    if (e.target.id === 'tfPick') { uploadWav(e.target.files && e.target.files[0]); return; }
+    if (t) {
+      const f = UI.tf[t.dataset.ch]; const k = t.dataset.tf;
+      if (k === 'file' || k === 'prog') { if (t.value === '__upload__') { pickWav(t.dataset.ch, k); return; } f[k] = t.value; renderSet(); return; }
+      if (k === 'kind') { f.kind = t.value; renderSet(); }
+      return;
+    }
     if (e.target.id === 'f-op-ch') { assignOp(UI.op, e.target.value === '' ? null : +e.target.value); return; }
     const el = e.target.closest('[data-b]'); if (!el) return; bindEl(el, !(el.type === 'text' || el.tagName === 'TEXTAREA')); });
   $('#setBody').addEventListener('click', e => {
@@ -1756,17 +1792,9 @@ table.t tr.unused td{color:var(--muted)}
         }).catch(() => { UI.patchErr = 'Sotto Bench did not answer'; renderSet(); });
         return;
       }
-      case 'tplay': { const f = UI.tf[v]; testCmd(f.kind === 'off' ? { channel: +v, kind: 'off' } : { channel: +v, kind: f.kind === 'speech' && f.file ? 'file' : f.kind, file: f.file || null, level_db: f.level, bleed_db: f.bleed }); return; }
+      case 'tplay': { const f = UI.tf[v]; testCmd(f.kind === 'off' ? { channel: +v, kind: 'off' } : { channel: +v, kind: f.kind, file: f.file || null, programme_file: f.prog || null, level_db: f.level, bleed_db: f.bleed }); return; }
+      case 'tremove': testCmd({ remove: v }); Object.values(UI.tf).forEach(f => { if (f.file === v) f.file = ''; if (f.prog === v) f.prog = ''; }); return;
       case 'talloff': UI.tf = {}; testCmd({ all_off: true }); return;
-      case 'tupload': {
-        const inp = $('#tfUpload'); const file = inp && inp.files && inp.files[0];
-        if (!file) { toast('Choose a WAV file first'); return; }
-        toast(`Loading ${file.name}…`);
-        fetch('/api/testsrc/upload?name=' + encodeURIComponent(file.name), { method: 'POST', body: file }).then(r => r.json())
-          .then(r => { if (!r.ok) toast(r.error); else { APP.tests = r; toast(`Loaded ${r.name} (${r.seconds} s)`); renderSet(); } })
-          .catch(() => toast('Sotto Bench did not answer'));
-        return;
-      }
       case 'lphones': {
         const el = $('#f-lphones'); const dev = el && el.value !== '' ? +el.value : null;
         api('/api/phones', { device: dev }).then(r => { if (r.ok === false) toast(r.error); else { APP.local_phones = r.state; toast(dev == null ? 'Phones on this Mac: off' : `Phones also on ${r.name}`); renderSet(); } })

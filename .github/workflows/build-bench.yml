@@ -1,0 +1,115 @@
+name: build Sotto Bench
+
+# Builds the double-click Sotto Bench app for Mac and Windows, starts each build against the
+# simulated Riedel frame to check it really runs, and publishes the latest main-branch build as
+# the "Sotto Bench (latest build)" pre-release.
+
+on:
+  push:
+    branches: [main]
+    paths: ["failsafe/**", ".github/workflows/build-bench.yml"]
+  pull_request:
+    paths: ["failsafe/**", ".github/workflows/build-bench.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install --upgrade pip && pip install numpy sounddevice pyinstaller
+      - name: Build Sotto Bench.app
+        working-directory: failsafe
+        run: |
+          set -o pipefail
+          pyinstaller --noconfirm --windowed --name "Sotto Bench" \
+            --osx-bundle-identifier audio.sotto.bench \
+            --add-data "sotto_failsafe/console.html:sotto_failsafe" \
+            --add-data "sotto_failsafe/setup.html:sotto_failsafe" \
+            --collect-all sounddevice --collect-all _sounddevice_data \
+            sotto_bench.py > build.log 2>&1 || { echo "::error title=PyInstaller (mac)::$(tail -c 3000 build.log | tr '\n' ' ')"; exit 1; }
+          PLIST="dist/Sotto Bench.app/Contents/Info.plist"
+          plutil -insert NSMicrophoneUsageDescription -string "Sotto Bench listens to the talker, PROBE and listener channels from the virtual soundcard." "$PLIST"
+          plutil -replace CFBundleShortVersionString -string "0.1.0" "$PLIST"
+          codesign --force --deep -s - "dist/Sotto Bench.app"
+      - name: Smoke test (simulated frame)
+        working-directory: failsafe
+        run: |
+          "dist/Sotto Bench.app/Contents/MacOS/Sotto Bench" --simulate --no-browser --port 8790 > smoke.log 2>&1 &
+          for i in $(seq 1 40); do curl -sf http://127.0.0.1:8790/api/state > state.json && break; sleep 1; done
+          python -c "import json; s=json.load(open('state.json')); assert s['armed'] is False; print('console up, disarmed:', s['health'])" \
+            || { echo "::error title=Smoke test (mac)::$(tail -c 3000 smoke.log | tr '\n' ' ')"; exit 1; }
+          curl -sf -X POST http://127.0.0.1:8790/quit
+          sleep 2
+      - name: Zip
+        working-directory: failsafe/dist
+        run: ditto -c -k --keepParent "Sotto Bench.app" ../../Sotto-Bench-mac.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Sotto-Bench-mac
+          path: Sotto-Bench-mac.zip
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install --upgrade pip && pip install numpy sounddevice pyinstaller
+      - name: Build Sotto Bench.exe
+        working-directory: failsafe
+        run: |
+          pyinstaller --noconfirm --name "Sotto Bench" \
+            --add-data "sotto_failsafe/console.html;sotto_failsafe" \
+            --add-data "sotto_failsafe/setup.html;sotto_failsafe" \
+            --collect-all sounddevice --collect-all _sounddevice_data \
+            sotto_bench.py > build.log 2>&1 || { echo "::error title=PyInstaller (windows)::$(tail -c 3000 build.log | tr '\n' ' ')"; exit 1; }
+      - name: Smoke test (simulated frame)
+        working-directory: failsafe
+        run: |
+          "dist/Sotto Bench/Sotto Bench.exe" --simulate --no-browser --port 8790 > smoke.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8790/api/state > state.json && break; sleep 1; done
+          python -c "import json; s=json.load(open('state.json')); assert s['armed'] is False; print('console up, disarmed:', s['health'])" \
+            || { echo "::error title=Smoke test (windows)::$(tail -c 3000 smoke.log | tr '\n' ' ')"; exit 1; }
+          curl -sf -X POST http://127.0.0.1:8790/quit
+          sleep 2
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path "failsafe/dist/Sotto Bench" -DestinationPath "Sotto-Bench-windows.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Sotto-Bench-windows
+          path: Sotto-Bench-windows.zip
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [mac, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dl
+      - name: Publish "Sotto Bench (latest build)"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release delete bench-latest --repo "$REPO" --yes --cleanup-tag || true
+          gh release create bench-latest --repo "$REPO" --target "$GITHUB_SHA" --prerelease \
+            --title "Sotto Bench (latest build)" \
+            --notes "Built automatically from main ($GITHUB_SHA). Not signed yet. On a Mac, the first time: right-click Sotto Bench, choose Open, then Open again (or System Settings, Privacy & Security, Open Anyway). Windows: if SmartScreen warns, choose More info, then Run anyway." \
+            dl/Sotto-Bench-mac/Sotto-Bench-mac.zip dl/Sotto-Bench-windows/Sotto-Bench-windows.zip

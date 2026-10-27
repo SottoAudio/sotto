@@ -132,6 +132,9 @@ class BenchApp:
                                  on_arm_request=lambda: self.arm(None, "panel"))
         self.lock = threading.Lock()
         self._was_armed = False
+        self.quit_ev = threading.Event()
+        self.srv = None
+        self.timing = []
 
     # ------------------------------------------------------------ events
     def log(self, e: Event):
@@ -195,6 +198,29 @@ class BenchApp:
         if cmd == "monitor":
             core.monitor_source = c.get("source_ch", "listen")
             return {"ok": True}
+        if cmd == "analyse":
+            if self.rec.on:
+                self.rec.stop()
+                self.log(Event(core.t, "recording_stopped", self.rec.path, src))
+            self.events_f.flush()
+            if self.cfg.listen_in is None:
+                return {"ok": False, "error": "start with a listener feed input to time the faults"}
+            if not self.rec.path:
+                return {"ok": False, "error": "nothing recorded yet"}
+            from . import analyse
+            try:
+                res = analyse.analyse(self.dir)
+            except SystemExit as e:
+                return {"ok": False, "error": str(e)}
+            except Exception as e:
+                return {"ok": False, "error": repr(e)}
+            import csv as _csv
+            with open(os.path.join(self.dir, "fallback_timing.csv"), "w", newline="") as f:
+                w = _csv.DictWriter(f, fieldnames=["event", "at_s", "marker_before", "switch_ms", "silence_ms", "dry_back_ms"])
+                w.writeheader()
+                w.writerows(res)
+            self.timing = res
+            return {"ok": True, "message": f"timed {len(res)} faults; saved fallback_timing.csv"}
         if cmd == "mark":
             self.log(Event(core.t, "mark", str(c.get("note", ""))[:200], src))
             return {"ok": True}
@@ -211,7 +237,7 @@ class BenchApp:
     def state(self):
         s = self.core.state()
         s.update({"take": self.take, "folder": self.dir, "recording": self.rec.on,
-                  "rec_dropped": self.rec.dropped, "events": self.recent[-25:],
+                  "rec_dropped": self.rec.dropped, "events": self.recent[-25:], "timing": self.timing,
                   "rrcs": self.rrcs.status() if self.rrcs else {"configured": False},
                   "latency_note": getattr(self, "latency_note", "")})
         return s
@@ -265,21 +291,26 @@ class BenchApp:
             print(f"Running ({self.latency_note}). Console: http://{a.host}:{a.port}   Ctrl+C to stop")
             print(f"Events and recordings: {self.dir}")
             try:
-                while True:
+                while not self.quit_ev.is_set():
                     time.sleep(0.05)
                     self._drain()
             except KeyboardInterrupt:
                 print("\nStopping ...")
         self._drain()
+        self.log(Event(self.core.t, "stopped", "", "auto"))
         self.rec.stop()
         if self.rrcs:
             self.rrcs.set_armed_safe(False)
             self.rrcs.stop()
         self.events_f.close()
+        if self.srv:
+            self.srv.shutdown()
+            self.srv.server_close()
 
     def _start_web(self):
         app = self
-        page = open(os.path.join(HERE, "console.html"), "rb").read()
+        with open(os.path.join(HERE, "console.html"), "rb") as f:
+            page = f.read()
 
         class H(BaseHTTPRequestHandler):
             def log_message(self, *args):
@@ -313,12 +344,15 @@ class BenchApp:
                     res = app.arm(None if t in (None, "", "all") else int(t) - 1, "companion")
                 elif self.path == "/api/disarm":
                     res = app.command({"cmd": "disarm", "source": "companion"})
+                elif self.path == "/quit":
+                    app.quit_ev.set()
+                    res = {"ok": True}
                 else:
                     return self._send(404, b"not found", "text/plain")
                 self._send(200, json.dumps(res).encode(), "application/json")
 
-        srv = ThreadingHTTPServer((self.a.host, self.a.port), H)
-        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.srv = ThreadingHTTPServer((self.a.host, self.a.port), H)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
 
 
 def list_devices():
@@ -330,7 +364,7 @@ def list_devices():
               f"{apis[d['hostapi']]['name'][:18]:18s}  {d['name']}")
 
 
-def main(argv=None):
+def build_parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--list", action="store_true", help="list audio devices and exit")
     p.add_argument("--device", help="virtual soundcard: index or part of its name")
@@ -357,11 +391,20 @@ def main(argv=None):
     p.add_argument("--sim-hold", type=float, default=400.0, help="simulated VOX hold time in ms")
     p.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to open the console from another device")
     p.add_argument("--port", type=int, default=8766)
-    a = p.parse_args(argv)
-    if a.list:
-        return list_devices()
+    return p
+
+
+def parse_args(argv=None):
+    a = build_parser().parse_args(argv)
     if a.simulate and not a.listen_in:
         a.listen_in = "6"
+    return a
+
+
+def main(argv=None):
+    a = parse_args(argv)
+    if a.list:
+        return list_devices()
     BenchApp(a).run()
 
 

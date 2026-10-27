@@ -195,6 +195,7 @@ class SwitchDeviceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             app = BenchApp(parse_args(["--simulate", "--port", "8798", "--out-dir", d]))
             r = app.switch_device("0")
+            app.events_f.close()                           # Windows can't delete open files
             self.assertFalse(r["ok"])
             self.assertIsNone(app.restart_device)
             self.assertFalse(app.quit_ev.is_set())
@@ -212,10 +213,13 @@ class SwitchDeviceTests(unittest.TestCase):
                 json.dump({"device": "0", "layout": 2}, f)
             app = BenchApp(parse_args(["--device", "0", "--port", "8799", "--out-dir", d]))
             app.engine_info = {"n_in": 62, "n_out": 64}
-            r = app.switch_device("1")
-            self.assertFalse(r["ok"])
-            self.assertIn("1 inputs and 0 outputs", r["error"])
-            r = app.switch_device("2")
+            try:
+                r = app.switch_device("1")
+                self.assertFalse(r["ok"])
+                self.assertIn("1 inputs and 0 outputs", r["error"])
+                r = app.switch_device("2")
+            finally:
+                app.events_f.close()                       # Windows can't delete open files
             self.assertTrue(r["ok"])
             self.assertEqual(app.restart_device, "2")
             self.assertTrue(app.quit_ev.is_set())

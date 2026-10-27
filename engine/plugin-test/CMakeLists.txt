@@ -9,7 +9,9 @@
 # test this tool without a commercial plugin.
 cmake_minimum_required(VERSION 3.19)
 if(APPLE)
-    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "")
+    # Apple silicon only: Sotto runs on M-series Macs, and Apple's macOS 27 developer tools no
+    # longer include Intel (x86_64) libraries, so a universal build fails to link there.
+    set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "")
     set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "")
 endif()
 project(sotto_plugin_test CXX)

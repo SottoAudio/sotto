@@ -275,6 +275,7 @@ class Processor:
         self.good_run = 0
         self.proc_ms = 0.0
         self.proc_ms_max = 0.0
+        self.stage_ms = {"front": 0.0, "model": 0.0, "back": 0.0}   # where the time goes
         self.cpu_ms = 0.0                                # thread CPU time: if far below proc_ms, the
         self.thread_note = ""                            # thread is waiting, not computing
         self.faults = []                                 # (talker, why), drained by the app
@@ -376,12 +377,14 @@ class Processor:
             self.refs_ring.write(ref[None])
             self.ref_db = _db(float(np.mean(ref * ref)))
             fronts = []
+            t_front = time.perf_counter()
             for i, c in enumerate(self.chains):
                 Z, versions, fault = c.front(mics[i].astype(np.float64), self.refs_ring)
                 c.level_in = _db(float(np.mean(mics[i] ** 2)))
                 fronts.append((Z, versions))
                 if fault:
                     self.faults.append((i, fault))
+            t_model = time.perf_counter()
             Zc = None
             # The speech model is the expensive part: run it only while someone is on Full clean
             # (or crossfading to or from it). Rows that rejoin start from a clean model state.
@@ -398,6 +401,7 @@ class Processor:
                     Zc = None
                     for i in range(self.n):
                         self.faults.append((i, f"speech model error: {e!r}"))
+            t_back = time.perf_counter()
             outs, drys = np.zeros((self.n, HOP)), np.zeros((self.n, HOP))
             for i, c in enumerate(self.chains):
                 y, dry, fault = c.back(fronts[i][1], None if Zc is None else Zc[i], fronts[i][0])
@@ -409,7 +413,10 @@ class Processor:
                 self.q_out.put_nowait((tag, outs, drys))
             except queue.Full:
                 pass
-            dt = 1000 * (time.perf_counter() - t0)
+            t_end = time.perf_counter()
+            dt = 1000 * (t_end - t0)
+            for k, a_, b_ in (("front", t_front, t_model), ("model", t_model, t_back), ("back", t_back, t_end)):
+                self.stage_ms[k] = 0.98 * self.stage_ms[k] + 0.02 * 1000 * (b_ - a_)
             self.cpu_ms = 0.98 * self.cpu_ms + 0.02 * 1000 * (time.thread_time() - c0)
             self.proc_ms = 0.98 * self.proc_ms + 0.02 * dt
             self.proc_ms_max = max(self.proc_ms_max * 0.999, dt)
@@ -435,7 +442,8 @@ class Processor:
         return {
             "on": True, "model": self.dfn is not None, "proc_ms": round(self.proc_ms, 2),
             "proc_ms_max": round(self.proc_ms_max, 2), "cpu_ms": round(self.cpu_ms, 2),
-            "thread": self.thread_note, "misses": self.misses, "ok": self.ok, "why": self.why,
+            "thread": self.thread_note, "stage_ms": {k: round(v, 2) for k, v in self.stage_ms.items()},
+            "model_rows": sum(self._dfn_rows), "misses": self.misses, "ok": self.ok, "why": self.why,
             "latency_ms": round(1000 * (2 * HOP) / FS, 1), "pgm_db": round(self.ref_db, 1),
             "talkers": [{
                 "name": c.name, "mode": c.s.mode, "erle_db": round(c.erle, 1),

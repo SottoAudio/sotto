@@ -1,11 +1,11 @@
 """Sotto fail-safe bench tool.
 
   python -m sotto_failsafe --list
-  python -m sotto_failsafe --device "Dante Virtual Soundcard" \
-      --talker-in 1-4 --talker-out 1-4 --probe-in 5 --probe-out 5 --heartbeat-out 6 \
-      --listen-in 6 --monitor 7,8 --record
+  python -m sotto_failsafe --device "Dante Virtual Soundcard" --talker-in 1-4 --talker-out 1-4 --record
 
-Channels count from 1. Open http://127.0.0.1:8766 for the console.
+Channels count from 1 and follow Sotto's fixed system channels unless you say otherwise:
+IN 61 PROBE return, IN 62 PGM, OUT 61 HEARTBEAT, OUT 62 PROBE, OUT 63/64 headphones (solo bus).
+Set Dante Virtual Soundcard to 64 x 64. Open http://127.0.0.1:8766 for the console.
 """
 import argparse
 import csv
@@ -101,6 +101,7 @@ class BenchApp:
             probe_in=chans(a.probe_in), probe_out=chans(a.probe_out)[0],
             heartbeat_out=chans(a.heartbeat_out)[0],
             listen_in=(chans(a.listen_in)[0] if a.listen_in else None),
+            pgm_in=(chans(a.pgm_in)[0] if a.pgm_in else None),
             monitor_out=chans(a.monitor),
             arm_hold_s=a.arm_hold, probe_timeout_s=a.probe_timeout / 1000.0,
             marker_on=not a.no_marker,
@@ -128,13 +129,14 @@ class BenchApp:
         if a.rrcs_host:
             from .rrcs import RRCSLink
             self.rrcs = RRCSLink(a.rrcs_host, a.rrcs_port, armed_name=a.rrcs_armed,
-                                 arm_request_name=a.rrcs_arm_request,
+                                 arm_request_name=a.rrcs_arm_request, clean_ok_name=a.rrcs_clean_ok,
                                  on_arm_request=lambda: self.arm(None, "panel"))
         self.lock = threading.Lock()
         self._was_armed = False
         self.quit_ev = threading.Event()
         self.srv = None
         self.timing = []
+        self.sim = None
 
     # ------------------------------------------------------------ events
     def log(self, e: Event):
@@ -149,6 +151,8 @@ class BenchApp:
         armed = self.core.arm.armed
         if armed != self._was_armed:
             self._was_armed = armed
+            if self.sim is not None:          # the simulated frame gets what RRCS would set
+                self.sim.set_logic("ARMED", armed)
             if self.rrcs:
                 ok = self.rrcs.set_armed_safe(armed)
                 self.log(Event(self.core.t, "rrcs_armed_set" if ok else "rrcs_error",
@@ -195,9 +199,33 @@ class BenchApp:
             with self.lock:
                 core.clear_faults()
             return {"ok": True}
-        if cmd == "monitor":
-            core.monitor_source = c.get("source_ch", "listen")
+        if cmd == "solo":
+            with self.lock:
+                plan = core.set_solo(c.get("ids"), c.get("mode"), c.get("level_db"), c.get("dim"), c.get("dim_db"))
+            return {"ok": True, **plan}
+        if cmd == "monitor":                  # the classic bench console's listen selector
+            sc = c.get("source_ch", "listen")
+            if sc == "listen" and self.cfg.listen_in is not None:
+                ids = [f"i{self.cfg.listen_in + 1}"]
+            elif str(sc).isdigit() and int(sc) < len(self.cfg.talker_out):
+                ids = [f"o{self.cfg.talker_out[int(sc)] + 1}"]
+            else:
+                ids = []
+            with self.lock:
+                core.monitor_source = sc
+                core.set_solo(ids, "clicked")
             return {"ok": True}
+        if cmd == "rrcs_set":
+            name, on = str(c.get("name", "")), bool(c.get("on"))
+            if self.rrcs:
+                ok = self.rrcs.set_logic_safe(name, on) if hasattr(self.rrcs, "set_logic_safe") else False
+                self.log(Event(core.t, "rrcs_set" if ok else "rrcs_error",
+                               f"{name}={'on' if on else 'off'}" + ("" if ok else f": {self.rrcs.last_error}"), src))
+                return {"ok": ok, "error": None if ok else f"RRCS: {self.rrcs.last_error}"}
+            if self.sim is not None and self.sim.set_logic(name, on):
+                self.log(Event(core.t, "rrcs_set", f"{name}={'on' if on else 'off'} (simulated frame)", src))
+                return {"ok": True}
+            return {"ok": False, "error": "no RRCS link to the frame"}
         if cmd == "analyse":
             if self.rec.on:
                 self.rec.stop()
@@ -240,6 +268,13 @@ class BenchApp:
                   "rec_dropped": self.rec.dropped, "events": self.recent[-25:], "timing": self.timing,
                   "rrcs": self.rrcs.status() if self.rrcs else {"configured": False},
                   "latency_note": getattr(self, "latency_note", "")})
+        frame = None
+        if self.sim is not None:
+            frame = self.sim.frame_state()
+        elif self.rrcs:
+            frame = self.rrcs.frame_state()
+        s["frame"] = frame
+        s["engine"] = getattr(self, "engine_info", None)
         return s
 
     # ------------------------------------------------------------ audio
@@ -262,7 +297,7 @@ class BenchApp:
         a, cfg = self.a, self.cfg
         if not a.simulate:
             import sounddevice as sd
-        n_in = max(cfg.talker_in + cfg.probe_in + ([cfg.listen_in] if cfg.listen_in is not None else [])) + 1
+        n_in = max(cfg.talker_in + cfg.probe_in + [c for c in (cfg.listen_in, cfg.pgm_in) if c is not None]) + 1
         n_out = max(cfg.talker_out + [cfg.probe_out, cfg.heartbeat_out] + cfg.monitor_out) + 1
         dev = int(a.device) if a.device and str(a.device).isdigit() else a.device
         n_out = max(n_out, 2)
@@ -279,7 +314,7 @@ class BenchApp:
         self.log(Event(0.0, "started", f"take {self.take}; starts DISARMED", "auto"))
         if a.simulate:
             from .sim import SimRiedel, SimStream
-            self.sim = SimRiedel(cfg, vox_hold_ms=a.sim_hold)
+            self.sim = SimRiedel(cfg, vox_hold_ms=a.sim_hold, model_armed=True)
             stream = SimStream(self.sim, n_in, n_out, a.block, self.callback)
             print(f"SIMULATION: virtual Riedel frame, VOX hold {a.sim_hold:.0f} ms, no audio hardware used")
         else:
@@ -288,6 +323,9 @@ class BenchApp:
         with stream as st:
             il, ol = st.latency if isinstance(st.latency, tuple) else (0.0, st.latency)
             self.latency_note = f"interface in {1000 * il:.1f} ms + out {1000 * ol:.1f} ms"
+            self.engine_info = {"device": "simulated" if a.simulate else str(a.device), "simulate": bool(a.simulate),
+                                "fs": cfg.fs, "block": a.block, "n_in": n_in, "n_out": n_out,
+                                "latency_note": self.latency_note}
             print(f"Running ({self.latency_note}). Console: http://{a.host}:{a.port}   Ctrl+C to stop")
             print(f"Events and recordings: {self.dir}")
             try:
@@ -311,6 +349,8 @@ class BenchApp:
         app = self
         with open(os.path.join(HERE, "console.html"), "rb") as f:
             page = f.read()
+        with open(os.path.join(HERE, "console_bench.html"), "rb") as f:
+            bench_page = f.read()
 
         class H(BaseHTTPRequestHandler):
             def log_message(self, *args):
@@ -326,6 +366,8 @@ class BenchApp:
             def do_GET(self):
                 if self.path in ("/", "/index.html"):
                     self._send(200, page, "text/html; charset=utf-8")
+                elif self.path == "/bench":                  # classic bench console: recording and fault timing
+                    self._send(200, bench_page, "text/html; charset=utf-8")
                 elif self.path in ("/state", "/api/state"):
                     self._send(200, json.dumps(app.state()).encode(), "application/json")
                 else:
@@ -371,11 +413,12 @@ def build_parser():
     p.add_argument("--talker-in", default="1-4", help="inputs carrying the talkers (default 1-4)")
     p.add_argument("--talker-out", default="1-4", help="outputs for the talker returns (default 1-4)")
     p.add_argument("--names", default="caller,creative,tech mgr,stage mgr")
-    p.add_argument("--probe-in", default="5", help="PROBE return input(s), one per stream (default 5)")
-    p.add_argument("--probe-out", default="5", help="PROBE output (default 5)")
-    p.add_argument("--heartbeat-out", default="6", help="HEARTBEAT output (default 6)")
-    p.add_argument("--listen-in", help="input carrying a listener's feed, for timing the fallback")
-    p.add_argument("--monitor", help="output pair for the engineer's headphones, e.g. 7,8")
+    p.add_argument("--probe-in", default="61", help="PROBE return input(s), one per stream (default 61)")
+    p.add_argument("--probe-out", default="62", help="PROBE output (default 62)")
+    p.add_argument("--heartbeat-out", default="61", help="HEARTBEAT output (default 61)")
+    p.add_argument("--pgm-in", default="62", help="PGM reference input, metered (default 62; empty for none)")
+    p.add_argument("--listen-in", help="input carrying a listener's feed, for timing the fallback (e.g. 63)")
+    p.add_argument("--monitor", default="63,64", help="headphone outputs carrying the solo bus (default 63,64)")
     p.add_argument("--arm-hold", type=float, default=5.0, help="seconds of green before arming is allowed")
     p.add_argument("--probe-timeout", type=float, default=200.0, help="ms of missing PROBE before disarming")
     p.add_argument("--no-marker", action="store_true", help="don't add the marker tone to the talker returns")
@@ -387,6 +430,7 @@ def build_parser():
     p.add_argument("--rrcs-port", type=int, default=8193)
     p.add_argument("--rrcs-armed", default="ARMED", help="logic source the app sets while armed")
     p.add_argument("--rrcs-arm-request", default="ARM_REQ", help="logic source the panel ARM key sets")
+    p.add_argument("--rrcs-clean-ok", default="CLEAN_OK", help="logic source the HEARTBEAT VOX sets (read only)")
     p.add_argument("--simulate", action="store_true", help="no hardware: run against a simulated Riedel frame")
     p.add_argument("--sim-hold", type=float, default=400.0, help="simulated VOX hold time in ms")
     p.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to open the console from another device")
@@ -397,7 +441,7 @@ def build_parser():
 def parse_args(argv=None):
     a = build_parser().parse_args(argv)
     if a.simulate and not a.listen_in:
-        a.listen_in = "6"
+        a.listen_in = "63"
     return a
 
 

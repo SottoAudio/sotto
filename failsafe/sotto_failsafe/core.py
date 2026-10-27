@@ -8,6 +8,10 @@ Every block:
     `probe_timeout_s` is a system fault, which disarms everything (latched);
   * HEARTBEAT is sent only while armed.
 Faults can be injected from the console to time the Riedel fallback.
+
+The engineer's headphones (monitor outputs) carry the SOLO BUS: whatever is soloed, summed, with
+level, dim and a -3 dBFS limiter. It only reads the inputs and outputs; it never changes them.
+Nothing soloed means silence.
 """
 import time
 from dataclasses import dataclass, field
@@ -28,6 +32,7 @@ class Config:
     probe_out: int = 4
     heartbeat_out: int = 5
     listen_in: int = None          # optional: a listener's feed routed back, for timing
+    pgm_in: int = None             # optional: the PGM reference (metered only, for now)
     monitor_out: list = field(default_factory=list)
     heartbeat_hz: float = 1000.0
     heartbeat_dbfs: float = -20.0
@@ -54,7 +59,13 @@ class FailsafeCore:
         self.xruns = 0
         self.blocks = 0
         self.levels = {"talkers": [-120.0] * n, "listen": -120.0}
-        self.monitor_source = "listen" if cfg.listen_in is not None else 0
+        self.monitor_source = None
+        self.solo = {"ids": [], "mode": "clicked", "level_db": 0.0, "dim": False, "dim_db": -20.0}
+        self._solo_plan = ([], [])     # (left taps, right taps); a tap is ("i" or "o", 0-based channel)
+        self._solo_gain = 0.0
+        self._limit = 1.0
+        self.lv_in = None
+        self.lv_out = None
         # injected faults: name -> audio time it ends (None = until cleared)
         self.faults = {}
         self.pending_freeze_ms = 0
@@ -78,6 +89,79 @@ class FailsafeCore:
             return
         self.faults[name] = None if seconds is None else t + float(seconds)
         self.log.append(Event(t, "fault_injected", f"{name}" + (f" for {seconds} s" if seconds else ""), "console"))
+
+    def set_solo(self, ids=None, mode=None, level_db=None, dim=None, dim_db=None):
+        """ids like "i3" (input 3) or "o3" (output 3), counted from 1. Modes: clicked, dry, clean, split
+        (dry left, clean right). Dry/clean swap a talker's input for its return and back."""
+        s = dict(self.solo)
+        if ids is not None:
+            s["ids"] = [str(i) for i in ids][:128]
+        if mode in ("clicked", "dry", "clean", "split"):
+            s["mode"] = mode
+        if level_db is not None:
+            s["level_db"] = max(-60.0, min(12.0, float(level_db)))
+        if dim is not None:
+            s["dim"] = bool(dim)
+        if dim_db is not None:
+            s["dim_db"] = max(-60.0, min(0.0, float(dim_db)))
+        cfg = self.cfg
+        tin, tout = list(cfg.talker_in), list(cfg.talker_out)
+
+        def parse(x):
+            try:
+                k, n = x[0], int(x[1:]) - 1
+            except (ValueError, IndexError):
+                return None
+            if k not in "io" or n < 0 or (k == "o" and n in cfg.monitor_out):
+                return None
+            return (k, n)
+
+        def dry(t):
+            return ("i", tin[tout.index(t[1])]) if t[0] == "o" and t[1] in tout else t
+
+        def clean(t):
+            return ("o", tout[tin.index(t[1])]) if t[0] == "i" and t[1] in tin else t
+
+        taps = [t for t in map(parse, s["ids"]) if t]
+        m = s["mode"]
+        if m == "dry":
+            left = right = sorted(set(map(dry, taps)))
+        elif m == "clean":
+            left = right = sorted(set(map(clean, taps)))
+        elif m == "split":
+            left, right = sorted(set(map(dry, taps))), sorted(set(map(clean, taps)))
+        else:
+            left = right = sorted(set(taps))
+        self.solo = s
+        self._solo_plan = (left, right)
+        return {"left": [f"{k}{n + 1}" for k, n in left], "right": [f"{k}{n + 1}" for k, n in right]}
+
+    def _solo_bus(self, x, out, frames, silent):
+        cfg = self.cfg
+        left, right = self._solo_plan
+
+        def mix(taps):
+            y = np.zeros(frames)
+            for k, n in taps:
+                if k == "i" and n < x.shape[1]:
+                    y += x[:, n]
+                elif k == "o" and n < out.shape[1]:
+                    y += out[:, n]
+            return y
+
+        s = self.solo
+        target = 0.0 if silent or not (left or right) else 10 ** ((s["level_db"] + (s["dim_db"] if s["dim"] else 0.0)) / 20)
+        g = np.linspace(self._solo_gain, target, frames, endpoint=False) + (target - self._solo_gain) / frames
+        self._solo_gain = target
+        l_sig, r_sig = mix(left) * g, mix(right) * g
+        ceiling = 10 ** (-3 / 20)
+        peak = max(float(np.max(np.abs(l_sig))) if frames else 0.0, float(np.max(np.abs(r_sig))) if frames else 0.0)
+        need = 1.0 if peak <= ceiling else ceiling / peak
+        self._limit = min(need, min(1.0, self._limit * 10 ** (6 / 20 * frames / cfg.fs)))   # instant attack, 6 dB/s release
+        mon = cfg.monitor_out
+        out[:, mon[0]] = np.clip(l_sig * self._limit, -ceiling, ceiling)
+        if len(mon) > 1:
+            out[:, mon[1]] = np.clip(r_sig * self._limit, -ceiling, ceiling)
 
     def clear_faults(self):
         self.faults.clear()
@@ -139,12 +223,10 @@ class FailsafeCore:
         if cfg.listen_in is not None:
             self.levels["listen"] = dbfs(np.sqrt(np.mean(x[:, cfg.listen_in] ** 2)) + 1e-12)
         if cfg.monitor_out:
-            if self.monitor_source == "listen" and cfg.listen_in is not None:
-                m = x[:, cfg.listen_in]
-            else:
-                m = outdata[:, cfg.talker_out[int(self.monitor_source)]]
-            for ch in cfg.monitor_out:
-                outdata[:, ch] = m
+            self._solo_bus(x, outdata, frames, silent_all)
+        self.lv_in = 20 * np.log10(np.sqrt(np.mean(x * x, axis=0)) + 1e-9)
+        o = np.asarray(outdata, dtype=np.float64)
+        self.lv_out = 20 * np.log10(np.sqrt(np.mean(o * o, axis=0)) + 1e-9)
         self.samples += frames
         self.blocks += 1
 
@@ -162,4 +244,15 @@ class FailsafeCore:
                        for w in self.watch],
             "listen_db": round(self.levels["listen"], 1) if self.cfg.listen_in is not None else None,
             "faults": sorted(self.faults), "xruns": self.xruns, "monitor": self.monitor_source,
+            "levels_in": [] if self.lv_in is None else [round(max(-120.0, float(v)), 1) for v in self.lv_in],
+            "levels_out": [] if self.lv_out is None else [round(max(-120.0, float(v)), 1) for v in self.lv_out],
+            "solo": dict(self.solo, left=[f"{k}{n + 1}" for k, n in self._solo_plan[0]],
+                         right=[f"{k}{n + 1}" for k, n in self._solo_plan[1]]),
+            "channels": {
+                "talker_in": [c + 1 for c in self.cfg.talker_in], "talker_out": [c + 1 for c in self.cfg.talker_out],
+                "probe_in": [c + 1 for c in self.cfg.probe_in], "probe_out": self.cfg.probe_out + 1,
+                "heartbeat_out": self.cfg.heartbeat_out + 1, "monitor_out": [c + 1 for c in self.cfg.monitor_out],
+                "listen_in": None if self.cfg.listen_in is None else self.cfg.listen_in + 1,
+                "pgm_in": None if self.cfg.pgm_in is None else self.cfg.pgm_in + 1,
+            },
         }

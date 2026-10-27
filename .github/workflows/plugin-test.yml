@@ -1,0 +1,80 @@
+name: sotto-plugin-test
+
+# Builds the VST3 test host for Mac (Apple silicon and Intel) and Windows, runs it against the
+# VST3 SDK's example plugin (ADelay) to prove loading, settings save/restore and processing work,
+# and publishes the latest main-branch build as the "sotto-plugin-test (latest build)" pre-release.
+
+on:
+  push:
+    branches: [main]
+    paths: ["engine/plugin-test/**", ".github/workflows/plugin-test.yml"]
+  pull_request:
+    paths: ["engine/plugin-test/**", ".github/workflows/plugin-test.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            name: mac
+          - os: windows-latest
+            name: windows
+          - os: ubuntu-latest
+            name: linux
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Configure
+        run: cmake -S engine/plugin-test -B build -DCMAKE_BUILD_TYPE=Release -DSOTTO_BUILD_SDK_EXAMPLES=ON > configure.log 2>&1 || { echo "::error title=Configure (${{ matrix.name }})::$(tail -c 3000 configure.log | tr '\n' ' ')"; exit 1; }
+      - name: Build
+        run: cmake --build build --config Release --target sotto-plugin-test adelay --parallel > build.log 2>&1 || { echo "::error title=Build (${{ matrix.name }})::$(grep -iE 'error' build.log | head -c 3000 | tr '\n' ' ')"; exit 1; }
+      - name: Test against the SDK's example plugin
+        run: |
+          EXE=$(find build -type f \( -name sotto-plugin-test -o -name sotto-plugin-test.exe \) | head -1)
+          PLUG=$(find build -type d -name adelay.vst3 | head -1)
+          echo "tool: $EXE  plugin: $PLUG"
+          "$EXE" "$PLUG" --set "Delay=0.25" --save-state adelay.state --json > first.json || { echo "::error title=Run (${{ matrix.name }})::$(cat first.json | head -c 2000)"; exit 1; }
+          "$EXE" "$PLUG" --load-state adelay.state --instances 16 --json > second.json
+          python engine/plugin-test/ci_check.py first.json second.json
+          mkdir -p dist && cp "$EXE" dist/ && cp engine/plugin-test/README.md dist/
+      - name: Zip
+        run: |
+          cd dist
+          if [ "${{ matrix.name }}" = "windows" ]; then 7z a ../sotto-plugin-test-${{ matrix.name }}.zip . > /dev/null; else zip -r ../sotto-plugin-test-${{ matrix.name }}.zip . > /dev/null; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sotto-plugin-test-${{ matrix.name }}
+          path: sotto-plugin-test-${{ matrix.name }}.zip
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dl
+      - name: Publish "sotto-plugin-test (latest build)"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release delete plugin-test-latest --repo "$REPO" --yes --cleanup-tag || true
+          gh release create plugin-test-latest --repo "$REPO" --target "$GITHUB_SHA" --prerelease \
+            --title "sotto-plugin-test (latest build)" \
+            --notes "Command-line VST3 test host, built from main ($GITHUB_SHA). Not signed yet. On a Mac, after unzipping, run once in Terminal: xattr -d com.apple.quarantine sotto-plugin-test. See README.md inside the zip." \
+            dl/sotto-plugin-test-mac/sotto-plugin-test-mac.zip dl/sotto-plugin-test-windows/sotto-plugin-test-windows.zip

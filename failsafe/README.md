@@ -36,13 +36,26 @@ To skip the setup page, use `python -m sotto_failsafe --simulate` or the full op
 | --- | --- | --- |
 | Talker inputs | in 1–4 | the four talkers' sends from the frame (Call to Port, as Design D) |
 | Talker returns | out 1–4 | each talker passed straight through, plus a quiet 2.93 kHz marker tone |
-| PROBE | out 5 → in 5 | 2 kHz at −20 dBFS, always on; the frame loops it straight back |
-| HEARTBEAT | out 6 | 1 kHz at −20 dBFS, only while armed |
-| LISTEN (optional) | in 6 | a listener's feed routed back, so the tool can time the fallback |
-| Monitor (optional) | out 7–8 | the engineer's headphones: listener feed or any talker's return |
+| PROBE | out 62 → in 61 | 2 kHz at −20 dBFS, always on; the frame loops it straight back |
+| HEARTBEAT | out 61 | 1 kHz at −20 dBFS, only while armed |
+| PGM | in 62 | the programme feed, metered (the echo canceller's reference later) |
+| Headphones | out 63–64 | the solo bus: whatever you solo on the console, nothing otherwise |
+| LISTEN (optional) | in 63 | a listener's feed routed back, so the tool can time the fallback |
+
+These are Sotto's fixed system channels, so set Dante Virtual Soundcard to 64 × 64. Any of them
+can be changed on the setup page or with the options below.
 
 The marker tone is on every return from the laptop, so a listener can always hear which path
 they're on. The analysis uses it the same way.
+
+## The console
+
+The app opens Sotto's console: **Live** (inputs, channel tiles, macros, outputs, the phones bus)
+and **Settings**. It shows the bench tool's real state: arming, checks, faults, levels on every
+channel and the event log. Solos go to the headphone outputs. The macros (All to dry, Restore
+all) drive the real arming rules. Processing, operator profiles and plugin inserts are saved
+but have no effect in this build: the talkers pass straight through. Recording and fault timing
+are on the classic bench page (`/bench`, linked from Test without hardware).
 
 ## Arming
 
@@ -61,18 +74,20 @@ they're on. The analysis uses it the same way.
 
 1. Route the four talker sends to the virtual soundcard (inputs 1–4). Route its outputs 1–4 back as
    four clean-return 4-wires.
-2. **PROBE:** make output 5 a 4-wire input, with a fixed crosspoint back to a 4-wire output that
-   feeds the laptop's input 5. Put it in the same stream as the talker sends.
-3. **HEARTBEAT:** make output 6 a 4-wire input. Set VOX on about 10 dB under the level the
+2. **PROBE:** make output 62 a 4-wire input, with a fixed crosspoint back to a 4-wire output that
+   feeds the laptop's input 61. Put it in the same stream as the talker sends.
+3. **HEARTBEAT:** make output 61 a 4-wire input. Set VOX on about 10 dB under the level the
    heartbeat arrives at on that port's meter (VOX thresholds are set in dBu on the port), VOX
    off a few dB lower, and hold 400 ms. Add a virtual key on that port, type VOX,
    function Logic, which sets the logic source CLEAN_OK.
 4. **Design D logic for talker 1:** listeners hear the clean return while CLEAN_OK is on, and
    talker 1's dry mic while it's off.
-5. **LISTEN:** route one listener's feed to a 4-wire output that comes back to the laptop's
-   input 6.
-6. **Optional:** add logic sources ARMED (set by the app through RRCS) and ARM_REQ (a key on
-   your panel). Run with `--rrcs-host <RRCS address>`.
+5. **PGM:** route the programme feed to the laptop's input 62.
+6. **LISTEN:** route one listener's feed to a 4-wire output that comes back to the laptop's
+   input 63.
+7. **Optional:** add logic sources ARMED (set by the app through RRCS) and ARM_REQ (a key on
+   your panel). Run with `--rrcs-host <RRCS address>`. With RRCS the console also shows the
+   frame's CLEAN_OK and ARMED, and the All to dry macro can drop ARMED straight away.
 
 For the dry path to be audible during the test, latch talker 1's talk key and put a sound source
 near its mic.
@@ -81,7 +96,7 @@ near its mic.
 
 ```
 python -m sotto_failsafe --device "Dante Virtual Soundcard" --talker-in 1-4 --talker-out 1-4 \
-    --probe-in 5 --probe-out 5 --heartbeat-out 6 --listen-in 6 --monitor 7,8 --record
+    --listen-in 63 --record
 ```
 
 Arm, then use each fault button a few times, re-arming between them:

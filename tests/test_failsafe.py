@@ -177,5 +177,76 @@ class EndToEndTests(unittest.TestCase):
         self.assertIsNotNone(sil["dry_back_ms"])
 
 
+class SoloBusTests(unittest.TestCase):
+    """The headphone outputs carry only what is soloed; the talker returns are never touched."""
+
+    def setUp(self):
+        self.cfg = Config(talker_in=[0, 1], talker_out=[0, 1], talker_names=["a", "b"], probe_in=[4],
+                          probe_out=4, heartbeat_out=5, monitor_out=[6, 7], marker_on=False)
+        self.core = FailsafeCore(self.cfg)
+        n = 480
+        t = np.arange(n) / 48000
+        self.x = np.zeros((n, 8), np.float32)
+        self.x[:, 0] = 0.1 * np.sin(2 * np.pi * 300 * t)
+        self.x[:, 1] = 0.05 * np.sin(2 * np.pi * 500 * t)
+
+    def run_blocks(self, k=3):
+        out = np.zeros((480, 8), np.float32)
+        for _ in range(k):
+            out[:] = 0
+            self.core.process(self.x, out)
+        return out
+
+    def test_silent_with_nothing_soloed(self):
+        out = self.run_blocks()
+        self.assertEqual(float(np.max(np.abs(out[:, 6:8]))), 0.0)
+
+    def test_solo_input_both_ears(self):
+        self.core.set_solo(["i1"], "clicked")
+        out = self.run_blocks()
+        np.testing.assert_allclose(out[:, 6], self.x[:, 0], atol=1e-6)
+        np.testing.assert_allclose(out[:, 7], self.x[:, 0], atol=1e-6)
+
+    def test_split_puts_dry_left_clean_right(self):
+        self.core.set_solo(["o2"], "split")
+        out = self.run_blocks()
+        np.testing.assert_allclose(out[:, 6], self.x[:, 1], atol=1e-6)    # dry: talker 2's input
+        np.testing.assert_allclose(out[:, 7], out[:, 1], atol=1e-6)       # clean: talker 2's return
+
+    def test_solos_stack_and_returns_unchanged(self):
+        ref = self.run_blocks()[:, :2].copy()
+        self.core.set_solo(["i1", "i2"], "clicked")
+        out = self.run_blocks()
+        np.testing.assert_allclose(out[:, 6], self.x[:, 0] + self.x[:, 1], atol=1e-6)
+        np.testing.assert_allclose(out[:, :2], ref, atol=1e-6)
+
+    def test_limiter_protects_ears(self):
+        self.x[:, 0] = 0.95
+        self.x[:, 1] = 0.95
+        self.core.set_solo(["i1", "i2"], "clicked", level_db=6)
+        out = self.run_blocks()
+        self.assertLessEqual(float(np.max(np.abs(out[:, 6]))), 10 ** (-3 / 20) + 1e-6)
+
+    def test_levels_reported_for_every_channel(self):
+        self.run_blocks(1)
+        st = self.core.state()
+        self.assertEqual(len(st["levels_in"]), 8)
+        self.assertAlmostEqual(st["levels_in"][0], 20 * np.log10(0.1 / np.sqrt(2)), delta=0.3)
+
+
+class ArmedLatchTests(unittest.TestCase):
+    """Design D: clean needs CLEAN_OK and ARMED; dropping ARMED over RRCS switches to dry at once."""
+
+    def test_armed_latch(self):
+        cfg = Config(listen_in=5)
+        sim = SimRiedel(cfg, vox_hold_ms=200, model_armed=True)
+        sim.clean_ok = True
+        self.assertFalse(sim.frame_state()["armed"])
+        sim.set_logic("ARMED", True)
+        self.assertTrue(sim.frame_state()["armed"])
+        sim.set_logic("ARMED", False)
+        self.assertFalse(sim.frame_state()["armed"])
+
+
 if __name__ == "__main__":
     unittest.main()

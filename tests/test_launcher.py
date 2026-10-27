@@ -20,14 +20,15 @@ class LauncherTests(unittest.TestCase):
         argv = launcher.argv_from(dict(launcher.DEFAULTS), simulate=True)
         a = parse_args(argv)
         self.assertTrue(a.simulate)
-        self.assertEqual(a.listen_in, "6")
+        self.assertEqual(a.listen_in, "63")
+        self.assertEqual((a.probe_in, a.pgm_in, a.heartbeat_out, a.probe_out, a.monitor), ("61", "62", "61", "62", "63,64"))
         self.assertTrue(a.record)
 
     def test_device_options(self):
         cfg = dict(launcher.DEFAULTS, device="3", monitor="7,8", rrcs_host="10.0.0.10", record=False)
         a = parse_args(launcher.argv_from(cfg, simulate=False))
         self.assertFalse(a.simulate)
-        self.assertEqual((a.device, a.talker_in, a.heartbeat_out, a.monitor, a.rrcs_host), ("3", "1-4", "6", "7,8", "10.0.0.10"))
+        self.assertEqual((a.device, a.talker_in, a.heartbeat_out, a.monitor, a.rrcs_host), ("3", "1-4", "61", "7,8", "10.0.0.10"))
         self.assertFalse(a.record)
 
     def test_runs_and_quits_cleanly(self):
@@ -46,6 +47,30 @@ class LauncherTests(unittest.TestCase):
                     time.sleep(0.1)
             self.assertIsNotNone(state)
             self.assertFalse(state["armed"])                      # always starts disarmed
+            self.assertEqual(state["solo"]["ids"], [])             # and with nothing soloed
+            for _ in range(30):                                   # first blocks arrive
+                with urllib.request.urlopen("http://127.0.0.1:8797/api/state", timeout=1) as r:
+                    state = json.load(r)
+                if state["levels_in"]:
+                    break
+                time.sleep(0.1)
+            self.assertEqual(len(state["levels_in"]), 63)          # talkers, PROBE 61, PGM 62, listener 63
+            self.assertGreater(state["levels_in"][61], -60)        # the simulated PGM is metered
+            self.assertEqual(state["channels"]["monitor_out"], [63, 64])
+            self.assertEqual(state["frame"]["source"], "simulated")
+            self.assertTrue(state["engine"]["simulate"])
+            with urllib.request.urlopen("http://127.0.0.1:8797/", timeout=2) as r:
+                self.assertIn(b"<title>Sotto Console</title>", r.read())
+            with urllib.request.urlopen("http://127.0.0.1:8797/bench", timeout=2) as r:
+                self.assertEqual(r.status, 200)
+
+            def cmd(body):
+                req = urllib.request.Request("http://127.0.0.1:8797/cmd", data=json.dumps(body).encode(), method="POST")
+                with urllib.request.urlopen(req, timeout=2) as r:
+                    return json.load(r)
+            res = cmd({"cmd": "solo", "ids": ["o1"], "mode": "split"})
+            self.assertEqual((res["left"], res["right"]), (["i1"], ["o1"]))
+            self.assertTrue(cmd({"cmd": "rrcs_set", "name": "ARMED", "on": False})["ok"])
             req = urllib.request.Request("http://127.0.0.1:8797/quit", data=b"{}", method="POST")
             with urllib.request.urlopen(req, timeout=2) as r:
                 self.assertTrue(json.load(r)["ok"])

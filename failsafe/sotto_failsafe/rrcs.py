@@ -27,10 +27,11 @@ class _TimeoutTransport(xmlrpc.client.Transport):
 
 class RRCSLink:
     def __init__(self, host, port=8193, armed_name=None, arm_request_name=None,
-                 on_arm_request=None, poll_s=0.25, timeout_s=1.0):
+                 on_arm_request=None, poll_s=0.25, timeout_s=1.0, clean_ok_name=None):
         self.url = f"http://{host}:{port}"
         self.armed_name = armed_name
         self.arm_request_name = arm_request_name
+        self.clean_ok_name = clean_ok_name
         self.on_arm_request = on_arm_request
         self.poll_s = poll_s
         self.timeout_s = timeout_s
@@ -70,17 +71,29 @@ class RRCSLink:
     def set_armed(self, state):
         if not self.armed_name:
             return None
-        oid = self.ids.get(self.armed_name)
+        return self.set_logic(self.armed_name, state)
+
+    def set_logic(self, name, state):
+        """SetLogicSourceState. RRCS only switches off a source that RRCS switched on."""
+        oid = self.ids.get(name)
         if oid is None:
             self.read_logic_sources()
-            oid = self.ids.get(self.armed_name)
+            oid = self.ids.get(name)
         if oid is None:
-            raise RuntimeError(f"logic source '{self.armed_name}' not found in RRCS")
+            raise RuntimeError(f"logic source '{name}' not found in RRCS")
         res = self._proxy().SetLogicSourceState(self._tk(), oid, bool(state))
         err = res[1] if isinstance(res, (list, tuple)) and len(res) > 1 else 0
         if err:
             raise RuntimeError(f"SetLogicSourceState error code {err}")
         return True
+
+    def set_logic_safe(self, name, state):
+        try:
+            self.set_logic(name, state)
+            return True
+        except Exception as e:
+            self.last_error = repr(e)
+            return False
 
     def set_armed_safe(self, state):
         try:
@@ -118,4 +131,13 @@ class RRCSLink:
     def status(self):
         return {"configured": True, "ok": self.ok, "url": self.url, "error": self.last_error,
                 "armed_source": self.armed_name, "arm_request_source": self.arm_request_name,
-                "armed_state": self.states.get(self.armed_name) if self.armed_name else None}
+                "armed_state": self.states.get(self.armed_name) if self.armed_name else None,
+                "clean_ok_source": self.clean_ok_name,
+                "clean_ok_state": self.states.get(self.clean_ok_name) if self.clean_ok_name else None}
+
+    def frame_state(self):
+        """CLEAN_OK and ARMED as last read from the frame, or None if RRCS isn't answering."""
+        if not self.ok or not self.clean_ok_name or self.clean_ok_name not in self.states:
+            return None
+        return {"clean_ok": bool(self.states.get(self.clean_ok_name)),
+                "armed": bool(self.states.get(self.armed_name)) if self.armed_name else None, "source": "rrcs"}

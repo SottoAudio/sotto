@@ -281,7 +281,7 @@ std::vector<float> testSignal(double rate, double seconds) {
         bp = lp - bp * 0.2f;
         const double t = i / rate;
         const bool talking = std::fmod(t, 2.0) < 1.5;
-        x[i] = 0.0056f * g(rng) + (talking ? 0.25f * bp * static_cast<float>(0.6 + 0.4 * std::sin(2 * M_PI * 4 * t)) : 0.f);
+        x[i] = 0.0056f * g(rng) + (talking ? 0.25f * bp * static_cast<float>(0.6 + 0.4 * std::sin(2 * 3.14159265358979323846 * 4 * t)) : 0.f);
     }
     return x;
 }

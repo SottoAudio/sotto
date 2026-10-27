@@ -14,7 +14,7 @@ import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .app import BenchApp, parse_args
+from .app import BenchApp, channel_clashes, config_from_args, parse_args
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = 8766
@@ -22,8 +22,11 @@ PORT = 8766
 DEFAULTS = {
     "device": "", "talker_in": "1-4", "talker_out": "1-4", "names": "Show caller,Creative director,Technical manager,Stage manager",
     "probe_in": "61", "probe_out": "62", "heartbeat_out": "61", "pgm_in": "62", "listen_in": "", "monitor": "63,64",
-    "rrcs_host": "", "record": True,
+    "rrcs_host": "", "record": True, "layout": 2,
 }
+# Channels with a fixed job since layout 2 (IN 61 PROBE return, IN 62 PGM, OUT 61 HEARTBEAT,
+# OUT 62 PROBE, OUT 63/64 headphones). Settings saved by older versions are moved onto them.
+FIXED = ("probe_in", "probe_out", "heartbeat_out", "pgm_in", "listen_in", "monitor")
 
 
 from .app import config_dir  # noqa: E402,F811  (one settings folder for the launcher and the app)
@@ -37,9 +40,13 @@ def runs_dir():
 def load_config():
     try:
         with open(os.path.join(config_dir(), "config.json")) as f:
-            return {**DEFAULTS, **json.load(f)}
+            saved = json.load(f)
     except (OSError, ValueError):
         return dict(DEFAULTS)
+    if saved.get("layout") != DEFAULTS["layout"]:
+        saved.update({k: DEFAULTS[k] for k in FIXED})
+        saved["layout"] = DEFAULTS["layout"]
+    return {**DEFAULTS, **saved}
 
 
 def save_config(cfg):
@@ -125,8 +132,15 @@ def run_setup(open_browser=True):
                 simulate = bool(body.get("simulate"))
                 if not simulate and str(cfg["device"]) == "":
                     return self._send(200, b'{"ok": false, "error": "Pick a soundcard first"}')
+                argv = argv_from(cfg, simulate)
+                try:
+                    clash = channel_clashes(config_from_args(parse_args(argv)))
+                except (SystemExit, ValueError) as e:
+                    clash = f"Check the channel numbers ({e})"
+                if clash:
+                    return self._send(200, json.dumps({"ok": False, "error": clash}).encode())
                 save_config(cfg)
-                result["argv"] = argv_from(cfg, simulate)
+                result["argv"] = argv
                 self._send(200, b'{"ok": true}')
                 done.set()
             elif self.path == "/quit":
@@ -147,9 +161,18 @@ def run_setup(open_browser=True):
 
 
 def port_free(port):
-    """True if nothing is listening on 127.0.0.1:port."""
+    """True if nothing is listening on 127.0.0.1:port. Tries to connect first: on Windows a bind
+    with address reuse succeeds even while another program is listening."""
+    c = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    c.settimeout(0.5)
+    try:
+        if c.connect_ex(("127.0.0.1", port)) == 0:
+            return False
+    finally:
+        c.close()
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)        # same as the HTTP server
+    if sys.platform != "win32":
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)    # same as the HTTP server
     try:
         s.bind(("127.0.0.1", port))
         return True

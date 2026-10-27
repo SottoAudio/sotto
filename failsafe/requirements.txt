@@ -1,2 +1,4 @@
 numpy>=1.24
 sounddevice>=0.4.6
+scipy>=1.10        # processing
+onnxruntime>=1.17  # speech model

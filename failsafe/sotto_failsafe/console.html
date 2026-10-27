@@ -547,7 +547,7 @@ table.t tr.unused td{color:var(--muted)}
       P.ch.forEach((c, i) => { if (c.op === undefined) c.op = d.ch[i].op; });
     }
   } catch (e) { P = defaults(); }
-  function save() { try { localStorage.setItem(KEY, JSON.stringify(P)); } catch (e) {} }
+  function save() { try { localStorage.setItem(KEY, JSON.stringify(P)); } catch (e) {} if (typeof pushProject === 'function') pushProject(); }
 
   const dev = () => DEVICES[P.engine.device] || DEVICES.dvs;
   const engineOk = () => APP ? true : dev().in >= 64 && dev().out >= 64 && dev().drivers.includes(P.engine.driver);
@@ -559,6 +559,11 @@ table.t tr.unused td{color:var(--muted)}
   const nameOf = (k, n) => n <= MAXT ? ((opOf(n - 1) || {}).name || P.ch[n - 1].name) : SYSNAME[k + n];
   const chName = i => nameOf('i', i + 1);
   function insOf(i) {
+    if (APP) {                                   // connected: inserts are real plugins, named by path
+      const o = opOf(i); if (!o || !o.ins || !o.ins.plugin || PLUGINS[o.ins.plugin]) return null;
+      const t = APP.processing && APP.processing.talkers && APP.processing.talkers[i];
+      return { o, id: o.ins.plugin, pl: { name: (t && t.insert && t.insert.name) || realPluginName(o.ins.plugin) }, on: !!o.ins.on, st: null, error: t && t.insert_error };
+    }
     const o = opOf(i); if (!o || !o.ins || !PLUGINS[o.ins.plugin]) return null;
     const id = o.ins.plugin; if (!o.ins.states[id]) o.ins.states[id] = pd(id);
     return { o, id, pl: PLUGINS[id], on: !!o.ins.on, st: o.ins.states[id] };
@@ -883,7 +888,6 @@ table.t tr.unused td{color:var(--muted)}
   });
 
   function toggleIns(i) {
-    if (APP) { toast('Plugins are not in this build yet: Sotto Bench passes the talkers straight through.'); return; }
     const x = insOf(i);
     if (!x) { toast(opOf(i) ? 'No insert in this profile. Choose a plugin under Settings › Operators.' : 'No operator on this channel. Assign one under Settings › Channels.'); return; }
     x.o.ins.on = !x.o.ins.on; save();
@@ -983,13 +987,13 @@ table.t tr.unused td{color:var(--muted)}
       if (!c.used) { tl.L.mode.textContent = 'not patched'; tl.L.red.textContent = ''; tl.L.insname.textContent = '–'; tl.arm.disabled = tl.trip.disabled = tl.insb.disabled = tl.ed.disabled = true; continue; }
       const x = insOf(i);
       setLed(tl.L.ins, x && x.on ? (S.alive && !S.frozen && eng ? 'g' : 'r') : '');
-      const insTxt = APP ? (x ? `${x.pl.name}: not yet` : 'Inserts: not yet') : x ? `${x.pl.name}${x.on ? '' : ': off'}` : (opOf(i) ? 'No insert' : 'No operator');
+      const insTxt = x ? `${x.pl.name}${x.error ? ': failed' : x.on ? '' : ': off'}` : (opOf(i) ? 'No insert' : 'No operator');
       if (tl.L.insname.textContent !== insTxt) tl.L.insname.textContent = insTxt;
       tl.insb.disabled = !x; tl.ed.disabled = false;
       if (tl.insb.getAttribute('aria-pressed') !== String(!!(x && x.on))) tl.insb.setAttribute('aria-pressed', !!(x && x.on));
       const sig = (S.lv['i' + (i + 1)] ?? -120) > -50, mode = modeOf(i), isTrip = S.armed && !S.chArmed[i];
       setLed(tl.L.sig, sig ? 'g' : '');
-      setLed(tl.L.dsp, !S.alive || S.frozen || !eng ? 'r' : mode === 'bypass' ? 'a' : 'g');
+      setLed(tl.L.dsp, !S.alive || S.frozen || !eng ? 'r' : APP && !(APP.processing && APP.processing.on) ? '' : APP && APP.processing && !APP.processing.ok ? 'r' : mode === 'bypass' ? 'a' : 'g');
       setLed(tl.L.trip, isTrip ? 'r' : '');
       const fc = frameClean();
       const silent = fc && (!S.outputsLive || S.muted);
@@ -998,9 +1002,10 @@ table.t tr.unused td{color:var(--muted)}
       const st = 'tile ' + (silent ? 'st-sil' : isTrip ? 'st-trip' : fc ? 'st-clean' : 'st-dry');
       if (tl.el.className !== st) tl.el.className = st;
       const ml = MODES[mode].l + (modeIsOwn(i) ? ' (own)' : '');
-      const ml2 = APP ? 'Passthrough (bench build)' : ml;
+      const pt = APP && APP.processing && APP.processing.talkers ? APP.processing.talkers[i] : null;
+      const ml2 = APP && !(APP.processing && APP.processing.on) ? 'Passthrough (processing off)' : ml;
       if (tl.L.mode.textContent !== ml2) tl.L.mode.textContent = ml2;
-      const rt = mode === 'bypass' || S.red[i] < 1 ? '' : `bleed −${Math.round(S.red[i])} dB`;
+      const rt = APP ? (pt && mode !== 'bypass' && pt.erle_db >= 1 ? `echo −${Math.round(pt.erle_db)} dB` : '') : mode === 'bypass' || S.red[i] < 1 ? '' : `bleed −${Math.round(S.red[i])} dB`;
       if (tl.L.red.textContent !== rt) tl.L.red.textContent = rt;
       tl.arm.disabled = !isTrip; tl.trip.disabled = !(S.armed && S.chArmed[i]);
     }
@@ -1113,7 +1118,7 @@ table.t tr.unused td{color:var(--muted)}
   $('#editMacros').onclick = () => { UI.sec = 'macros'; showTab('set'); };
 
   // ------------------------------------------------------------ settings
-  const UI = { op: 'op-caller', sec: 'project', macro: 'dry', confirmDel: false, confirmReset: false, check: null, rrcsTest: null };
+  const UI = { insInfo: {}, insLoading: {}, realPlugins: null, pluginsLoading: false, op: 'op-caller', sec: 'project', macro: 'dry', confirmDel: false, confirmReset: false, check: null, rrcsTest: null };
   const SECS = [
     ['project', 'Project', 'Name and notes for this show'],
     ['channels', 'Channels', 'How many talkers, names, patching'],
@@ -1186,11 +1191,15 @@ table.t tr.unused td{color:var(--muted)}
       row('Output trim', 'Level change on every clean return.', rng('proc.trim', pp.trim, -12, 6, 0.5, 'dB')) +
       row('Added delay (estimate)', 'Through Sotto, on top of the DVS latency. Latency work comes later.', `<span class="fixed">${lat.toFixed(1)} ms</span><span class="muted">${buf.toFixed(1)} ms in + ${buf.toFixed(1)} ms out${pp.mode === 'full' ? ' + 10 ms speech model frame' : ''}</span>`));
   }
+  function procNote() {
+    const pr = APP && APP.processing;
+    if (!pr || !pr.on) return `Processing is off${pr && pr.why ? ': ' + pr.why : ''}. The talkers pass straight through.`;
+    return `Running${pr.model ? '' : ' without the speech model (Full clean works as Echo + noise)'}: ${pr.proc_ms} ms of each 10 ms block, peak ${pr.proc_ms_max} ms. Adds ${pr.latency_ms} ms plus the soundcard.${pr.misses ? ` ${pr.misses} late blocks so far.` : ''}`;
+  }
   function appNote(sec) {
     const m = {
-      processing: 'This Sotto Bench build passes the talkers straight through. Processing settings are saved now and take effect when the processing engine is added.',
-      operators: 'Profiles are saved now. Their plugin inserts and processing take effect when the processing engine is added; names show straight away.',
-      plugins: 'Plugin hosting is being tested with sotto-plugin-test first. This list is still the preview.',
+      processing: procNote(),
+      operators: 'Changes apply to the running talkers straight away. Each insert\'s settings are saved in its profile.',
       channels: 'The number of talkers and the channel numbers come from the setup page. Quit and open Sotto Bench again to change them.',
       riedel: 'Sotto Bench uses the RRCS address from its setup page. Changes here are saved for the full app.',
     }[sec];
@@ -1205,7 +1214,9 @@ table.t tr.unused td{color:var(--muted)}
         row('Sample rate', '', `<span class="fixed">${e.fs / 1000} kHz</span>`) +
         row('Block', '', `<span class="fixed">${e.block} samples (${(1000 * e.block / e.fs).toFixed(1)} ms)</span>`) +
         row('Latency', 'Reported by the audio driver.', `<span class="fixed">${esc(e.latency_note || 'not reported')}</span>`) +
-        row('Recordings', 'Where this run is saved.', `<span class="fixed">${esc(APP.folder || '')}</span>`));
+        row('Recordings', 'Where this run is saved.', `<span class="fixed">${esc(APP.folder || '')}</span>`) +
+        row('Processing', 'Echo canceller, suppressor and speech model, on their own thread.', `<span class="fixed">${esc(procNote())}</span>`) +
+        row('Plugin inserts', '', `<span class="fixed">${APP.processing && APP.processing.plugins_available ? 'available (VST3)' : 'not available in this build'}</span>`));
     }
     const e = P.engine, d = dev(), okDev = engineOk();
     const devOpts = Object.entries(DEVICES).filter(([, x]) => x.drivers.includes(e.driver)).map(([k, x]) => [k, `${x.name} (${x.in} in / ${x.out} out)`]);
@@ -1320,7 +1331,10 @@ table.t tr.unused td{color:var(--muted)}
     return box('Plugins', 'Plugins Sotto found on this computer. This list is simulated; the app scans the VST3 folders (and Audio Units on a Mac) when it starts.',
       `<div class="scroll"><table class="t"><thead><tr><th>Plugin</th><th>Type</th><th>Format</th><th>Latency</th><th>Used by</th><th>Licence</th></tr></thead><tbody>${Object.entries(PLUGINS).map(([id, x]) => `<tr><td><b>${esc(x.vendor)} ${esc(x.name)}</b></td><td>${esc(x.kind)}</td><td class="n">${esc(x.fmt)}</td><td>${esc(x.latTxt)}</td><td>${esc(used(id))}</td><td>iLok</td></tr>`).join('')}</tbody></table></div>
       <div style="margin-top:10px"><button class="btn sm" data-act="rescan">Rescan plugins</button></div>`) +
-      box('How Sotto hosts a plugin', '', `<ul class="rules">
+      hostingRules();
+  }
+  function hostingRules() {
+    return box('How Sotto hosts a plugin', '', `<ul class="rules">
         <li>One insert per operator profile, after Sotto's own processing and before the output trim.</li>
         <li>Off means bypassed, not unloaded. The plugin keeps running, so switching it on is instant and click-free and it doesn't have to re-learn the noise.</li>
         <li>The bypassed path is delayed by the plugin's latency, so a listener hears no timing change when you switch.</li>
@@ -1331,9 +1345,84 @@ table.t tr.unused td{color:var(--muted)}
         <li>Licences stay with the maker. CEDAR uses iLok: use a physical iLok on the show laptop, because iLok Cloud needs an internet connection.</li>
       </ul>`);
   }
+  // ---- connected to the app: real plugins and real controls
+  function realPluginName(path) {
+    const r = UI.realPlugins && (UI.realPlugins.plugins || []).find(x => x.path === path);
+    return r ? `${r.vendor} ${r.name}`.trim() : String(path).split(/[\\/]/).pop().replace(/\.vst3$/, '');
+  }
+  function loadRealPlugins(rescan) {
+    if (UI.pluginsLoading) return;
+    UI.pluginsLoading = true;
+    api('/api/plugins' + (rescan ? '?rescan=1' : '')).then(r => { UI.realPlugins = r; })
+      .catch(() => { UI.realPlugins = { ok: false, error: 'Sotto Bench did not answer', plugins: [] }; })
+      .finally(() => { UI.pluginsLoading = false; buildMain(); if (['operators', 'plugins'].includes(UI.sec) && !$('#pSet').hidden) renderSet(); });
+  }
+  function loadInsertInfo(k) {
+    if (UI.insLoading[k]) return;
+    UI.insLoading[k] = true;
+    api('/api/insert?talker=' + k).then(r => { UI.insInfo[k] = r; }).catch(() => { UI.insInfo[k] = { loaded: false, error: 'Sotto Bench did not answer' }; })
+      .finally(() => { UI.insLoading[k] = false; if (UI.sec === 'operators' && !$('#pSet').hidden) renderSet(); });
+  }
+  function secPluginsApp() {
+    const r = UI.realPlugins;
+    if (!r) { loadRealPlugins(); return box('Plugins', 'Looking for VST3 plugins on this computer…', '') + hostingRules(); }
+    const used = path => P.operators.filter(o => o.ins && o.ins.plugin === path).map(o => o.name).join(', ') || '–';
+    const list = (r.plugins || []).map(x => `<tr><td><b>${esc(x.vendor)} ${esc(x.name)}</b></td><td>${esc(x.type)}</td><td class="n">${esc(x.version)}</td><td>${esc(used(x.path))}</td><td class="n" style="font-size:11.5px;overflow-wrap:anywhere">${esc(x.path)}</td></tr>`).join('');
+    const body = !r.ok ? `<div class="warnbox">${esc(r.error || 'Plugin scan failed')}</div>` : list
+      ? `<div class="scroll"><table class="t"><thead><tr><th>Plugin</th><th>Type</th><th>Version</th><th>Used by</th><th>Where</th></tr></thead><tbody>${list}</tbody></table></div>`
+      : '<p class="lede">No VST3 effects found. Install the plugin and its licence (for CEDAR, the iLok License Manager with a trial or licence activated), then Rescan.</p>';
+    return box('Plugins', 'VST3 effects Sotto found on this computer. Each is checked in a separate helper process, so a plugin that crashes while loading can\'t take Sotto down.',
+      body + '<div style="margin-top:10px"><button class="btn sm" data-act="rescan">Rescan plugins</button></div>') + hostingRules();
+  }
+  function secOperatorsApp() {
+    let o = opById(UI.op) || P.operators[0]; if (o) UI.op = o.id;
+    if (!UI.realPlugins) loadRealPlugins();
+    const plugList = (UI.realPlugins && UI.realPlugins.plugins) || [];
+    const list = `<div class="mlist">${P.operators.map(x => { const k = chOfOp(x.id), path = x.ins && x.ins.plugin && !PLUGINS[x.ins.plugin] ? x.ins.plugin : '';
+      return `<button class="mli opli" data-act="osel" data-v="${esc(x.id)}" aria-current="${x.id === UI.op}"><i class="${path && x.ins.on ? 'on' : ''}"></i><span class="mt"><b>${esc(x.name)}</b><small>${k >= 0 ? `CH ${pad(k + 1)}` : 'not on a channel'} · ${path ? esc(realPluginName(path)) + (x.ins.on ? '' : ' off') : 'no insert'}</small></span></button>`; }).join('')}<button class="btn sm" data-act="onew">New profile</button></div>`;
+    const lede = 'A profile belongs to a person, not a channel. Their insert plugin, its settings, their processing and trim go wherever you put them.';
+    if (!o) return box('Operators', lede, list);
+    const oi = P.operators.indexOf(o), k = chOfOp(o.id), path = o.ins && o.ins.plugin && !PLUGINS[o.ins.plugin] ? o.ins.plugin : '';
+    const opts = [['', 'None'], ...plugList.map(x => [x.path, `${x.vendor} ${x.name}`])];
+    if (path && !plugList.find(x => x.path === path)) opts.push([path, `${realPluginName(path)} (not found on this computer)`]);
+    const chSel = `<select id="f-op-ch" aria-label="Channel for ${esc(o.name)}"><option value="">Not on a channel</option>${Array.from({ length: P.count }, (_, j) => { const occ = opById(P.ch[j].op); return `<option value="${j}"${j === k ? ' selected' : ''}>CH ${pad(j + 1)}${occ && occ.id !== o.id ? ` (now ${esc(occ.name)})` : ''}</option>`; }).join('')}</select>`;
+    let plugBox = '';
+    if (path) {
+      const info = k >= 0 ? UI.insInfo[k] : null;
+      if (k >= 0 && !(k in UI.insInfo)) loadInsertInfo(k);
+      if (k < 0) plugBox = '<p class="note">Put this profile on a channel to load its plugin and adjust it.</p>';
+      else if (!info) plugBox = '<p class="note">Loading the plugin…</p>';
+      else if (!info.loaded) plugBox = `<div class="warnbox">The plugin didn't load: ${esc(info.error || 'no reason given')}. Check its licence (iLok) and try sotto-plugin-test on it.</div>`;
+      else plugBox = `<div class="plug"><div class="plugh"><b>${esc(info.vendor)} ${esc(info.name)}</b><span class="muted">${esc(info.type)} · latency ${info.latency} samples (${(info.latency / 48).toFixed(2)} ms)${info.mono_native ? '' : ' · runs in stereo, Sotto uses the left output'}</span><span class="sp"></span><button class="btn sm" data-act="owin">Open plugin window</button></div>
+        ${info.params.map(q => row(esc(q.name), '', `<div class="rng"><input type="range" id="pp-${k}-${q.id}" min="0" max="1" step="${q.steps > 0 ? 1 / q.steps : 0.001}" value="${q.norm}" data-pp="${q.id}" data-talker="${k}" data-units="${esc(q.units)}" aria-label="${esc(q.name)}"><output>${esc(q.value)}${q.units ? ' ' + esc(q.units) : ''}</output></div>`)).join('')}</div>`;
+    }
+    const editor = `<div style="display:grid;gap:12px;min-width:0">
+      ${row('Name', 'Shown on the tiles, the strips and the event log.', txt(`operators.${oi}.name`, o.name))}
+      ${row('On channel', 'When the person moves position, move the profile. Their settings go with them.', chSel)}
+      ${row('Processing', 'Sotto\'s own processing for this person.', sel(`operators.${oi}.mode`, [['default', `Project default (${MODES[P.proc.mode].l})`], ...Object.entries(MODES).map(([kk, m]) => [kk, m.l])], o.mode))}
+      ${row('Output trim', 'On top of the project trim.', rng(`operators.${oi}.trim`, o.trim, -12, 6, 0.5, 'dB'))}
+      ${row('Insert plugin', 'Runs after Sotto\'s processing, before the output trim.', sel(`operators.${oi}.ins.plugin`, opts, path) + (path ? `<span class="seg"><button data-act="oins" data-v="1" aria-pressed="${!!o.ins.on}">On</button><button data-act="oins" data-v="0" aria-pressed="${!o.ins.on}">Off</button></span>` : ''))}
+      ${plugBox}
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn sm" data-act="odup">Duplicate profile</button>${UI.confirmDel ? `<span class="confirm">Delete ${esc(o.name)}? <button class="btn sm danger" data-act="odelok">Delete</button><button class="btn sm" data-act="mdelno">Keep</button></span>` : '<button class="btn sm danger" data-act="odel">Delete profile</button>'}</div>
+    </div>`;
+    return box('Operators', lede, `<div class="medit">${list}${editor}</div>`);
+  }
+  const ppTimers = {};
+  $('#setBody').addEventListener('input', e => {
+    const el = e.target.closest('[data-pp]'); if (!el || !APP) return;
+    const key = el.dataset.talker + ':' + el.dataset.pp;
+    clearTimeout(ppTimers[key]);
+    ppTimers[key] = setTimeout(() => {
+      appCmd({ cmd: 'plugin_param', talker: +el.dataset.talker, id: +el.dataset.pp, norm: +el.value }).then(r => {
+        const out = el.parentElement.querySelector('output');
+        if (r.ok && out) out.textContent = r.value + (el.dataset.units ? ' ' + el.dataset.units : '');
+        else if (!r.ok) toast(r.error || 'The plugin did not take that value');
+      });
+    }, 40);
+  });
   function renderSet() {
     renderRail();
-    const f = { project: secProject, channels: secChannels, processing: secProcessing, engine: secEngine, riedel: secRiedel, macros: secMacros, operators: secOperators, plugins: secPlugins }[UI.sec];
+    const f = { project: secProject, channels: secChannels, processing: secProcessing, engine: secEngine, riedel: secRiedel, macros: secMacros, operators: APP ? secOperatorsApp : secOperators, plugins: APP ? secPluginsApp : secPlugins }[UI.sec];
     const y = window.scrollY, ae = document.activeElement && document.activeElement.id;
     $('#setBody').innerHTML = (APP ? appNote(UI.sec) : '') + f();
     if (ae && document.getElementById(ae)) document.getElementById(ae).focus({ preventScroll: true });
@@ -1362,7 +1451,12 @@ table.t tr.unused td{color:var(--muted)}
     P.count = clamp(Math.round(+P.count || 1), 1, 60);
     if (el.type === 'range') { const o = el.parentElement.querySelector('output'); if (o) o.textContent = `${v} ${o.textContent.split(' ').pop()}`; }
     if (el.dataset.b.startsWith('engine')) UI.check = null;
-    if (/^operators\.\d+\.ins\.plugin$/.test(el.dataset.b)) { const o = P.operators[+el.dataset.b.split('.')[1]]; if (!v) o.ins.on = false; else if (!o.ins.states[v]) o.ins.states[v] = pd(v); }
+    if (/^operators\.\d+\.ins\.plugin$/.test(el.dataset.b)) {
+      const o = P.operators[+el.dataset.b.split('.')[1]];
+      if (!v) o.ins.on = false;
+      else if (APP) o.ins.on = true;
+      else if (!o.ins.states[v]) o.ins.states[v] = pd(v);
+    }
     save(); buildMain();
     if (rerender) renderSet(); else renderRail();
   }
@@ -1411,10 +1505,10 @@ table.t tr.unused td{color:var(--muted)}
       case 'odup': { const o = opById(UI.op); if (o) { const c = JSON.parse(JSON.stringify(o)); c.id = 'op' + Date.now().toString(36); c.name = o.name + ' (copy)'; P.operators.push(c); UI.op = c.id; } break; }
       case 'odel': UI.confirmDel = true; break;
       case 'odelok': { const id = UI.op; P.operators = P.operators.filter(o => o.id !== id); P.ch.forEach(c => { if (c.op === id) c.op = null; }); UI.confirmDel = false; UI.op = P.operators[0] ? P.operators[0].id : ''; break; }
-      case 'oins': { const o = opById(UI.op); if (o && o.ins.plugin) { o.ins.on = v === '1'; log(`Insert ${PLUGINS[o.ins.plugin].name} ${o.ins.on ? 'on' : 'off'} for ${o.name}`, 'settings'); } break; }
+      case 'oins': { const o = opById(UI.op); if (o && o.ins.plugin) { o.ins.on = v === '1'; log(`Insert ${APP ? realPluginName(o.ins.plugin) : PLUGINS[o.ins.plugin].name} ${o.ins.on ? 'on' : 'off'} for ${o.name}`, 'settings'); } break; }
       case 'odef': { const o = opById(UI.op); if (o && o.ins.plugin) o.ins.states[o.ins.plugin] = pd(o.ins.plugin); break; }
-      case 'owin': { const o = opById(UI.op); toast(`In the app this opens ${o ? PLUGINS[o.ins.plugin].vendor : 'the maker'}'s own plugin window on the laptop.`); break; }
-      case 'rescan': toast('In the app this rescans the VST3 and AU folders.'); break;
+      case 'owin': { if (APP) { toast('Plugin windows come in a later build. Use the controls here for now.'); break; } const o = opById(UI.op); toast(`In the app this opens ${o ? PLUGINS[o.ins.plugin].vendor : 'the maker'}'s own plugin window on the laptop.`); break; }
+      case 'rescan': if (APP) { UI.realPlugins = null; loadRealPlugins(true); toast('Rescanning plugins…'); } else toast('In the app this rescans the VST3 and AU folders.'); break;
       case 'sadd': if (m) { const t = UI.newStep || 'wait'; m.steps.push({ t, ...STEPS[t].d }); } break;
     }
     save(); buildMain(); renderSet();
@@ -1457,6 +1551,35 @@ table.t tr.unused td{color:var(--muted)}
     try { applyState(await api('/api/state')); appMisses = 0; }
     catch (e) { if (++appMisses > 4) { S.alive = false; S.armed = false; S.reason = 'Sotto Bench is not answering.'; } }
   }
+  // The app keeps the project (profiles, processing, inserts) so it survives restarts; every
+  // change here is sent to it, and it applies it to the running talkers.
+  let pushT = null, pushWait = [], lastInsSig = '';
+  const insSig = () => JSON.stringify(P.ch.slice(0, P.count).map(c => { const o = opById(c.op); return o && o.ins ? [o.ins.plugin, !!o.ins.on] : null; }));
+  function pushProject() {
+    if (!APP) return Promise.resolve(null);
+    clearTimeout(pushT);
+    const pr = new Promise(res => pushWait.push(res));
+    pushT = setTimeout(() => {
+      const w = pushWait; pushWait = [];
+      const sig = insSig();
+      api('/api/project', P).then(r => {
+        if (r && r.errors && r.errors.length) toast(r.errors[0]);
+        if (sig !== lastInsSig) { lastInsSig = sig; UI.insInfo = {}; if (UI.sec === 'operators' && !$('#pSet').hidden) renderSet(); }
+        w.forEach(f => f(r));
+      }).catch(() => w.forEach(f => f(null)));
+    }, 250);
+    return pr;
+  }
+  function adoptProject(pj, n) {
+    const d = defaults();
+    P = { ...d, ...pj, project: { ...d.project, ...(pj.project || {}) }, proc: { ...d.proc, ...(pj.proc || {}) },
+          engine: { ...d.engine, ...(pj.engine || {}) }, rrcs: { ...d.rrcs, ...(pj.rrcs || {}) }, phones: { ...d.phones, ...(pj.phones || {}) } };
+    if (!Array.isArray(P.ch) || P.ch.length !== MAXT) P.ch = d.ch;
+    if (!Array.isArray(P.operators)) P.operators = d.operators;
+    if (!Array.isArray(P.macros)) P.macros = d.macros;
+    P.count = n;
+    for (let i = 0; i < n; i++) P.ch[i].used = true;
+  }
   function enterApp(st) {
     APP = st;
     document.querySelectorAll('[data-preview-only]').forEach(el => { el.hidden = true; });
@@ -1465,6 +1588,17 @@ table.t tr.unused td{color:var(--muted)}
     const n = (st.talkers || []).length || 1;
     P.count = n;
     st.talkers.forEach((tk, i) => { P.ch[i].name = tk.name; P.ch[i].used = true; });
+    // Inserts from the preview's example catalogue aren't real plugins: clear them until chosen.
+    P.operators.forEach(o => { if (o.ins && PLUGINS[o.ins.plugin]) { o.ins.plugin = ''; o.ins.on = false; } });
+    api('/api/project').then(r => {
+      if (r && r.project && Array.isArray(r.project.operators)) adoptProject(r.project, n);
+      lastInsSig = insSig();
+      try { localStorage.setItem(KEY, JSON.stringify(P)); } catch (e) {}
+      buildMain(); buildPhones();
+      if (!$('#pSet').hidden) renderSet();
+      if (!(r && r.project)) pushProject();
+      loadRealPlugins();
+    }).catch(() => {});
     buildMain(); buildPhones();
     applyState(st);
     soloChanged();                                     // solos always start empty

@@ -27,6 +27,15 @@ from .core import Config, FailsafeCore
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
+def config_dir():
+    home = os.path.expanduser("~")
+    if sys.platform == "darwin":
+        return os.path.join(home, "Library", "Application Support", "Sotto Bench")
+    if os.name == "nt":
+        return os.path.join(os.environ.get("APPDATA", home), "Sotto Bench")
+    return os.path.join(home, ".config", "sotto-bench")
+
+
 def chans(s):
     if s in (None, ""):
         return []
@@ -137,6 +146,19 @@ class BenchApp:
         self.srv = None
         self.timing = []
         self.sim = None
+        self.proc = None
+        self.proc_note = "off (--no-processing)" if a.no_processing else ""
+        self.vst3 = None
+        self.plugins_cache = None
+        self.project_path = a.project or os.path.join(config_dir(), "project.json")
+        self.project = None
+        try:
+            with open(self.project_path) as f:
+                self.project = json.load(f)
+        except (OSError, ValueError):
+            self.project = None
+        self._plugin_states_dirty = False
+        self._last_state_save = 0.0
 
     # ------------------------------------------------------------ events
     def log(self, e: Event):
@@ -215,6 +237,8 @@ class BenchApp:
                 core.monitor_source = sc
                 core.set_solo(ids, "clicked")
             return {"ok": True}
+        if cmd == "plugin_param":
+            return self.plugin_param(int(c.get("talker", -1)), int(c.get("id", 0)), float(c.get("norm", 0)))
         if cmd == "rrcs_set":
             name, on = str(c.get("name", "")), bool(c.get("on"))
             if self.rrcs:
@@ -275,13 +299,164 @@ class BenchApp:
             frame = self.rrcs.frame_state()
         s["frame"] = frame
         s["engine"] = getattr(self, "engine_info", None)
+        s["processing"] = self.proc.state() if self.proc is not None else {"on": False, "why": self.proc_note}
+        if self.proc is not None:
+            s["processing"]["plugins_available"] = self.vst3 is not None
         return s
+
+    # ------------------------------------------------------------ processing, profiles, inserts
+    def _start_processing(self):
+        if self.a.no_processing:
+            return
+        if self.a.block != 480:
+            self.proc_note = "off: processing needs a 480-sample (10 ms) block"
+            return
+        try:
+            from . import processing
+            from . import vst3
+        except Exception as e:                       # e.g. no onnxruntime/scipy: stay a pass-through bench
+            self.proc_note = f"off: {e!r}"
+            self.log(Event(0.0, "processing_off", self.proc_note, "auto"))
+            return
+        self.processing = processing
+        try:
+            self.vst3 = vst3.load_library()
+        except OSError as e:
+            self.vst3 = None
+            self.log(Event(0.0, "plugins_off", repr(e), "auto"))
+        names = list(self.cfg.talker_names)
+        settings, labels = processing.settings_from_project(self.project, names)
+        model = processing.model_dir()
+        self.proc = processing.Processor(labels, settings, model=model, vst3_lib=self.vst3,
+                                         track_delay=not self.a.simulate)
+        self.core.extra_health = self.proc.health
+        self.log(Event(0.0, "processing_on", f"speech model {'loaded' if model else 'not found: echo removal only'}; "
+                       f"plugin inserts {'available' if self.vst3 else 'not available'}", "auto"))
+        self.apply_project(self.project or {}, save=False)
+
+    def apply_project(self, project, save=True):
+        """Saves the console's project and applies it to the running chains: processing settings,
+        operator names, and each operator's insert (loaded here, swapped in by the worker)."""
+        self.project = project
+        if save:
+            try:
+                os.makedirs(os.path.dirname(self.project_path), exist_ok=True)
+                with open(self.project_path, "w") as f:
+                    json.dump(project, f)
+            except OSError as e:
+                return {"ok": False, "error": f"could not save the project: {e}"}
+        if self.proc is None:
+            return {"ok": True, "applied": False, "why": self.proc_note}
+        P = self.processing
+        settings, labels = P.settings_from_project(project, self.cfg.talker_names)
+        plugins, errors = [], []
+        for i, (c, s) in enumerate(zip(self.proc.chains, settings)):
+            want = s.insert.get("path") or ""
+            have = getattr(c.plugin, "path", "") if c.plugin is not None else ""
+            if want == have:
+                plugins.append((c.plugin, getattr(c, "insert_name", ""), False))
+                continue
+            if not want:
+                plugins.append((None, "", True))
+                c.insert_error = None
+                continue
+            if self.vst3 is None:
+                c.insert_error = "plugin inserts aren't available in this build"
+                plugins.append((None, "", True))
+                errors.append(c.insert_error)
+                continue
+            try:
+                from .vst3 import Plugin
+                plug = Plugin(self.vst3, want, block=480, state=P.unb64(s.insert.get("state", "")))
+                info = plug.info()
+                name = f"{info['vendor']} {info['name']}".strip()
+                c.insert_error = None
+                plugins.append((plug, name, True))
+                self.log(Event(self.core.t, "insert_loaded", f"{labels[i]}: {name}, latency {plug.latency} samples", "console"))
+            except Exception as e:
+                c.insert_error = str(e)
+                errors.append(f"{labels[i]}: {e}")
+                plugins.append((None, "", True))
+                self.log(Event(self.core.t, "insert_error", f"{labels[i]}: {e}", "console"))
+        for c, nm in zip(self.proc.chains, labels):
+            c.name = nm
+        self.proc.configure(settings, plugins)
+        return {"ok": True, "applied": True, "errors": errors}
+
+    def insert_info(self, talker):
+        if self.proc is None or not 0 <= talker < len(self.proc.chains):
+            return {"loaded": False, "error": self.proc_note or "no such talker"}
+        c = self.proc.chains[talker]
+        plug = c.plugin
+        if plug is None:
+            # a just-loaded plugin is handed to the worker on its next block
+            pend = self.proc._pending
+            if pend and pend[1][talker][0] is not None:
+                plug = pend[1][talker][0]
+        if plug is None:
+            return {"loaded": False, "error": c.insert_error}
+        info = plug.info()
+        return {"loaded": True, "path": plug.path, "latency": plug.latency, **info}
+
+    def plugin_param(self, talker, pid, norm):
+        if self.proc is None or not 0 <= talker < len(self.proc.chains):
+            return {"ok": False, "error": "no such talker"}
+        c = self.proc.chains[talker]
+        plug = c.plugin or (self.proc._pending[1][talker][0] if self.proc._pending else None)
+        if plug is None:
+            return {"ok": False, "error": "no insert loaded on this talker"}
+        plug.set_param(pid, norm)
+        self._plugin_states_dirty = True
+        return {"ok": True, "value": plug.param_text(pid, norm)}
+
+    def _save_plugin_states(self, force=False):
+        """Copies each running insert's settings into its operator profile, at most every 2 s."""
+        if self.proc is None or not self._plugin_states_dirty:
+            return
+        if not force and time.time() - self._last_state_save < 2.0:
+            return
+        self._plugin_states_dirty = False
+        self._last_state_save = time.time()
+        proj = self.project or {}
+        ops = {o.get("id"): o for o in proj.get("operators", [])}
+        chs = proj.get("ch", [])
+        for i, c in enumerate(self.proc.chains):
+            if c.plugin is None or i >= len(chs):
+                continue
+            op = ops.get(chs[i].get("op"))
+            if not op:
+                continue
+            ins = op.setdefault("ins", {})
+            ins.setdefault("vst3", {})[c.plugin.path] = self.processing.b64(c.plugin.get_state())
+        try:
+            with open(self.project_path, "w") as f:
+                json.dump(proj, f)
+        except OSError:
+            pass
+
+    def plugins(self, rescan=False):
+        if self.plugins_cache is None or rescan:
+            from . import vst3
+            self.plugins_cache = vst3.scan()
+        return self.plugins_cache
 
     # ------------------------------------------------------------ audio
     def callback(self, indata, outdata, frames, tinfo, status):
         try:
-            with self.lock:
-                self.core.process(indata, outdata, status)
+            if self.proc is not None and frames == 480:
+                cfg = self.cfg
+                mics = np.asarray(indata[:, cfg.talker_in], dtype=np.float64).T
+                ref = indata[:, cfg.pgm_in] if cfg.pgm_in is not None else np.zeros(frames)
+                out, dry = self.proc.exchange(mics, ref)
+                with self.lock:
+                    self.core.process(indata, outdata, status, returns=out.T, dry=dry.T)
+                    for i, why in self.proc.drain_faults():
+                        self.core.arm.trip_talker(self.core.t, i, why, "auto")
+                        for e in self.core.arm.drain_events():
+                            self.core.log.append(e)
+            else:
+                with self.lock:
+                    self.core.process(indata, outdata, status)
             if self.rec.on:
                 cfg = self.cfg
                 cols = [indata[:, c] for c in cfg.talker_in + cfg.probe_in]
@@ -306,6 +481,7 @@ class BenchApp:
             lat = float(lat)
         except ValueError:
             pass
+        self._start_processing()
         self._start_web()
         if self.rrcs:
             self.rrcs.start()
@@ -332,11 +508,15 @@ class BenchApp:
                 while not self.quit_ev.is_set():
                     time.sleep(0.05)
                     self._drain()
+                    self._save_plugin_states()
             except KeyboardInterrupt:
                 print("\nStopping ...")
         self._drain()
         self.log(Event(self.core.t, "stopped", "", "auto"))
         self.rec.stop()
+        if self.proc is not None:
+            self._save_plugin_states(force=True)
+            self.proc.stop()
         if self.rrcs:
             self.rrcs.set_armed_safe(False)
             self.rrcs.stop()
@@ -370,6 +550,14 @@ class BenchApp:
                     self._send(200, bench_page, "text/html; charset=utf-8")
                 elif self.path in ("/state", "/api/state"):
                     self._send(200, json.dumps(app.state()).encode(), "application/json")
+                elif self.path == "/api/project":
+                    self._send(200, json.dumps({"project": app.project, "path": app.project_path}).encode(), "application/json")
+                elif self.path.startswith("/api/plugins"):
+                    self._send(200, json.dumps(app.plugins(rescan="rescan" in self.path)).encode(), "application/json")
+                elif self.path.startswith("/api/insert"):
+                    from urllib.parse import urlparse, parse_qs
+                    q = parse_qs(urlparse(self.path).query)
+                    self._send(200, json.dumps(app.insert_info(int(q.get("talker", ["0"])[0]))).encode(), "application/json")
                 else:
                     self._send(404, b"not found", "text/plain")
 
@@ -386,6 +574,8 @@ class BenchApp:
                     res = app.arm(None if t in (None, "", "all") else int(t) - 1, "companion")
                 elif self.path == "/api/disarm":
                     res = app.command({"cmd": "disarm", "source": "companion"})
+                elif self.path == "/api/project":
+                    res = app.apply_project(body if isinstance(body, dict) else {})
                 elif self.path == "/quit":
                     app.quit_ev.set()
                     res = {"ok": True}
@@ -422,7 +612,9 @@ def build_parser():
     p.add_argument("--arm-hold", type=float, default=5.0, help="seconds of green before arming is allowed")
     p.add_argument("--probe-timeout", type=float, default=200.0, help="ms of missing PROBE before disarming")
     p.add_argument("--no-marker", action="store_true", help="don't add the marker tone to the talker returns")
-    p.add_argument("--block", type=int, default=240, help="audio block in samples (240 = 5 ms)")
+    p.add_argument("--block", type=int, default=480, help="audio block in samples (480 = 10 ms; processing needs 480)")
+    p.add_argument("--no-processing", action="store_true", help="pass the talkers straight through (no echo removal, model or inserts)")
+    p.add_argument("--project", help="project file shared with the console (default: in the app's settings folder)")
     p.add_argument("--latency", default="low")
     p.add_argument("--record", action="store_true", help="record from the start")
     p.add_argument("--out-dir", default=os.path.join(os.getcwd(), "bench_runs"))

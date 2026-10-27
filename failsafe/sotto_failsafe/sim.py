@@ -44,14 +44,18 @@ class SimRiedel:
         self.model_armed = model_armed
         self.armed = False
 
+    @staticmethod
+    def _onepole(w, a, state):
+        """y[n] = a*y[n-1] + (1-a)*w[n], vectorised (no per-sample Python loop in the audio thread)."""
+        n = len(w)
+        p = a ** np.arange(1, n + 1)
+        y = p * (state + np.cumsum((1 - a) * w / p))
+        return y, float(y[-1])
+
     def _mic(self, frames, gain):
         w = self.rng.standard_normal(frames) * gain
-        y = np.empty(frames)
-        a = 0.97
-        for i in range(frames):               # gentle low-pass: noise that sounds like a room
-            self.lp = a * self.lp + (1 - a) * w[i]
-            y[i] = self.lp * 6.0
-        return y
+        y, self.lp = self._onepole(w, 0.97, self.lp)        # gentle low-pass: noise that sounds like a room
+        return y * 6.0
 
     def set_logic(self, name, on):
         """What an RRCS SetLogicSourceState does to the simulated frame."""
@@ -93,11 +97,8 @@ class SimRiedel:
         if getattr(cfg, "pgm_in", None) is not None and cfg.pgm_in < n_in:
             w = self.rng.standard_normal(frames) * 0.2
             env = 0.6 + 0.4 * np.sin(2 * np.pi * 0.5 * (self.t + np.arange(frames) / self.fs))
-            y = np.empty(frames)
-            for i in range(frames):
-                self.pgm_lp = 0.9 * self.pgm_lp + 0.1 * w[i]
-                y[i] = self.pgm_lp * 2.0 * env[i]
-            x[:, cfg.pgm_in] = y
+            y, self.pgm_lp = self._onepole(w, 0.9, self.pgm_lp)
+            x[:, cfg.pgm_in] = y * 2.0 * env
         if cfg.listen_in is not None:
             clean_ret = past[:, cfg.talker_out[0]]
             clean_now = self.clean_ok and (self.armed or not self.model_armed)

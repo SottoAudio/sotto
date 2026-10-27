@@ -14,7 +14,7 @@ import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .app import BenchApp, channel_clashes, config_from_args, parse_args
+from .app import BenchApp, channel_clashes, config_from_args, device_list, parse_args
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = 8766
@@ -59,14 +59,7 @@ def save_config(cfg):
 
 
 def list_devices():
-    try:
-        import sounddevice as sd
-        apis = sd.query_hostapis()
-        return {"ok": True, "devices": [
-            {"index": i, "name": d["name"], "inputs": d["max_input_channels"], "outputs": d["max_output_channels"],
-             "api": apis[d["hostapi"]]["name"]} for i, d in enumerate(sd.query_devices())]}
-    except Exception as e:                       # no PortAudio, no permission, ...
-        return {"ok": False, "error": repr(e), "devices": []}
+    return device_list()
 
 
 def argv_from(cfg, simulate):
@@ -243,8 +236,24 @@ def main(argv=None):
     if a.list:
         from .app import list_devices as print_devices
         return print_devices()
-    BenchApp(a).run()
+    app = BenchApp(a)
+    app.run()
+    if app.restart_device is not None:                 # the console switched soundcard
+        restart(argv, app.restart_device)
     return 0
+
+
+def restart(argv, device):
+    """Starts again with another --device, in the same process slot (the browser stays open)."""
+    argv = list(argv)
+    if "--device" in argv:
+        argv[argv.index("--device") + 1] = device
+    else:
+        argv += ["--device", device]
+    argv.append("--no-browser")
+    cmd = [sys.executable] + ([] if getattr(sys, "frozen", False) else [os.path.abspath(sys.argv[0])]) + argv
+    sys.stdout.flush()
+    os.execv(sys.executable, cmd)
 
 
 if __name__ == "__main__":

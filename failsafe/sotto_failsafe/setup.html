@@ -44,7 +44,7 @@
   <div class="panel">
     <h2>Real test: virtual soundcard</h2>
     <label for="device">Soundcard</label>
-    <select id="device"><option value="">Loading…</option></select>
+    <div class="row" style="margin-top:0"><select id="device" style="flex:1 1 320px;width:auto"><option value="">Loading…</option></select><button id="devAgain">Look again</button></div>
     <p class="muted" id="devNote"></p>
     <div class="grid">
       <div><label for="talker_in">Talker inputs</label><input id="talker_in"></div>
@@ -78,20 +78,34 @@ async function init() {
   fields.forEach(f => $('#' + f).value = saved[f] || '');
   $('#record').checked = saved.record !== false;
   $('#runsDir').textContent = 'Recordings and event logs go to ' + c.runs_dir;
-  const d = await (await fetch('/setup/devices')).json();
+  await loadDevices();
+}
+async function loadDevices() {
   const sel = $('#device');
+  sel.innerHTML = '<option value="">Looking for audio devices…</option>';
+  let d;
+  try { d = await (await fetch('/setup/devices', {cache: 'no-store'})).json(); }
+  catch (e) { d = {ok: false, error: 'Sotto Bench did not answer', devices: []}; }
   if (!d.ok || !d.devices.length) {
     sel.innerHTML = '<option value="">No audio devices found</option>';
-    $('#devNote').textContent = d.ok ? 'Is Dante Virtual Soundcard or Merging VAD running?' : 'Could not list audio devices: ' + d.error;
+    $('#devNote').textContent = d.ok ? 'Is Dante Virtual Soundcard or Merging VAD running? Start it, then press Look again.' : 'Could not list audio devices: ' + d.error;
     return;
   }
-  const usable = d.devices.filter(x => x.inputs > 0 && x.outputs > 0);
-  sel.innerHTML = '<option value="">Pick the virtual soundcard…</option>' + usable.map(x =>
-    `<option value="${x.index}">${x.name.replace(/[<>&]/g, '')} (${x.inputs} in / ${x.outputs} out, ${x.api.replace(/[<>&]/g, '')})</option>`).join('');
+  // Sotto needs one device with as many inputs and outputs as the highest channel below (64 with
+  // the fixed system channels). Others are listed, greyed out, so you can see why.
+  const need = Math.max(64, ...fields.slice(0, 8).flatMap(f => ($('#' + f).value.match(/\d+/g) || []).map(Number)));
+  const esc = t => String(t).replace(/[<>&"]/g, '');
+  const why = x => x.inputs === 0 ? 'output only' : x.outputs === 0 ? 'input only' : (x.inputs < need || x.outputs < need) ? `needs ${need} in and out` : '';
+  const list = d.devices.slice().sort((a, b) => (why(a) ? 1 : 0) - (why(b) ? 1 : 0));
+  sel.innerHTML = '<option value="">Pick the virtual soundcard…</option>' + list.map(x =>
+    `<option value="${x.index}"${why(x) ? ' disabled' : ''}>${esc(x.name)} (${x.inputs} in / ${x.outputs} out, ${esc(x.api)}${why(x) ? ': ' + why(x) : ''})</option>`).join('');
+  const usable = list.filter(x => !why(x));
   const prev = usable.find(x => String(x.index) === String(saved.device)) ||
                usable.find(x => /dante|merging|ravenna|virtual audio/i.test(x.name));
   if (prev) sel.value = prev.index;
-  $('#devNote').textContent = 'Only devices with both inputs and outputs are listed.';
+  $('#devNote').textContent = usable.length
+    ? `${usable.length} of ${d.devices.length} devices can run Sotto (one device with at least ${need} inputs and ${need} outputs). The others are greyed out.`
+    : `None of the ${d.devices.length} devices has ${need} inputs and ${need} outputs. Set Dante Virtual Soundcard to 64 × 64 in Dante Virtual Soundcard's settings, then press Look again.`;
 }
 async function start(simulate) {
   $('#err').textContent = '';
@@ -107,6 +121,7 @@ async function start(simulate) {
   $('#starting').textContent = 'The console did not start. Check the soundcard and try opening Sotto Bench again.';
 }
 $('#simBtn').onclick = () => start(true);
+$('#devAgain').onclick = () => loadDevices();
 $('#devBtn').onclick = () => start(false);
 $('#quitBtn').onclick = async () => { try { await fetch('/quit', {method: 'POST'}); } catch (e) {} document.body.innerHTML = '<p style="padding:24px">Sotto Bench has quit. You can close this tab.</p>'; };
 init();

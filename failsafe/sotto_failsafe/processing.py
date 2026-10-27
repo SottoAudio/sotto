@@ -309,6 +309,7 @@ class Chains:
                 continue
             try:
                 from .vst3 import Plugin
+                LOG.info("Opening insert %s for %s", want, labels[i])      # logged first: if it crashes, this says which
                 plug = Plugin(self.lib, want, block=HOP, state=unb64(s.insert.get("state", "")))
                 info = plug.info()
                 name = f"{info['vendor']} {info['name']}".strip()

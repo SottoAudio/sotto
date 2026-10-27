@@ -99,7 +99,6 @@ def _worker_main(wid, names, settings, model, shm_name, g, in_sem, out_sem, ctrl
     """Runs in the worker process."""
     import faulthandler
     import sys
-    threading.current_thread().name = f"worker{wid + 1}-processing"
     LOG.handlers[:] = [_UpHandler(up, wid)]
     LOG.setLevel(logging.DEBUG)
     LOG.propagate = False
@@ -115,7 +114,7 @@ def _worker_main(wid, names, settings, model, shm_name, g, in_sem, out_sem, ctrl
     try:
         from . import macos, processing, vst3
         macos.keep_responsive("Sotto Bench processing worker")
-        _, note = macos.fast_thread()
+        note = "performance cores (processing thread)"
         try:
             lib = vst3.load_library()
         except OSError:
@@ -134,86 +133,96 @@ def _worker_main(wid, names, settings, model, shm_name, g, in_sem, out_sem, ctrl
         up.put((wid, "failed", repr(e)))
         return
     stop = threading.Event()
+    errors = [0]
 
-    def control():
+    def send_state():
+        up.put((wid, "state", {**work.timing(), "talkers": work.talker_states(), "errors": errors[0],
+                               "model": work.dfn is not None}))
+
+    def audio():
+        """The processing, on its own thread at the highest everyday priority. Plugins are only
+        run here (process); they're created, changed and destroyed on the main thread."""
+        _, work.thread_note = macos.fast_thread()
+        next_state = 0.0
+        next_tag = 0
         while not stop.is_set():
-            try:
-                rid, op, args = ctrl.recv()
-            except (EOFError, OSError):
-                stop.set()
-                return
-            try:
-                if op == "stop":
-                    stop.set()
-                    res = True
-                elif op == "apply":
-                    res = work.apply(*args)
-                elif op == "insert_info":
-                    res = work.insert_info(*args)
-                elif op == "plugin_param":
-                    res = work.plugin_param(*args)
-                elif op == "plugin_states":
-                    res = work.plugin_states()
-                else:
-                    res = {"ok": False, "error": f"unknown request {op}"}
-                up.put((wid, "reply", (rid, True, res)))
-            except Exception as e:
-                LOG.exception("Worker %d: request %s failed", wid + 1, op)
-                up.put((wid, "reply", (rid, False, repr(e))))
+            if not in_sem.acquire(timeout=0.2):
+                if time.monotonic() >= next_state:  # idle (no audio yet): still report
+                    next_state = time.monotonic() + 0.5
+                    send_state()
+                continue
+            while in_sem.acquire(False):
+                pass
+            # Every block still in time, oldest first. With headroom h, Sotto takes the result for
+            # block k-h when it hands over block k, so blocks older than newest-(h-1) are too
+            # late: skip them rather than fall further behind.
+            newest = int(latest[0])
+            h = min(MAX_HEADROOM, max(1, int(latest[1])))
+            for tag in range(max(next_tag, newest - (h - 1)), newest + 1):
+                tg, mics_v, ref_v = ins[tag % SLOTS]
+                if int(tg[0]) != tag:
+                    continue
+                mics, ref = mics_v.copy(), ref_v.copy()
+                if int(tg[0]) != tag:                # overwritten while copying: too late anyway
+                    continue
+                try:
+                    o, d = work.process(mics, ref)
+                    otg, ov, dv = outs[tag % SLOTS]
+                    ov[:] = o
+                    dv[:] = d
+                    out_sem.release()                # barrier: the data is visible before the tag
+                    otg[0] = tag
+                except Exception as e:
+                    errors[0] += 1
+                    if errors[0] == 1 or errors[0] % 100 == 0:
+                        LOG.exception("Worker %d: processing error (%d so far)", wid + 1, errors[0])
+                        up.put((wid, "faults", [(i, f"processing error: {e!r}") for i in range(len(names))]))
+            next_tag = newest + 1
+            f = work.take_faults()
+            if f:
+                up.put((wid, "faults", f))
+            now = time.monotonic()
+            if now >= next_state:
+                next_state = now + 0.5
+                send_state()
 
-    threading.Thread(target=control, name=f"worker{wid + 1}-control", daemon=True).start()
+    th = threading.Thread(target=audio, name=f"worker{wid + 1}-processing", daemon=True)
+    th.start()
+    threading.current_thread().name = f"worker{wid + 1}-main"
     LOG.info("Processing worker %d ready: %d talkers (%s), process %d, %s", wid + 1, len(names), ", ".join(names),
              os.getpid(), note)
     up.put((wid, "ready", {"pid": os.getpid(), "thread": note}))
-    errors = 0
-    next_state = 0.0
-    next_tag = 0
-
-    def send_state():
-        up.put((wid, "state", {**work.timing(), "talkers": work.talker_states(), "errors": errors,
-                               "model": work.dfn is not None}))
-
+    # The main thread: requests from Sotto, and creating and destroying plugins (VST3 wants
+    # both on the main thread; several plugins abort otherwise).
     while not stop.is_set():
-        if not in_sem.acquire(timeout=0.2):
-            if time.monotonic() >= next_state:      # idle (no audio yet): still report
-                next_state = time.monotonic() + 0.5
-                send_state()
-            continue
-        while in_sem.acquire(False):
-            pass
-        # Every block still in time, oldest first. With headroom h, Sotto takes the result for
-        # block k-h when it hands over block k, so blocks older than newest-(h-1) are too late:
-        # skip them rather than fall further behind.
-        newest = int(latest[0])
-        h = min(MAX_HEADROOM, max(1, int(latest[1])))
-        for tag in range(max(next_tag, newest - (h - 1)), newest + 1):
-            tg, mics_v, ref_v = ins[tag % SLOTS]
-            if int(tg[0]) != tag:
+        try:
+            if not ctrl.poll(0.2):
+                work.close_retired()
                 continue
-            mics, ref = mics_v.copy(), ref_v.copy()
-            if int(tg[0]) != tag:                    # overwritten while copying: too late anyway
-                continue
-            try:
-                o, d = work.process(mics, ref)
-                otg, ov, dv = outs[tag % SLOTS]
-                ov[:] = o
-                dv[:] = d
-                out_sem.release()                    # barrier: the data is visible before the tag
-                otg[0] = tag
-            except Exception as e:
-                errors += 1
-                if errors == 1 or errors % 100 == 0:
-                    LOG.exception("Worker %d: processing error (%d so far)", wid + 1, errors)
-                    up.put((wid, "faults", [(i, f"processing error: {e!r}") for i in range(len(names))]))
-        next_tag = newest + 1
-        f = work.take_faults()
-        if f:
-            up.put((wid, "faults", f))
+            rid, op, args = ctrl.recv()
+        except (EOFError, OSError):
+            stop.set()
+            break
+        try:
+            if op == "stop":
+                stop.set()
+                res = True
+            elif op == "apply":
+                res = work.apply(*args)
+            elif op == "insert_info":
+                res = work.insert_info(*args)
+            elif op == "plugin_param":
+                res = work.plugin_param(*args)
+            elif op == "plugin_states":
+                res = work.plugin_states()
+            else:
+                res = {"ok": False, "error": f"unknown request {op}"}
+            up.put((wid, "reply", (rid, True, res)))
+        except Exception as e:
+            LOG.exception("Worker %d: request %s failed", wid + 1, op)
+            up.put((wid, "reply", (rid, False, repr(e))))
         work.close_retired()
-        now = time.monotonic()
-        if now >= next_state:
-            next_state = now + 0.5
-            send_state()
+    th.join(timeout=2)
     if tracker:
         tracker.stop()
     work.close()
@@ -240,6 +249,8 @@ class _Worker:
         self.restarts = 0
         self.restart_times = []
         self.given_up = False
+        self.loading = set()                             # plugins being opened right now
+        self.loaded_paths = set()                        # plugins this worker process has open
         self.proc = None
         self.start()
 
@@ -249,6 +260,7 @@ class _Worker:
         self.ctrl, child = ctx.Pipe()
         self.ctrl_lock = threading.Lock()
         self.ready, self.failed = False, None
+        self.loaded_paths = set()                        # a new process has nothing open
         names = [self.pool.names[i] for i in self.rows]
         settings = [self.pool.settings[i] for i in self.rows]
         self.proc = ctx.Process(
@@ -297,6 +309,8 @@ class Pool:
         self.live = False                                # counting misses only once every worker is up
         self.set_headroom(headroom)
         self._rid = itertools.count(1)
+        self.crashed = {}                                # plugin path -> why it isn't loaded (it crashed a worker)
+        self.insert_notes = {}                           # talker -> that reason, for the console
         self._waiting = {}
         self._wait_lock = threading.Lock()
         self.stop_ev = threading.Event()
@@ -431,6 +445,17 @@ class Pool:
                     continue
                 code = w.proc.exitcode
                 why = w.failed or f"exit code {code}"
+                w.ready = False
+                # Record the plugin that did it first, then tell whoever is waiting: their next
+                # request must already leave it out.
+                for path in getattr(w, "loading", set()) or set():
+                    name = os.path.basename(path).rsplit(".", 1)[0]
+                    self.crashed[path] = (f"{name} crashed Sotto's processing when it was opened ({why}), so it's "
+                                          "no longer loaded. Use another plugin.")
+                    LOG.error("Processing worker %d stopped while opening the plugin %s: not loading it again this session",
+                              w.wid + 1, path)
+                w.loading = set()
+                self._fail_requests(w, f"stopped ({why})")
                 self.faults.extend((i, f"processing worker {w.wid + 1} stopped ({why})") for i in w.rows)
                 now = time.monotonic()
                 w.restart_times = [t for t in w.restart_times if now - t < 60] + [now]
@@ -458,18 +483,66 @@ class Pool:
             time.sleep(0.1)
         settings, labels = self.last_apply
         try:
-            w.request("apply", [settings[i] for i in w.rows], [labels[i] for i in w.rows])
+            self._apply_one(w, settings, labels)
         except Exception:
             LOG.exception("Could not give restarted worker %d its settings", w.wid + 1)
 
+    def _without_crashed(self, settings):
+        """The settings with any insert that has crashed a worker taken out (and why, per talker)."""
+        import copy
+        out, notes = [], {}
+        for i, st in enumerate(settings):
+            path = (st.insert or {}).get("path")
+            if path and path in self.crashed:
+                st = copy.copy(st)
+                st.insert = {}
+                notes[i] = self.crashed[path]
+            out.append(st)
+        return out, notes
+
+    def _apply_one(self, w, settings, labels):
+        mine, notes = self._without_crashed([settings[i] for i in w.rows])
+        for j, why in notes.items():
+            self.insert_notes[w.rows[j]] = why
+        for i in w.rows:
+            if i not in [w.rows[j] for j in notes]:
+                self.insert_notes.pop(i, None)
+        paths = {(s.insert or {}).get("path") for s in mine if (s.insert or {}).get("path")}
+        w.loading = paths - w.loaded_paths               # only these are opened by this request
+        try:
+            r = w.request("apply", mine, [labels[i] for i in w.rows])
+            w.loaded_paths = paths
+        finally:
+            w.loading = set()
+        return r, list(notes.values())
+
+    def _fail_requests(self, w, why):
+        """A worker that died can't answer: tell everyone waiting on it now, not after 30 s."""
+        with self._wait_lock:
+            slots = [sl for sl in self._waiting.values() if sl.get("wid") == w.wid]
+        for sl in slots:
+            sl["ok"], sl["res"] = False, why
+            sl["ev"].set()
+
     def _request(self, w, op, args, timeout):
+        # A worker that has just died (or is restarting) can't take a request: wait for the
+        # restarted one, up to 15 s, rather than writing into a closed pipe.
+        t0 = time.monotonic()
+        while not (w.ready and w.proc is not None and w.proc.is_alive()):
+            if w.given_up or self.stop_ev.is_set() or time.monotonic() - t0 > 15:
+                raise RuntimeError(f"processing worker {w.wid + 1} isn't running"
+                                   + (f": {self.why}" if self.why else ""))
+            time.sleep(0.05)
         rid = next(self._rid)
-        slot = {"ev": threading.Event()}
+        slot = {"ev": threading.Event(), "wid": w.wid}
         with self._wait_lock:
             self._waiting[rid] = slot
         try:
-            with w.ctrl_lock:
-                w.ctrl.send((rid, op, args))
+            try:
+                with w.ctrl_lock:
+                    w.ctrl.send((rid, op, args))
+            except (BrokenPipeError, EOFError, OSError):
+                raise RuntimeError(f"processing worker {w.wid + 1} stopped; it's being restarted, try again in a moment")
             if not slot["ev"].wait(timeout):
                 raise TimeoutError(f"processing worker {w.wid + 1} didn't answer {op} in {timeout:.0f} s")
             if not slot["ok"]:
@@ -485,8 +558,8 @@ class Pool:
         errors, events = [], []
         for w in self.workers:
             try:
-                r = w.request("apply", [settings[i] for i in w.rows], [labels[i] for i in w.rows])
-                errors += r.get("errors", [])
+                r, notes = self._apply_one(w, settings, labels)
+                errors += notes + r.get("errors", [])
                 events += r.get("events", [])
             except Exception as e:
                 LOG.exception("Settings could not be applied in worker %d", w.wid + 1)
@@ -527,11 +600,15 @@ class Pool:
             except Exception:
                 pass
         for w in self.workers:
-            w.proc.join(timeout=3)
-            if w.proc.is_alive():
-                LOG.warning("Processing worker %d didn't stop: ending it", w.wid + 1)
-                w.proc.terminate()
-                w.proc.join(timeout=2)
+            try:
+                if w.proc is not None and w.proc.pid is not None:
+                    w.proc.join(timeout=3)
+                    if w.proc.is_alive():
+                        LOG.warning("Processing worker %d didn't stop: ending it", w.wid + 1)
+                        w.proc.terminate()
+                        w.proc.join(timeout=2)
+            except Exception:
+                LOG.exception("Could not stop processing worker %d", w.wid + 1)
             try:
                 w.shm.close()
                 w.shm.unlink()
@@ -543,7 +620,10 @@ class Pool:
         talkers = []
         for w in self.workers:
             st = w.state.get("talkers") or [{"name": self.names[i], "mode": "starting"} for i in w.rows]
-            talkers += st
+            talkers += [dict(t) for t in st]
+        for i, why in self.insert_notes.items():
+            if i < len(talkers):
+                talkers[i]["insert_error"] = why
         num = lambda k: max((s.get(k) or 0) for s in ws) if ws else 0   # noqa: E731
         stage = {k: max(((s.get("stage_ms") or {}).get(k) or 0) for s in ws) for k in ("front", "model", "back")}
         return {

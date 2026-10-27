@@ -30,6 +30,8 @@ LOG = diagnostics.LOG
 
 
 def config_dir():
+    if os.environ.get("SOTTO_CONFIG_DIR"):             # tests and builds: never the user's own settings and logs
+        return os.environ["SOTTO_CONFIG_DIR"]
     home = os.path.expanduser("~")
     if sys.platform == "darwin":
         return os.path.join(home, "Library", "Application Support", "Sotto Bench")
@@ -176,6 +178,7 @@ class BenchApp:
         self.cb_ms = 0.0
         self.cb_ms_max = 0.0
         self._cb_last = None                             # when the last block arrived
+        self._dev_last = None                            # when the last soundcard callback ran
         self.regroup = None                              # set when the soundcard runs on a small buffer
         from .phones import LocalPhones
         from .testsrc import TestSources
@@ -350,7 +353,10 @@ class BenchApp:
         g = self.gaps_last or self.gaps
         s["callback"] = {"ms": round(self.cb_ms, 3), "ms_max": round(self.cb_ms_max, 3), "errors": self.callback_errors,
                          "gaps": {"blocks": g["n"], "min_ms": round(g["min_ms"], 2) if g["n"] else None,
-                                  "max_ms": round(g["max_ms"], 2), "bunched": g["bunched"], "late": g["late"]}}
+                                  "max_ms": round(g["max_ms"], 2), "bunched": g["bunched"], "late": g["late"],
+                                  "device_callbacks": g["dev_n"], "device_gap_max_ms": round(g["dev_max_ms"], 2),
+                                  "delay_ms": [round(g["delay_min_ms"], 2), round(g["delay_max_ms"], 2)]
+                                  if g["delay_max_ms"] else None}}
         s["power"] = getattr(self, "power", {})
         s["tests"] = self.tests.state()
         s["local_phones"] = self.local_phones.state()
@@ -422,7 +428,20 @@ class BenchApp:
             return {"ok": True, "applied": False, "why": self.proc_note}
         P = self.processing
         settings, labels = P.settings_from_project(project, self.cfg.talker_names)
+        refused = []
+        if self.vst3 is not None:                        # a plugin that crashes must never reach the processing
+            from . import vst3
+            for st, lab in zip(settings, labels):
+                path = (st.insert or {}).get("path")
+                if not path:
+                    continue
+                ok, why = vst3.trial(path)
+                if not ok:
+                    LOG.error("Insert %s refused for %s: %s", path, lab, why)
+                    st.insert = {}
+                    refused.append(f"{lab}: {why}")
         res = self.proc.apply(settings, labels)
+        res = {**res, "errors": refused + list(res.get("errors", []))}
         for kind, detail in res.get("events", []):
             self.log(Event(self.core.t, kind, detail, "console"))
         errors = list(res.get("errors", []))
@@ -491,10 +510,34 @@ class BenchApp:
     # ------------------------------------------------------------ audio
     @staticmethod
     def _new_gaps():
-        return {"n": 0, "min_ms": 1e9, "max_ms": 0.0, "bunched": 0, "late": 0}
+        return {"n": 0, "min_ms": 1e9, "max_ms": 0.0, "bunched": 0, "late": 0,
+                "dev_n": 0, "dev_max_ms": 0.0, "delay_min_ms": 1e9, "delay_max_ms": 0.0}
+
+    def _device_timing(self, tinfo, now):
+        """Per soundcard callback: the gap since the last one, and how long after the audio was
+        captured the callback ran (PortAudio's time info). If that delay swings by tens of ms, the
+        callback is being held up: by the driver, or by something in this process."""
+        g = self.gaps
+        if self._dev_last is not None:
+            gap = 1000 * (now - self._dev_last)
+            g["dev_n"] += 1
+            if gap > g["dev_max_ms"]:
+                g["dev_max_ms"] = gap
+        self._dev_last = now
+        if tinfo is not None:
+            try:
+                d = 1000 * (tinfo.currentTime - tinfo.inputBufferAdcTime)
+            except Exception:
+                return
+            if 0 < d < 5000:
+                if d < g["delay_min_ms"]:
+                    g["delay_min_ms"] = d
+                if d > g["delay_max_ms"]:
+                    g["delay_max_ms"] = d
 
     def device_callback(self, indata, outdata, frames, tinfo, status):
         """The soundcard's callback when it runs on a small buffer: regroup into 10 ms blocks."""
+        self._device_timing(tinfo, time.perf_counter())
         self._status = status
         try:
             self.regroup.process(indata, outdata, frames, self._regrouped_block)
@@ -510,6 +553,8 @@ class BenchApp:
     def callback(self, indata, outdata, frames, tinfo, status):
         """Sotto's engine for one block (10 ms): straight from the soundcard, or regrouped."""
         t0 = time.perf_counter()
+        if self.regroup is None:
+            self._device_timing(tinfo, t0)
         if self._cb_last is not None:                # time since the last block (should be 10 ms)
             gap = 1000 * (t0 - self._cb_last)
             g = self.gaps
@@ -579,6 +624,14 @@ class BenchApp:
             lat = float(lat)
         except ValueError:
             pass
+        if a.io_buffer and a.io_buffer != a.block and a.latency == "low":
+            # Ask for a Core Audio buffer of exactly one chunk: with 'low', PortAudio may pick a
+            # multiple of it (320 for 160), and the chunks then arrive in pairs.
+            lat = a.io_buffer / cfg.fs
+        # The audio callback is Python: when another thread holds Python's lock, the callback
+        # waits up to the switch interval (5 ms by default) each time it needs the lock back.
+        sys.setswitchinterval(a.switch_interval / 1000.0)
+        LOG.info("Python switch interval %.2f ms", a.switch_interval)
         LOG.info("App Nap: %s", self.app_nap)
         try:
             self._start_processing()
@@ -666,8 +719,10 @@ class BenchApp:
         g, self.gaps = self.gaps, self._new_gaps()
         if g["n"]:
             self.gaps_last = g
-            LOG.info("block timing (last 10 s): %d blocks, gap %.2f to %.2f ms, %d bunched (<3 ms), %d late (>17 ms)",
-                     g["n"], g["min_ms"], g["max_ms"], g["bunched"], g["late"])
+            LOG.info("block timing (last 10 s): %d blocks, gap %.2f to %.2f ms, %d bunched (<3 ms), %d late (>17 ms) | "
+                     "soundcard callbacks %d, longest gap %.2f ms, run %.2f to %.2f ms after capture",
+                     g["n"], g["min_ms"], g["max_ms"], g["bunched"], g["late"], g["dev_n"], g["dev_max_ms"],
+                     g["delay_min_ms"] if g["delay_max_ms"] else 0, g["delay_max_ms"])
         try:
             st = self.core.state()
             pr = self.proc.state() if self.proc is not None else {}
@@ -890,6 +945,10 @@ class BenchApp:
         if self.core.arm.armed:
             return {"ok": False, "error": "Disarm Sotto first: test sources only play while disarmed."}
         try:
+            if b.get("remove"):
+                r = self.tests.remove(b["remove"])
+                self.log(Event(self.core.t, "test_file", f"removed {r['removed']}", "console"))
+                return {"ok": True, **r, **self.tests.state()}
             if b.get("all_off"):
                 self.tests.off()
                 self.log(Event(self.core.t, "test_sources_off", "all", "console"))
@@ -901,7 +960,7 @@ class BenchApp:
                 self.log(Event(self.core.t, "test_source", f"input {ch + 1}: off", "console"))
                 return {"ok": True, **self.tests.state()}
             d = self.tests.set(ch, kind, float(b.get("level_db", -20)), b.get("file") or None,
-                               float(b.get("bleed_db", -6)))
+                               float(b.get("bleed_db", -6)), b.get("programme_file") or None)
             self.log(Event(self.core.t, "test_source", f"input {ch + 1}: {d['what']}", "console"))
             return {"ok": True, **self.tests.state()}
         except Exception as e:
@@ -1152,6 +1211,8 @@ def build_parser():
     p.add_argument("--io-buffer", type=int, default=0,
                    help="soundcard buffer in samples (e.g. 128, 160, 256); Sotto regroups into 10 ms blocks. "
                         "0 = ask the soundcard for 10 ms blocks directly (as before)")
+    p.add_argument("--switch-interval", type=float, default=0.5,
+                   help="ms another Python thread may hold the lock before the audio callback gets it back (Python's default is 5)")
     p.add_argument("--headroom", type=int, default=1, choices=[1, 2, 3],
                    help="blocks of time the processing workers get per block (1 = 20 ms through Sotto, 2 = 30 ms)")
     p.add_argument("--track-delay", choices=["auto", "on", "off"], default="auto",

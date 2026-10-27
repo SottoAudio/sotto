@@ -167,7 +167,11 @@ def make_speech(folder):
     else:
         cmd = ["espeak", "-w", tmp, SPEECH_TEXT]
         how = "espeak"
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError(f"this computer can't make speech ({how}: {e.__class__.__name__}). "
+                           "Upload a WAV of speech instead.")
     if r.returncode != 0 or not os.path.isfile(tmp):
         raise RuntimeError(f"{how} couldn't make speech: {(r.stderr or r.stdout).strip()[:300]}")
     os.replace(tmp, path)
@@ -196,11 +200,19 @@ class TestSources:
         self.lock = threading.Lock()
         self._programme = None
         self._room = None
+        self._rooms = {}
         self.files = {}                            # name -> samples, loaded this session
         self.switched_off = 0
 
     # ------------------------------------------------------------ choosing (web server thread)
-    def _prog(self):
+    def _prog(self, file=None):
+        """The programme (built in, or a WAV file) and how it sounds in the mic."""
+        if file:
+            key = ("prog", file)
+            if key not in self._rooms:
+                x = self._file(file)
+                self._rooms[key] = (x, room(x))
+            return self._rooms[key]
         if self._programme is None:
             self._programme = programme()
             self._room = room(self._programme)
@@ -231,9 +243,11 @@ class TestSources:
             on_disk = []
         return sorted(set(on_disk) | {k for k in self.files if k != "speech"})
 
-    def set(self, channel, kind, level_db=-20.0, file=None, bleed_db=-6.0):
+    def set(self, channel, kind, level_db=-20.0, file=None, bleed_db=-6.0, programme_file=None):
         """channel: 0-based input. level_db: speech/tone level (RMS dBFS). bleed_db: how loud the PA
-        bleed is next to the speech (for 'bleed'). Returns what's now playing."""
+        bleed is next to the speech (for 'bleed'). file: the WAV for 'file' or 'speech' (else the
+        computer's own speech). programme_file: a WAV to use as the programme ('programme', and
+        the bleed's programme), else the built-in one. Returns what's now playing."""
         if channel not in self.allowed:
             raise ValueError("test sources can only go on a talker input or the PGM input")
         if kind not in KINDS:
@@ -258,28 +272,30 @@ class TestSources:
                 what = f"speech ({self.speech_how}) at {level_db:.0f} dBFS"
             loops.append(_Loop(x, level / rms(x)))
         elif kind == "programme":
-            prog, _ = self._prog()
+            prog, _ = self._prog(programme_file)
             loops.append(_Loop(prog, level / rms(prog)))
-            what = f"programme at {level_db:.0f} dBFS"
+            what = f"{programme_file or 'built-in programme'} at {level_db:.0f} dBFS"
         elif kind == "bleed":
             x = self._file(file) if file else self._speech()
-            prog, rm = self._prog()
+            prog, rm = self._prog(programme_file)
             loops.append(_Loop(x, level / rms(x)))
             loops.append(_Loop(rm, level * db(float(bleed_db)) / rms(rm)))
-            what = (f"speech at {level_db:.0f} dBFS with PA bleed {bleed_db:+.0f} dB "
-                    "(programme delayed 40 ms, with room reverb)")
+            what = (f"{file or 'speech'} at {level_db:.0f} dBFS with PA bleed {bleed_db:+.0f} dB "
+                    f"({programme_file or 'built-in programme'} delayed 40 ms, with room reverb)")
         with self.lock:
             plan = dict(self.plan)
             desc = dict(self.desc)
             plan[channel] = loops
-            desc[channel] = {"kind": kind, "level_db": float(level_db), "file": file, "what": what}
+            desc[channel] = {"kind": kind, "level_db": float(level_db), "file": file, "programme_file": programme_file,
+                             "bleed_db": float(bleed_db), "what": what}
             if kind == "bleed":                      # the PGM input needs the programme that bleeds
                 pgm = [c for c, w in self.allowed.items() if w == "PGM"]
-                if pgm and (pgm[0] not in desc or desc[pgm[0]]["kind"] != "programme"):
-                    prog, _ = self._prog()
+                if pgm and (pgm[0] not in desc or desc[pgm[0]]["kind"] != "programme"
+                            or desc[pgm[0]].get("programme_file") != programme_file):
+                    prog, _ = self._prog(programme_file)
                     plan[pgm[0]] = [_Loop(prog, db(-20.0) / rms(prog))]
-                    desc[pgm[0]] = {"kind": "programme", "level_db": -20.0, "file": None,
-                                    "what": "programme at -20 dBFS (for the PA bleed)"}
+                    desc[pgm[0]] = {"kind": "programme", "level_db": -20.0, "file": None, "programme_file": programme_file,
+                                    "what": f"{programme_file or 'built-in programme'} at -20 dBFS (for the PA bleed)"}
             self.plan, self.desc = plan, desc       # one assignment each: the audio thread sees old or new
         return desc[channel]
 
@@ -293,6 +309,24 @@ class TestSources:
                 desc.pop(channel, None)
                 self.plan, self.desc = plan, desc
 
+    def remove(self, name):
+        """Forgets an uploaded file (and stops anything playing it)."""
+        name = os.path.basename(name or "")
+        if name in ("", "speech.wav"):
+            raise ValueError("no such file")
+        with self.lock:
+            used = [c for c, d in self.desc.items() if name in (d.get("file"), d.get("programme_file"))]
+        for c in used:
+            self.off(c)
+        self.files.pop(name, None)
+        for k in [k for k in self._rooms if k[1] == name]:
+            self._rooms.pop(k, None)
+        try:
+            os.remove(os.path.join(self.folder, name))
+        except OSError:
+            pass
+        return {"removed": name, "stopped": [c + 1 for c in used]}
+
     def load(self, name, data):
         name = os.path.basename(name or "recording.wav")
         x = load_wav(data)
@@ -300,6 +334,8 @@ class TestSources:
         with open(os.path.join(self.folder, name), "wb") as f:
             f.write(data)
         self.files[name] = x
+        for k in [k for k in self._rooms if k[1] == name]:     # a new file under an old name
+            self._rooms.pop(k, None)
         return {"name": name, "seconds": round(len(x) / FS, 1)}
 
     def state(self):

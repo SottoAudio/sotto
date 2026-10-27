@@ -259,7 +259,8 @@ def main(argv=None):
 def write_diagnostics(argv):
     """Sotto Bench --diagnostics [--quick]: writes the diagnostics file to Downloads and exits."""
     text = diagnostics.build_report(None, setup_config=load_config(), run_speed_test="--quick" not in argv)
-    paths = diagnostics.save_report(text, diagnostics.downloads_dir())
+    # Builds and tests set SOTTO_CONFIG_DIR: keep their files out of the computer's Downloads.
+    paths = diagnostics.save_report(text, None if os.environ.get("SOTTO_CONFIG_DIR") else diagnostics.downloads_dir())
     print("Diagnostics written to:\n  " + "\n  ".join(paths))
     return 0
 

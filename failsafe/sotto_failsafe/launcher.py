@@ -24,7 +24,7 @@ PORT = 8766
 DEFAULTS = {
     "device": "", "talker_in": "1-4", "talker_out": "1-4", "names": "Show caller,Creative director,Technical manager,Stage manager",
     "probe_in": "61", "probe_out": "62", "heartbeat_out": "61", "pgm_in": "62", "listen_in": "", "monitor": "63,64",
-    "rrcs_host": "", "record": True, "layout": 2, "io_buffer": "0",
+    "rrcs_host": "", "rrcs_port": "8193", "record": True, "layout": 2, "io_buffer": "0",
 }
 # Channels with a fixed job since layout 2 (IN 61 PROBE return, IN 62 PGM, OUT 61 HEARTBEAT,
 # OUT 62 PROBE, OUT 63/64 headphones). Settings saved by older versions are moved onto them.
@@ -70,17 +70,19 @@ def argv_from(cfg, simulate):
     if simulate:
         argv.append("--simulate")
     else:
-        argv += ["--device", str(cfg["device"]), "--talker-in", cfg["talker_in"], "--talker-out", cfg["talker_out"],
-                 "--probe-in", cfg["probe_in"], "--probe-out", cfg["probe_out"], "--heartbeat-out", cfg["heartbeat_out"],
-                 "--pgm-in", cfg.get("pgm_in", "")]
-        if cfg.get("listen_in"):
-            argv += ["--listen-in", cfg["listen_in"]]
-        if cfg.get("monitor"):
-            argv += ["--monitor", cfg["monitor"]]
+        argv += ["--device", str(cfg["device"])]
         if cfg.get("rrcs_host"):
-            argv += ["--rrcs-host", cfg["rrcs_host"]]
+            argv += ["--rrcs-host", cfg["rrcs_host"], "--rrcs-port", str(cfg.get("rrcs_port") or 8193)]
         if str(cfg.get("io_buffer") or "0") not in ("", "0"):
             argv += ["--io-buffer", str(cfg["io_buffer"])]
+    # The I/O patch (the simulated frame follows it too)
+    argv += ["--talker-in", cfg["talker_in"], "--talker-out", cfg["talker_out"],
+             "--probe-in", cfg["probe_in"], "--probe-out", cfg["probe_out"], "--heartbeat-out", cfg["heartbeat_out"],
+             "--pgm-in", cfg.get("pgm_in", "")]
+    if cfg.get("listen_in"):
+        argv += ["--listen-in", cfg["listen_in"]]
+    if cfg.get("monitor"):
+        argv += ["--monitor", cfg["monitor"]]
     if cfg.get("names"):
         argv += ["--names", cfg["names"]]
     if cfg.get("record", True):
@@ -296,7 +298,10 @@ def _main(argv=None):
         if a.list:
             from .app import list_devices as print_devices
             return print_devices()
-        return run_engine(argv, a)
+        if run_engine(argv, a) != "setup":
+            return 0
+        PORT = a.port                                  # the setup page where the console was
+        open_browser = False
     # Started like an app: the setup page, then the engine. If the engine can't start, back to the
     # setup page with the reason, instead of quitting silently.
     error = None
@@ -307,7 +312,10 @@ def _main(argv=None):
             return 0
         open_browser = False                           # the page is already open
         try:
-            return run_engine(argv, parse_args(argv))
+            if run_engine(argv, parse_args(argv)) == "setup":
+                error = None
+                continue
+            return 0
         except SystemExit as e:
             if not str(e) or str(e) == "0":
                 raise
@@ -319,12 +327,20 @@ def _main(argv=None):
 
 
 def run_engine(argv, a):
+    """Runs the engine. Returns "setup" when the console asked to go back to the setup page."""
     app = BenchApp(a)
     app.run()
+    if app.restart_argv:                               # the console changed the engine or the patch
+        LOG.info("Restarting the engine with %s", app.restart_argv)
+        diagnostics.stop_logging()
+        restart(app.restart_argv, {})
     if app.restart_with:                               # the console switched soundcard or buffer
         LOG.info("Restarting the engine with %s", app.restart_with)
         diagnostics.stop_logging()
         restart(argv, app.restart_with)
+    if app.to_setup:
+        LOG.info("Back to the setup page")
+        return "setup"
     return 0
 
 

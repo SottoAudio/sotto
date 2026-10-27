@@ -138,6 +138,30 @@ they heard, and when the dry audio arrived. It also saves them to `fallback_timi
 crash test can't be timed by the tool itself, because it stops recording; record the listener
 on something else for that one.
 
+## Changing settings while it runs
+
+Everything can be changed from the running console, without quitting:
+
+- **Settings › Audio engine:**
+  - the soundcard and its buffer;
+  - phones bus dim, and the limiter ceiling;
+  - phones on this Mac;
+  - Check device: soundcard channels, sample rate, Core Audio, microphone permission, PROBE, PGM and the talker inputs.
+
+  The sample rate is set for Dante Virtual Soundcard in Dante Controller, not here. Sotto shows it and warns if it isn't 48 kHz.
+- **Settings › Channels › I/O patch:** which channel does each job:
+  - talker inputs and returns;
+  - PGM;
+  - the PROBE return and send;
+  - HEARTBEAT;
+  - the headphone outputs;
+  - the listener feed.
+
+  It shows the defaults and has a **Back to defaults** button. Applying checks for clashes and that the soundcard has the channels.
+- **Setup** (top right): stops the engine and goes back to the setup page, where the Riedel frame's RRCS IP address and port are set. Everything you set is kept.
+
+Changes that move audio restart the engine. HEARTBEAT stops, so the frame puts every listener on dry, and Sotto starts again disarmed.
+
 ## When something isn't working: the diagnostics file
 
 Sotto Bench keeps a detailed log while it runs. Each line records the time, the thread, and the function and line of code that wrote it. Errors carry their full traceback. To get help, send the **diagnostics file**. It has everything needed to work out why something isn't working on that computer:

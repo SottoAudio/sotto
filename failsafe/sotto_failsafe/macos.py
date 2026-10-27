@@ -107,3 +107,21 @@ def power_state():
     except Exception:
         pass
     return out
+
+
+def mic_permission():
+    """macOS microphone permission for this app: 'allowed', 'denied', 'not asked', 'restricted',
+    or why it couldn't be read. Core Audio inputs are silent without it."""
+    if sys.platform != "darwin":
+        return "allowed"
+    try:
+        ctypes.cdll.LoadLibrary("/System/Library/Frameworks/AVFoundation.framework/AVFoundation")
+        avf = ctypes.CDLL("/System/Library/Frameworks/AVFoundation.framework/AVFoundation")
+        media = ctypes.c_void_p.in_dll(avf, "AVMediaTypeAudio")
+        objc = _objc()
+        cls = objc.objc_getClass(b"AVCaptureDevice")
+        st = _send(objc, ctypes.c_long, [ctypes.c_void_p])(cls, objc.sel_registerName(b"authorizationStatusForMediaType:"),
+                                                          media.value)
+        return {0: "not asked", 1: "restricted", 2: "denied", 3: "allowed"}.get(int(st), f"status {st}")
+    except Exception as e:
+        return f"couldn't read it ({e!r})"

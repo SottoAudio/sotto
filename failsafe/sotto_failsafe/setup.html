@@ -66,7 +66,8 @@
       <div><label for="pgm_in">PGM input</label><input id="pgm_in"></div>
       <div><label for="monitor">Headphone outputs (solo bus)</label><input id="monitor" placeholder="63,64"></div>
       <div><label for="listen_in">Listener feed input (optional, for timing)</label><input id="listen_in" placeholder="e.g. 63"></div>
-      <div><label for="rrcs_host">RRCS address (optional)</label><input id="rrcs_host" placeholder="e.g. 10.0.0.10"></div>
+      <div><label for="rrcs_host">Riedel frame: RRCS IP address (optional)</label><input id="rrcs_host" placeholder="e.g. 10.0.0.10"></div>
+      <div><label for="rrcs_port">RRCS port</label><input id="rrcs_port" placeholder="8193" inputmode="numeric"></div>
     </div>
     <div style="margin-top:12px"><label for="names">Talker names</label><input id="names"></div>
     <p class="muted">Channels count from 1, as in Dante Controller. Ranges like 1-4 and lists like 63,64 both work. The defaults are Sotto's fixed system channels (IN 61 PROBE return, IN 62 PGM, OUT 61 HEARTBEAT, OUT 62 PROBE, OUT 63/64 headphones), so set Dante Virtual Soundcard to 64 &times; 64. See the Director setup in the Sotto README.</p>
@@ -88,7 +89,7 @@
 <div class="starting" id="starting">Starting… the console opens here in a moment.</div>
 <script>
 const $ = s => document.querySelector(s);
-const fields = ['talker_in', 'talker_out', 'probe_in', 'probe_out', 'heartbeat_out', 'pgm_in', 'listen_in', 'monitor', 'rrcs_host', 'names'];
+const fields = ['talker_in', 'talker_out', 'probe_in', 'probe_out', 'heartbeat_out', 'pgm_in', 'listen_in', 'monitor', 'rrcs_host', 'rrcs_port', 'names'];
 let saved = {};
 async function init() {
   const c = await (await fetch('/setup/config')).json();

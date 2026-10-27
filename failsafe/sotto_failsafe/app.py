@@ -153,6 +153,8 @@ class BenchApp:
         self.quit_ev = threading.Event()
         self.restart_device = None                       # set by /api/engine: the launcher restarts
         self.restart_with = {}
+        self.restart_argv = None                         # a whole new command line (console: engine and patch)
+        self.to_setup = False                            # console: back to the setup page
         self.srv = None
         self.timing = []
         self.sim = None
@@ -264,7 +266,8 @@ class BenchApp:
             return {"ok": True}
         if cmd == "solo":
             with self.lock:
-                plan = core.set_solo(c.get("ids"), c.get("mode"), c.get("level_db"), c.get("dim"), c.get("dim_db"))
+                plan = core.set_solo(c.get("ids"), c.get("mode"), c.get("level_db"), c.get("dim"), c.get("dim_db"),
+                                     c.get("limit_db"))
             return {"ok": True, **plan}
         if cmd == "monitor":                  # the classic bench console's listen selector
             sc = c.get("source_ch", "listen")
@@ -751,6 +754,137 @@ class BenchApp:
         self.quit_ev.set()
         return {"ok": True, "device": " with ".join(what)}
 
+    # ------------------------------------------------------------ engine settings and the I/O patch
+    PATCH_KEYS = ("talker_in", "talker_out", "names", "probe_in", "probe_out", "heartbeat_out", "pgm_in", "monitor",
+                  "listen_in")
+    ENGINE_KEYS = ("device", "io_buffer", "rrcs_host", "rrcs_port")
+
+    def config(self):
+        from . import launcher as L
+        saved = L.load_config()
+        return {"saved": saved, "defaults": {k: L.DEFAULTS[k] for k in self.PATCH_KEYS + self.ENGINE_KEYS if k in L.DEFAULTS},
+                "running": {"device": self.a.device, "io_buffer": self.a.io_buffer or 0, "simulate": self.a.simulate,
+                            **{k: getattr(self.a, k) for k in self.PATCH_KEYS}},
+                "io_buffers": list(self.IO_BUFFERS)}
+
+    def reconfigure(self, changes):
+        """Checks a change to the I/O patch or the engine settings, saves it and restarts the engine
+        with it. Sotto starts again disarmed, so the frame falls back to dry until someone re-arms."""
+        from . import launcher as L
+        allowed = set(self.PATCH_KEYS + self.ENGINE_KEYS)
+        bad = [k for k in changes if k not in allowed]
+        if bad:
+            return {"ok": False, "error": f"Unknown settings: {', '.join(bad)}"}
+        cfg = L.load_config()
+        cfg.update({k: ("" if v is None else str(v).strip()) for k, v in changes.items()})
+        # Start from this run's own options (port, folder, processing, ...) and change only what
+        # the console changed, using the saved setup choices for the patch and the engine.
+        cur = argv_of(self.a)
+        new = {"--talker-in": cfg["talker_in"], "--talker-out": cfg["talker_out"], "--names": cfg.get("names", ""),
+               "--probe-in": cfg["probe_in"], "--probe-out": cfg["probe_out"], "--heartbeat-out": cfg["heartbeat_out"],
+               "--pgm-in": cfg.get("pgm_in", ""), "--monitor": cfg.get("monitor", ""), "--listen-in": cfg.get("listen_in", "")}
+        if not self.a.simulate:
+            new.update({"--device": cfg.get("device", ""), "--io-buffer": str(cfg.get("io_buffer") or 0),
+                        "--rrcs-host": cfg.get("rrcs_host", ""), "--rrcs-port": str(cfg.get("rrcs_port") or 8193)})
+        argv = []
+        skip = False
+        for k, x in enumerate(cur):
+            if skip:
+                skip = False
+                continue
+            if x in new:
+                skip = True
+                continue
+            argv.append(x)
+        for opt, val in new.items():
+            if val not in (None, ""):
+                argv += [opt, str(val)]
+        try:
+            a2 = parse_args(argv)
+            c2 = config_from_args(a2)
+        except SystemExit as e:
+            return {"ok": False, "error": str(e) or "Those channel settings don't work together."}
+        except (ValueError, IndexError):
+            return {"ok": False, "error": "Channels are numbers, ranges like 1-4, or lists like 63,64."}
+        clash = channel_clashes(c2)
+        if clash:
+            return {"ok": False, "error": clash}
+        n_in = max(c2.talker_in + c2.probe_in + [c for c in (c2.listen_in, c2.pgm_in) if c is not None]) + 1
+        n_out = max(c2.talker_out + [c2.probe_out, c2.heartbeat_out] + c2.monitor_out) + 1
+        if not a2.simulate:
+            devs = device_list()
+            d = next((x for x in devs.get("devices", []) if str(x["index"]) == str(a2.device)), None)
+            if d is None:
+                return {"ok": False, "error": "That soundcard isn't there. Press Look again."}
+            if d["inputs"] < n_in or d["outputs"] < n_out:
+                return {"ok": False, "error": f"{d['name']} has {d['inputs']} inputs and {d['outputs']} outputs; "
+                                              f"this patch needs {n_in} in and {n_out} out."}
+        L.save_config(cfg)
+        self.log(Event(self.core.t, "engine_change", "restarting with new settings: " +
+                       ", ".join(f"{k}={v}" for k, v in changes.items()), "console"))
+        self.restart_argv = argv
+        self.quit_ev.set()
+        return {"ok": True}
+
+    def back_to_setup(self):
+        self.log(Event(self.core.t, "to_setup", "engine stopped: back to the setup page", "console"))
+        self.to_setup = True
+        self.quit_ev.set()
+        return {"ok": True}
+
+    def check_device(self):
+        """A real check of the soundcard and the patch, for the console's Check device button."""
+        out = []
+        st = self.core.state()
+        e = getattr(self, "engine_info", None) or {}
+        if e.get("simulate"):
+            out.append(["ok", "Running on the simulated frame (no soundcard)."])
+        else:
+            d = next((x for x in device_list().get("devices", []) if str(x["index"]) == str(self.a.device)), None)
+            if d is None:
+                out.append(["err", "The soundcard isn't in the device list any more."])
+            else:
+                ok = d["inputs"] >= e.get("n_in", 0) and d["outputs"] >= e.get("n_out", 0)
+                out.append(["ok" if ok else "err", f"{d['name']}: {d['inputs']} inputs and {d['outputs']} outputs "
+                            f"({e.get('n_in')} in and {e.get('n_out')} out in use)."])
+            ca = self.coreaudio or {}
+            if ca:
+                rate = ca.get("rate")
+                out.append(["ok" if rate == 48000 else "err",
+                            f"Sample rate {rate / 1000 if rate else '?'} kHz" + ("." if rate == 48000 else
+                            ": set Dante Virtual Soundcard to 48 kHz in Dante Controller (the speech model needs it).")])
+                out.append(["ok", f"Core Audio buffer {ca.get('buffer_frames')} samples (allowed {ca.get('buffer_range')}); "
+                            f"Core Audio adds {ca.get('total_ms', {}).get('in')} ms in and {ca.get('total_ms', {}).get('out')} ms out."])
+                if ca.get("running_elsewhere"):
+                    out.append(["warn", "Another app is also using this soundcard; it may change its buffer."])
+            if sys.platform == "darwin":
+                perm = macos.mic_permission()
+                out.append(["ok" if perm == "allowed" else "err",
+                            "Microphone permission: " + {"allowed": "allowed.", "denied": "denied. Allow Sotto Bench in System Settings, Privacy & Security, Microphone.",
+                                                         "not asked": "not asked yet (macOS asks when the soundcard opens).",
+                                                         "restricted": "restricted by this Mac's management profile."}.get(perm, perm)])
+        g = (self.gaps_last or self.gaps)
+        out.append(["ok" if not st.get("xruns") else "warn", f"{st.get('xruns', 0)} dropouts reported by the soundcard; "
+                    f"blocks arrive {round(g['min_ms'], 1) if g['n'] else '?'} to {round(g['max_ms'], 1)} ms apart"
+                    f"{', ' + str(g['bunched']) + ' bunched' if g['bunched'] else ''}."])
+        pr = st.get("probes") or []
+        pok = pr and all(p["ok"] for p in pr)
+        out.append(["ok" if pok else "err", "PROBE comes back on IN " + ", ".join(str(c + 1) for c in self.cfg.probe_in) +
+                    (" in time." if pok else f": missing. Patch OUT {self.cfg.probe_out + 1} to IN {self.cfg.probe_in[0] + 1} "
+                     "through the frame (or loop it in Dante Controller for a bench test).")])
+        lv = st.get("levels_in") or []
+        if self.cfg.pgm_in is not None and len(lv) > self.cfg.pgm_in:
+            p = lv[self.cfg.pgm_in]
+            out.append(["ok" if p > -60 else "warn", f"PGM on IN {self.cfg.pgm_in + 1} at {p:.0f} dBFS" +
+                        ("." if p > -60 else ": nothing there. Route the programme feed to it.")])
+        talk = [lv[c] for c in self.cfg.talker_in if c < len(lv)]
+        if talk:
+            live = sum(1 for v in talk if v > -70)
+            out.append(["ok" if live else "warn", f"{live} of {len(talk)} talker inputs have signal" +
+                        ("." if live else ": route mics to them, or play a test source.")])
+        out.append(["ok" if not getattr(self, "callback_errors", 0) else "err", f"{self.callback_errors} audio errors."])
+        return {"ok": True, "checks": out}
+
     # ------------------------------------------------------------ test sources, phones on this computer
     def test_source(self, b):
         if self.core.arm.armed:
@@ -868,6 +1002,10 @@ class BenchApp:
                     self._send(200, json.dumps(device_list()).encode(), "application/json")
                 elif self.path == "/api/testsrc":
                     self._send(200, _json(app.tests.state()).encode(), "application/json")
+                elif self.path == "/api/config":
+                    self._send(200, _json(app.config()).encode(), "application/json")
+                elif self.path == "/api/check":
+                    self._send(200, _json(app.check_device()).encode(), "application/json")
                 elif self.path.startswith("/api/diagnostics"):
                     # The speed test loads the computer for ~15 s: never while armed (it could make
                     # processing late and disarm Sotto mid-show).
@@ -914,6 +1052,10 @@ class BenchApp:
                     res = {"ok": True}
                 elif self.path == "/api/testsrc":
                     res = app.test_source(body if isinstance(body, dict) else {})
+                elif self.path == "/api/config":
+                    res = app.reconfigure(body if isinstance(body, dict) else {})
+                elif self.path == "/api/setup":
+                    res = app.back_to_setup()
                 elif self.path == "/api/phones":
                     res = app.phones_local((body or {}).get("device") if isinstance(body, dict) else None)
                 elif self.path == "/api/engine":
@@ -930,6 +1072,22 @@ class BenchApp:
 def _json(obj):
     """JSON for the console; numpy numbers become plain numbers."""
     return json.dumps(obj, default=lambda o: o.item() if hasattr(o, "item") else str(o))
+
+
+def argv_of(a):
+    """The command line that gives these parsed options (to restart with a few of them changed)."""
+    out = []
+    for act in build_parser()._actions:
+        if not act.option_strings or act.dest == "help":
+            continue
+        v = getattr(a, act.dest, None)
+        opt = act.option_strings[-1]
+        if act.nargs == 0:                               # a flag
+            if v:
+                out.append(opt)
+        elif v not in (None, ""):
+            out += [opt, str(v)]
+    return out
 
 
 def channel_clashes(cfg):

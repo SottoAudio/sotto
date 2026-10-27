@@ -112,6 +112,7 @@ textarea{width:100%;resize:vertical;min-height:70px}
 .tsrc{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) minmax(0,1fr) auto;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}
 .tsrc:last-child{border-bottom:0}
 .tsrc .now{grid-column:1/-1;font-size:12px;color:var(--muted)}
+.pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}.pgrid label{display:flex;flex-direction:column;gap:4px;font-size:13px}
 .tsrc label{display:flex;gap:8px;align-items:center;margin:0}.tsrc label input{flex:1;min-width:80px}
 @media (max-width:640px){.tsrc{grid-template-columns:1fr 1fr}}
 .strip .num{font:600 12.5px/1 var(--f-mono);color:var(--muted)}
@@ -352,6 +353,7 @@ table.t tr.unused td{color:var(--muted)}
       <span class="stat" id="stEngine"><i class="dotl"></i>Engine <b></b></span>
       <span class="stat" id="stRrcs"><i class="dotl"></i>RRCS <b></b></span>
       <span class="clock" id="clock"></span>
+      <button class="btn sm" id="setupBtn" data-app-only hidden title="Stop the engine and go back to the setup page">Setup</button>
       <button class="btn sm" id="diagBtn" data-app-only hidden title="Download a diagnostics file to send for troubleshooting">Diagnostics</button>
       <button class="btn sm" id="quitBtn" data-app-only hidden>Quit</button>
     </div>
@@ -538,7 +540,7 @@ table.t tr.unused td{color:var(--muted)}
       engine: { driver: 'coreaudio', device: 'dvs', rate: 48000, buffer: 128 },
       rrcs: { host: '10.0.0.10', port: 8193, armed: 'ARMED', armReq: 'ARM_REQ', cleanOk: 'CLEAN_OK', hold: 400, probe: 200 },
       macros: defaultMacros(),
-      phones: { mode: 'clicked', level: 0, dim: -20 },
+      phones: { mode: 'clicked', level: 0, dim: -20, limit: -3 },
     };
   }
   const KEY = 'sotto.console.project.v1';
@@ -1309,6 +1311,44 @@ table.t tr.unused td{color:var(--muted)}
     return row('Phones on this Mac', `Also play the phones bus on this computer's headphones or speakers, for listening without a Dante headphone device. The two clocks differ, so now and then a few samples are skipped or repeated: fine for listening, not for show audio. ${lp.name ? `Playing on ${esc(lp.name)}, ${lp.buffered_ms} ms buffered${lp.skips || lp.gaps ? `, ${lp.skips} catch-ups, ${lp.gaps} gaps` : ''}.` : ''}`,
       `<select id="f-lphones">${opts.map(([v, l]) => `<option value="${v}"${String(v) === String(cur) ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select><button class="btn sm" data-act="lphones">Apply</button>`);
   }
+  const LIMITS = [[0, '0 dBFS'], [-3, '−3 dBFS'], [-6, '−6 dBFS'], [-10, '−10 dBFS'], [-12, '−12 dBFS'], [-18, '−18 dBFS']];
+  function rateRow(e) {
+    const ca = e.coreaudio, rate = (ca && ca.rate) || e.fs;
+    const ok = rate === 48000;
+    return row('Sample rate', 'Set by the Dante network: change it for Dante Virtual Soundcard in Dante Controller (Device Config), not here. Sotto follows it; the speech model needs 48 kHz.',
+      `<span class="fixed">${rate / 1000} kHz</span>${ok ? '<span class="pill ok">48 kHz</span>' : '<span class="pill err">set 48 kHz in Dante Controller</span>'}`);
+  }
+  // ---------------------------------------------------------------- I/O patch (app)
+  const PATCH = [
+    ['talker_in', 'Talker inputs', 'e.g. 1-4'], ['talker_out', 'Talker returns (clean)', 'e.g. 1-4'], ['names', 'Talker names', 'comma separated'],
+    ['pgm_in', 'PGM input (echo reference)', '62'], ['probe_in', 'PROBE return input(s)', '61'], ['probe_out', 'PROBE output', '62'],
+    ['heartbeat_out', 'HEARTBEAT output (to the VOX)', '61'], ['monitor', 'Headphone outputs (phones bus)', '63,64'], ['listen_in', 'Listener feed input (optional, for timing)', 'e.g. 63'],
+  ];
+  function loadConfig() {
+    if (UI.cfgLoading) return;
+    UI.cfgLoading = true;
+    api('/api/config').then(r => { UI.cfg = r; UI.patch = { ...r.saved }; }).catch(() => { UI.cfg = { error: 'Sotto Bench did not answer' }; })
+      .finally(() => { UI.cfgLoading = false; if (UI.sec === 'channels' && !$('#pSet').hidden) renderSet(); });
+  }
+  function secPatchApp() {
+    if (!UI.cfg) { loadConfig(); return box('I/O patch', 'Reading the patch…', ''); }
+    if (UI.cfg.error) return box('I/O patch', esc(UI.cfg.error), '');
+    const pt = UI.patch, d = UI.cfg.defaults, run = UI.cfg.running;
+    const changed = PATCH.some(([k]) => String(pt[k] ?? '') !== String(UI.cfg.saved[k] ?? ''));
+    return box('I/O patch', 'Which soundcard channel does each job, counted from 1 as in Dante Controller. Ranges like 1-4 and lists like 63,64 both work. Applying checks for clashes and that the soundcard has the channels, then restarts the engine: HEARTBEAT stops, the frame puts listeners on dry, and Sotto starts again disarmed.',
+      `<div class="pgrid">${PATCH.map(([k, l, ph]) => `<label>${l}<input type="text" data-pt="${k}" value="${esc(pt[k] ?? '')}" placeholder="${esc(ph)}"><small class="muted">default ${esc(d[k] ?? '–') || '–'}${String(run[k] ?? '') !== String(pt[k] ?? '') && run[k] != null ? ` · running ${esc(run[k] ?? '')}` : ''}</small></label>`).join('')}</div>` +
+      (UI.patchErr ? `<p class="note warn">${esc(UI.patchErr)}</p>` : '') +
+      `<div class="row" style="margin-top:10px"><button class="btn sm" data-act="patchapply"${changed ? '' : ' disabled'}>Apply (restarts the engine)</button><button class="btn sm" data-act="patchdefaults">Back to defaults</button><button class="btn sm" data-act="patchundo"${changed ? '' : ' disabled'}>Undo changes</button></div>`);
+  }
+  async function toSetup() {
+    const r = await api('/api/setup', {}).catch(() => null);
+    if (!r || !r.ok) { toast('Sotto Bench did not answer'); return; }
+    toast('Stopping the engine: back to setup…');
+    for (let i = 0; i < 60; i++) {
+      await new Promise(res => setTimeout(res, 500));
+      try { const t = await (await fetch('/', { cache: 'no-store' })).text(); if (t.includes('Sotto Bench Setup')) { location.href = '/'; return; } } catch (e) {}
+    }
+  }
   function procNote() {
     const pr = APP && APP.processing;
     if (!pr || !pr.on) return `Processing is off${pr && pr.why ? ': ' + pr.why : ''}. The talkers pass straight through.`;
@@ -1324,8 +1364,8 @@ table.t tr.unused td{color:var(--muted)}
     const m = {
       processing: procNote(),
       operators: 'Changes apply to the running talkers straight away. Each insert\'s settings are saved in its profile.',
-      channels: 'The number of talkers and the channel numbers come from the setup page. Quit and open Sotto Bench again to change them.',
-      riedel: 'Sotto Bench uses the RRCS address from its setup page. Changes here are saved for the full app.',
+      channels: 'Set which soundcard channels Sotto uses in the I/O patch below. The talker list underneath is for names, operators and processing per talker.',
+      riedel: 'The Riedel frame\'s RRCS IP address and port are on the setup page: Setup (top right) stops the engine and takes you there. Changes here are saved for the full app.',
     }[sec];
     return m ? `<div class="appnote">${m}</div>` : '';
   }
@@ -1341,8 +1381,13 @@ table.t tr.unused td{color:var(--muted)}
         coreAudioRow(e) +
         (e.app_nap ? row('App Nap', 'macOS slows down apps with no window. Sotto turns this off while it runs.', `<span class="fixed">${esc(e.app_nap)}</span>`) : '') +
         row('Channels open', 'Inputs and outputs Sotto Bench asked the device for.', `<span class="fixed">${e.n_in} in / ${e.n_out} out</span>`) +
-        row('Sample rate', '', `<span class="fixed">${e.fs / 1000} kHz</span>`) +
-        row('Block', '', `<span class="fixed">${e.block} samples (${(1000 * e.block / e.fs).toFixed(1)} ms)</span>`) +
+        rateRow(e) +
+        row('Block', 'Sotto\'s processing block.', `<span class="fixed">${e.block} samples (${(1000 * e.block / e.fs).toFixed(1)} ms)</span>`) +
+        row('Phones bus dim', 'How much the Dim button takes off the headphones.', sel('phones.dim', [[-10, '−10 dB'], [-20, '−20 dB'], [-30, '−30 dB']], P.phones.dim, 'data-t="n"')) +
+        row('Phones bus limiter', 'Protects your ears when several solos add up: nothing on the phones goes above this.', sel('phones.limit', LIMITS, P.phones.limit ?? -3, 'data-t="n"')) +
+        row('Check the device', 'Checks the soundcard, the sample rate, Core Audio, microphone permission, PROBE, PGM and the talker inputs, without arming.', `<button class="btn sm" data-act="appcheck">Check device</button>`) +
+        (UI.appCheck ? `<ul class="results">${UI.appCheck.map(([c, t]) => `<li class="${c}"><span class="i">${c === 'ok' ? '✓' : c === 'warn' ? '!' : '✕'}</span><span>${esc(t)}</span></li>`).join('')}</ul>` : '') +
+        row('Setup page', 'Stops the engine and goes back to the setup page (soundcard, channels, the Riedel frame\'s IP and port). HEARTBEAT stops, so the frame puts every listener on dry. Everything you set is kept.', '<button class="btn sm" data-act="tosetup">Back to setup</button>') +
         row('Latency', 'Reported by the audio driver.', `<span class="fixed">${esc(e.latency_note || 'not reported')}</span>`) +
         row('Recordings', 'Where this run is saved.', `<span class="fixed">${esc(APP.folder || '')}</span>`) +
         row('Diagnostics', 'One file with everything needed to troubleshoot this computer: the Mac, its audio devices, these settings, timings, a speed test, the log and any crash records. Send it to whoever is helping you. The speed test is skipped while Sotto is armed, so it can\'t disturb a show.', '<button class="btn sm" data-act="diag">Download diagnostics</button>') +
@@ -1358,7 +1403,7 @@ table.t tr.unused td{color:var(--muted)}
       row('Sample rate', 'Must match the Dante or AES67 network. Set it in Dante Controller (or the VAD settings); Sotto follows it. 64 channels needs 48 kHz or 44.1 kHz.', sel('engine.rate', [[48000, '48 kHz'], [44100, '44.1 kHz'], [96000, '96 kHz (DVS limit: 32 channels)', true]], e.rate, 'data-t="n"')) +
       row('Buffer', 'Smaller is lower latency but needs more headroom. Start at 128 and only go lower after a full-channel test.', `<span class="seg">${[32, 64, 128, 256, 512].map(v => `<button data-act="buffer" data-v="${v}" aria-pressed="${e.buffer === v}">${v}</button>`).join('')}</span><span class="muted mono">${(e.buffer / (e.rate / 1000)).toFixed(2)} ms</span>`) +
       row('Phones bus dim', 'How much the Dim button takes off the headphones.', sel('phones.dim', [[-10, '−10 dB'], [-20, '−20 dB'], [-30, '−30 dB']], P.phones.dim, 'data-t="n"')) +
-      row('Phones bus limiter', 'Protects your ears when several solos add up.', '<span class="fixed">−3 dBFS, fixed</span>') +
+      row('Phones bus limiter', 'Protects your ears when several solos add up: nothing on the phones goes above this.', sel('phones.limit', LIMITS, P.phones.limit ?? -3, 'data-t="n"')) +
       row('Check the device', 'Runs the start-up checks without arming. Simulated in this preview.', `<button class="btn sm" data-act="check">Check device</button>`) +
       (res ? `<ul class="results">${res.map(([c, t]) => `<li class="${c}"><span class="i">${c === 'ok' ? '✓' : c === 'warn' ? '!' : '✕'}</span><span>${t}</span></li>`).join('')}</ul>` : '')) +
       box('Setting up Dante Virtual Soundcard', '',
@@ -1553,7 +1598,7 @@ table.t tr.unused td{color:var(--muted)}
   });
   function renderSet() {
     renderRail();
-    const f = { tests: secTests, project: secProject, channels: secChannels, processing: secProcessing, engine: secEngine, riedel: secRiedel, macros: secMacros, operators: APP ? secOperatorsApp : secOperators, plugins: APP ? secPluginsApp : secPlugins }[UI.sec];
+    const f = { tests: secTests, project: secProject, channels: () => (APP ? secPatchApp() : '') + secChannels(), processing: secProcessing, engine: secEngine, riedel: secRiedel, macros: secMacros, operators: APP ? secOperatorsApp : secOperators, plugins: APP ? secPluginsApp : secPlugins }[UI.sec];
     const y = window.scrollY, ae = document.activeElement && document.activeElement.id;
     $('#setBody').innerHTML = (APP ? appNote(UI.sec) : '') + f();
     if (ae && document.getElementById(ae)) document.getElementById(ae).focus({ preventScroll: true });
@@ -1582,6 +1627,7 @@ table.t tr.unused td{color:var(--muted)}
     P.count = clamp(Math.round(+P.count || 1), 1, 60);
     if (el.type === 'range') { const o = el.parentElement.querySelector('output'); if (o) o.textContent = `${v} ${o.textContent.split(' ').pop()}`; }
     if (el.dataset.b.startsWith('engine')) UI.check = null;
+    if (el.dataset.b.startsWith('phones.')) soloChanged();             // dim and limiter apply at once
     if (/^operators\.\d+\.ins\.plugin$/.test(el.dataset.b)) {
       const o = P.operators[+el.dataset.b.split('.')[1]];
       if (!v) o.ins.on = false;
@@ -1593,6 +1639,8 @@ table.t tr.unused td{color:var(--muted)}
   }
   $('#setBody').addEventListener('input', e => { const el = e.target.closest('[data-b]'); if (el && (el.type === 'text' || el.tagName === 'TEXTAREA' || el.type === 'range')) bindEl(el, false); });
   $('#setBody').addEventListener('input', e => {
+    const pt = e.target.closest('[data-pt]');
+    if (pt) { UI.patch[pt.dataset.pt] = pt.value; const b = $('[data-act="patchapply"]'), u = $('[data-act="patchundo"]'); const ch = PATCH.some(([k]) => String(UI.patch[k] ?? '') !== String(UI.cfg.saved[k] ?? '')); if (b) b.disabled = !ch; if (u) u.disabled = !ch; return; }
     const t = e.target.closest('[data-tf]'); if (!t) return;
     const f = UI.tf[t.dataset.ch]; const k = t.dataset.tf;
     if (k === 'level' || k === 'bleed') { f[k] = +t.value; const lab = t.nextElementSibling; if (lab) lab.textContent = k === 'level' ? `${f.level} dBFS` : `${f.bleed > 0 ? '+' : ''}${f.bleed} dB`; }
@@ -1614,6 +1662,20 @@ table.t tr.unused td{color:var(--muted)}
       case 'driver': P.engine.driver = v; if (!dev().drivers.includes(v)) P.engine.device = 'dvs'; UI.check = null; break;
       case 'buffer': P.engine.buffer = +v; UI.check = null; break;
       case 'devrefresh': UI.devs = null; UI.devConfirm = false; break;
+      case 'appcheck': UI.appCheck = [['ok', 'Checking…']]; api('/api/check').then(r => { UI.appCheck = r.checks; renderSet(); }).catch(() => { UI.appCheck = [['err', 'Sotto Bench did not answer']]; renderSet(); }); break;
+      case 'tosetup': if (!UI.setupConfirm) { UI.setupConfirm = true; toast('Press Back to setup again to stop the engine'); setTimeout(() => { UI.setupConfirm = false; }, 4000); return; } UI.setupConfirm = false; toSetup(); return;
+      case 'patchdefaults': UI.patch = { ...UI.patch, ...Object.fromEntries(PATCH.map(([k]) => [k, UI.cfg.defaults[k] ?? ''])) }; UI.patchErr = ''; break;
+      case 'patchundo': UI.patch = { ...UI.cfg.saved }; UI.patchErr = ''; break;
+      case 'patchapply': {
+        const changes = Object.fromEntries(PATCH.filter(([k]) => String(UI.patch[k] ?? '') !== String(UI.cfg.saved[k] ?? '')).map(([k]) => [k, UI.patch[k] ?? '']));
+        UI.patchErr = '';
+        api('/api/config', changes).then(r => {
+          if (!r.ok) { UI.patchErr = r.error; renderSet(); return; }
+          UI.restarting = 'the new patch'; toast('Restarting the engine with the new patch…');
+          (async () => { for (let i = 0; i < 80; i++) { await new Promise(res => setTimeout(res, 500)); try { const st = await api('/api/state'); if (st.t < 30) { location.reload(); return; } } catch (e) {} } toast('Sotto Bench did not come back. Open it again.'); })();
+        }).catch(() => { UI.patchErr = 'Sotto Bench did not answer'; renderSet(); });
+        return;
+      }
       case 'tplay': { const f = UI.tf[v]; testCmd(f.kind === 'off' ? { channel: +v, kind: 'off' } : { channel: +v, kind: f.kind === 'speech' && f.file ? 'file' : f.kind, file: f.file || null, level_db: f.level, bleed_db: f.bleed }); return; }
       case 'talloff': UI.tf = {}; testCmd({ all_off: true }); return;
       case 'tupload': {
@@ -1694,7 +1756,7 @@ table.t tr.unused td{color:var(--muted)}
   const api = (path, body) => fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : { cache: 'no-store' }).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
   const appCmd = body => api('/cmd', { source: 'console', ...body }).catch(() => ({ ok: false, error: 'Sotto Bench is not answering' }));
   function soloChanged() {
-    if (APP) appCmd({ cmd: 'solo', ids: [...S.solo], mode: P.phones.mode, level_db: P.phones.level, dim: S.dim, dim_db: P.phones.dim });
+    if (APP) appCmd({ cmd: 'solo', ids: [...S.solo], mode: P.phones.mode, level_db: P.phones.level, dim: S.dim, dim_db: P.phones.dim, limit_db: P.phones.limit ?? -3 });
   }
   const EVENT_WORDS = { armed: 'Armed', disarmed: 'Disarmed', arm_refused: 'Arm refused', talker_armed: 'Re-armed', talker_tripped: 'Tripped', fault_injected: 'Fault', fault_ended: 'Fault ended', faults_cleared: 'Faults cleared', started: 'Sotto Bench started', stopped: 'Stopped', recording_started: 'Recording to', recording_stopped: 'Recording stopped', rrcs_armed_set: 'RRCS', rrcs_error: 'RRCS problem', rrcs_set: 'RRCS', callback_error: 'Audio error', mark: 'Mark', solo: 'Phones bus' };
   function describe(kind, detail) {
@@ -1802,6 +1864,10 @@ table.t tr.unused td{color:var(--muted)}
     UI.diagBusy = false;
   }
   $('#diagBtn').onclick = () => downloadDiagnostics();
+  $('#setupBtn').onclick = () => {
+    if (!UI.setupConfirm) { UI.setupConfirm = true; $('#setupBtn').textContent = 'Stop engine?'; toast('Press again to stop the engine and go to the setup page. The frame goes to dry.'); setTimeout(() => { UI.setupConfirm = false; $('#setupBtn').textContent = 'Setup'; }, 4000); return; }
+    UI.setupConfirm = false; $('#setupBtn').textContent = 'Setup'; toSetup();
+  };
   $('#quitBtn').onclick = async () => {
     try { await api('/quit', {}); } catch (e) {}
     document.body.innerHTML = '<p style="padding:24px;font:15px var(--f-body)">Sotto Bench has quit. You can close this tab.</p>';

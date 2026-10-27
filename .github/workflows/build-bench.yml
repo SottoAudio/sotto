@@ -168,6 +168,12 @@ jobs:
           lv = st["levels_in"][1]
           assert abs(lv + 20) < 1.0, lv
           assert post("/api/testsrc", {"all_off": True})["ok"]
+          chk = json.load(urllib.request.urlopen("http://127.0.0.1:8790/api/check", timeout=30))
+          assert chk["ok"] and chk["checks"], chk
+          cfg = json.load(urllib.request.urlopen("http://127.0.0.1:8790/api/config", timeout=10))
+          assert cfg["defaults"]["pgm_in"] == "62", cfg
+          assert not post("/api/config", {"pgm_in": "1"})["ok"]            # clashes with talker 1: refused
+          print("device check:", [c[1] for c in chk["checks"]][:3])
           print("test tone on input 2 at", lv, "dBFS")
           PY
           curl -sf -X POST http://127.0.0.1:8790/quit

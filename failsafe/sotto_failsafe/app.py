@@ -355,8 +355,17 @@ class BenchApp:
         settings, labels = processing.settings_from_project(self.project, names)
         model = processing.model_dir()
         LOG.info("Processing: speech model %s, plugin host %s", model, getattr(self.vst3, "path", None))
-        self.proc = processing.Processor(labels, settings, model=model, vst3_lib=self.vst3,
-                                         track_delay=not self.a.simulate)
+        workers = self.a.workers
+        if str(workers) == "0":                         # the old way: a thread in this process
+            self.proc = processing.Processor(labels, settings, model=model, vst3_lib=self.vst3,
+                                             track_delay=not self.a.simulate)
+        else:
+            # The audio engine stays in this process; the processing runs in worker processes, so
+            # the two never compete for a core or for Python's lock, and a crash in one can't
+            # freeze the other.
+            from . import workers as W
+            n = None if workers in (None, "", "auto") else int(workers)
+            self.proc = W.Pool(labels, settings, model=model, workers=n, track_delay=not self.a.simulate)
         self.core.extra_health = self.proc.health
         self.log(Event(0.0, "processing_on", f"speech model {'loaded' if model else 'not found: echo removal only'}; "
                        f"plugin inserts {'available' if self.vst3 else 'not available'}", "auto"))
@@ -377,66 +386,23 @@ class BenchApp:
             return {"ok": True, "applied": False, "why": self.proc_note}
         P = self.processing
         settings, labels = P.settings_from_project(project, self.cfg.talker_names)
-        plugins, errors = [], []
-        for i, (c, s) in enumerate(zip(self.proc.chains, settings)):
-            want = s.insert.get("path") or ""
-            have = getattr(c.plugin, "path", "") if c.plugin is not None else ""
-            if want == have:
-                plugins.append((c.plugin, getattr(c, "insert_name", ""), False))
-                continue
-            if not want:
-                plugins.append((None, "", True))
-                c.insert_error = None
-                continue
-            if self.vst3 is None:
-                c.insert_error = "plugin inserts aren't available in this build"
-                plugins.append((None, "", True))
-                errors.append(c.insert_error)
-                continue
-            try:
-                from .vst3 import Plugin
-                plug = Plugin(self.vst3, want, block=480, state=P.unb64(s.insert.get("state", "")))
-                info = plug.info()
-                name = f"{info['vendor']} {info['name']}".strip()
-                c.insert_error = None
-                plugins.append((plug, name, True))
-                self.log(Event(self.core.t, "insert_loaded", f"{labels[i]}: {name}, latency {plug.latency} samples", "console"))
-            except Exception as e:
-                LOG.exception("Insert %s could not be loaded for %s", want, labels[i])
-                c.insert_error = str(e)
-                errors.append(f"{labels[i]}: {e}")
-                plugins.append((None, "", True))
-                self.log(Event(self.core.t, "insert_error", f"{labels[i]}: {e}", "console"))
-        for c, nm in zip(self.proc.chains, labels):
-            c.name = nm
-        self.proc.configure(settings, plugins)
-        return {"ok": True, "applied": True, "errors": errors}
+        res = self.proc.apply(settings, labels)
+        for kind, detail in res.get("events", []):
+            self.log(Event(self.core.t, kind, detail, "console"))
+        return {"ok": True, "applied": True, "errors": res.get("errors", [])}
 
     def insert_info(self, talker):
-        if self.proc is None or not 0 <= talker < len(self.proc.chains):
+        if self.proc is None or not 0 <= talker < self.proc.n:
             return {"loaded": False, "error": self.proc_note or "no such talker"}
-        c = self.proc.chains[talker]
-        plug = c.plugin
-        if plug is None:
-            # a just-loaded plugin is handed to the worker on its next block
-            pend = self.proc._pending
-            if pend and pend[1][talker][0] is not None:
-                plug = pend[1][talker][0]
-        if plug is None:
-            return {"loaded": False, "error": c.insert_error}
-        info = plug.info()
-        return {"loaded": True, "path": plug.path, "latency": plug.latency, **info}
+        return self.proc.insert_info(talker)
 
     def plugin_param(self, talker, pid, norm):
-        if self.proc is None or not 0 <= talker < len(self.proc.chains):
+        if self.proc is None or not 0 <= talker < self.proc.n:
             return {"ok": False, "error": "no such talker"}
-        c = self.proc.chains[talker]
-        plug = c.plugin or (self.proc._pending[1][talker][0] if self.proc._pending else None)
-        if plug is None:
-            return {"ok": False, "error": "no insert loaded on this talker"}
-        plug.set_param(pid, norm)
-        self._plugin_states_dirty = True
-        return {"ok": True, "value": plug.param_text(pid, norm)}
+        r = self.proc.plugin_param(talker, pid, norm)
+        if r.get("ok"):
+            self._plugin_states_dirty = True
+        return r
 
     def _save_plugin_states(self, force=False):
         """Copies each running insert's settings into its operator profile, at most every 2 s."""
@@ -449,19 +415,24 @@ class BenchApp:
         proj = self.project or {}
         ops = {o.get("id"): o for o in proj.get("operators", [])}
         chs = proj.get("ch", [])
-        for i, c in enumerate(self.proc.chains):
-            if c.plugin is None or i >= len(chs):
+        try:
+            states = self.proc.plugin_states()
+        except Exception:
+            LOG.exception("Could not read the inserts' settings")
+            return
+        for i, (path, data) in states.items():
+            if i >= len(chs):
                 continue
             op = ops.get(chs[i].get("op"))
             if not op:
                 continue
             ins = op.setdefault("ins", {})
-            ins.setdefault("vst3", {})[c.plugin.path] = self.processing.b64(c.plugin.get_state())
+            ins.setdefault("vst3", {})[path] = self.processing.b64(data)
         try:
             with open(self.project_path, "w") as f:
                 json.dump(proj, f)
         except OSError:
-            pass
+            LOG.exception("Could not save the project")
 
     def plugins(self, rescan=False):
         if self.plugins_cache is None or rescan:
@@ -690,7 +661,7 @@ class BenchApp:
                 elif self.path == "/bench":                  # classic bench console: recording and fault timing
                     self._send(200, bench_page, "text/html; charset=utf-8")
                 elif self.path in ("/state", "/api/state"):
-                    self._send(200, json.dumps(app.state()).encode(), "application/json")
+                    self._send(200, _json(app.state()).encode(), "application/json")
                 elif self.path == "/api/project":
                     self._send(200, json.dumps({"project": app.project, "path": app.project_path}).encode(), "application/json")
                 elif self.path.startswith("/api/plugins"):
@@ -713,7 +684,7 @@ class BenchApp:
                 elif self.path.startswith("/api/insert"):
                     from urllib.parse import urlparse, parse_qs
                     q = parse_qs(urlparse(self.path).query)
-                    self._send(200, json.dumps(app.insert_info(int(q.get("talker", ["0"])[0]))).encode(), "application/json")
+                    self._send(200, _json(app.insert_info(int(q.get("talker", ["0"])[0]))).encode(), "application/json")
                 else:
                     self._send(404, b"not found", "text/plain")
 
@@ -739,10 +710,15 @@ class BenchApp:
                     res = app.switch_device(body.get("device") if isinstance(body, dict) else None)
                 else:
                     return self._send(404, b"not found", "text/plain")
-                self._send(200, json.dumps(res).encode(), "application/json")
+                self._send(200, _json(res).encode(), "application/json")
 
         self.srv = ThreadingHTTPServer((self.a.host, self.a.port), H)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+
+def _json(obj):
+    """JSON for the console; numpy numbers become plain numbers."""
+    return json.dumps(obj, default=lambda o: o.item() if hasattr(o, "item") else str(o))
 
 
 def channel_clashes(cfg):
@@ -802,6 +778,8 @@ def build_parser():
     p.add_argument("--no-marker", action="store_true", help="don't add the marker tone to the talker returns")
     p.add_argument("--block", type=int, default=480, help="audio block in samples (480 = 10 ms; processing needs 480)")
     p.add_argument("--no-processing", action="store_true", help="pass the talkers straight through (no echo removal, model or inserts)")
+    p.add_argument("--workers", default="auto",
+                   help="processing worker processes: auto (up to 3 talkers each), a number, or 0 for a thread in this process")
     p.add_argument("--project", help="project file shared with the console (default: in the app's settings folder)")
     p.add_argument("--latency", default="low")
     p.add_argument("--record", action="store_true", help="record from the start")

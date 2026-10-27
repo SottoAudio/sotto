@@ -402,7 +402,9 @@ def _findings(app_state, sysinfo, devs, crash, speed):
         if speed and not speed.get("error") and pr.get("cpu_ms"):
             bg, ui = speed.get("background", {}), speed.get("user_interactive", {})
             if bg and ui and ui.get("cpu_total"):
-                live_per_talker = pr["cpu_ms"] / max(1, len(pr.get("talkers", [])) or 1)
+                wd = [w for w in (pr.get("worker_detail") or []) if w.get("cpu_ms")]
+                live_per_talker = (max(w["cpu_ms"] / max(1, len(w["talkers"])) for w in wd) if wd else
+                                   pr["cpu_ms"] / max(1, len(pr.get("talkers", [])) or 1))
                 ui_per_talker = ui["cpu_total"] / speed["talkers"]
                 bg_per_talker = bg["cpu_total"] / speed["talkers"]
                 if bg_per_talker > 1.3 * ui_per_talker and abs(live_per_talker - bg_per_talker) < abs(live_per_talker - ui_per_talker):

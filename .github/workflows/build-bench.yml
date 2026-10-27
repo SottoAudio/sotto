@@ -103,7 +103,7 @@ jobs:
                 --add-data "$MODELS${{ matrix.sep }}models/DeepFilterNet3_ll_stream_batch"
                 --add-binary "../$LIB${{ matrix.sep }}."
                 --add-binary "../$EXE${{ matrix.sep }}."
-                --hidden-import sotto_failsafe.processing --hidden-import sotto_failsafe.vst3
+                --hidden-import sotto_failsafe.processing --hidden-import sotto_failsafe.vst3 --hidden-import sotto_failsafe.workers --hidden-import sotto_failsafe.diagnostics
                 --hidden-import cct.aec --hidden-import cct.engine --hidden-import cct.stream_dfn --hidden-import cct.delay --hidden-import cct.denoise
                 --collect-all sounddevice --collect-all _sounddevice_data --collect-all onnxruntime)
           if [ "${{ matrix.name }}" = "mac" ]; then ARGS+=(--windowed --osx-bundle-identifier audio.sotto.bench); fi
@@ -151,7 +151,8 @@ jobs:
           for s in "What looks wrong" "Computer" "Speed test" "Busy threads" "Threads right now" "Log (last"; do
             grep -q "==== $s" diag.txt || fail "diagnostics file has no '$s' section"
           done
-          grep -q "Processing thread started" diag.txt || fail "the log in the diagnostics file is empty"
+          grep -q "Soundcard open" diag.txt || fail "the log in the diagnostics file is empty"
+          grep -qE "Processing in [0-9]+ worker process|Processing thread started" diag.txt || fail "the log doesn't say how processing runs"
           sed -n '/==== Speed test/,/^====/p' diag.txt | head -40
           curl -sf -X POST http://127.0.0.1:8790/quit
           sleep 2

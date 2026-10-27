@@ -252,11 +252,14 @@ class TalkerChain:
         self.ins_w = 1.0 if plugin is not None and self.s.insert.get("on") else 0.0
 
 
-class Processor:
-    """All talkers. exchange() is called from the audio callback; everything heavy runs on the
-    worker thread."""
+class Chains:
+    """The per-block work for a group of talkers: front ends, the batched speech model, back ends
+    and inserts. Used on a thread in Sotto's own process (Processor) and inside each processing
+    worker process (workers.py). Not thread-safe except where noted: process() runs on one thread;
+    configure(), apply(), insert_info(), plugin_param() and plugin_states() may be called from one
+    other thread."""
 
-    def __init__(self, names, settings, model=None, vst3_lib=None, track_delay=True, threads=1):
+    def __init__(self, names, settings, model=None, vst3_lib=None, threads=1):
         self.names = list(names)
         self.n = len(self.names)
         self.chains = [TalkerChain(nm, s) for nm, s in zip(self.names, settings)]
@@ -266,6 +269,209 @@ class Processor:
         self.dfn = BatchedDFN(model, self.n, threads=threads) if model else None
         self._dfn_rows = [False] * self.n
         self.lib = vst3_lib
+        self.proc_ms = 0.0
+        self.proc_ms_max = 0.0
+        self.stage_ms = {"front": 0.0, "model": 0.0, "back": 0.0}   # where the time goes
+        self.cpu_ms = 0.0                                # thread CPU time: if far below proc_ms, the
+        self.thread_note = ""                            # thread is waiting, not computing
+        self.faults = []                                 # (talker, why)
+        self.ref_db = -120.0
+        self._pending = None
+        self._lock = threading.Lock()
+        self._to_close = []
+
+    # ------------------------------------------------------------ settings (another thread)
+    def configure(self, settings, plugins):
+        """settings: list of Settings; plugins: list per talker of (Plugin or None, name, changed).
+        Applied at the start of the next block."""
+        with self._lock:
+            self._pending = (settings, plugins)
+
+    def apply(self, settings, labels):
+        """Loads any insert that changed (here, on the calling thread, so the audio never waits for
+        a plugin to load) and hands everything to the next block. Returns errors and events."""
+        plugins, errors, events = [], [], []
+        for i, (c, s) in enumerate(zip(self.chains, settings)):
+            want = s.insert.get("path") or ""
+            cur = self._plugin_of(i)
+            have = getattr(cur, "path", "") if cur is not None else ""
+            if want == have:
+                plugins.append((cur, getattr(c, "insert_name", ""), False))
+                continue
+            if not want:
+                plugins.append((None, "", True))
+                c.insert_error = None
+                continue
+            if self.lib is None:
+                c.insert_error = "plugin inserts aren't available in this build"
+                plugins.append((None, "", True))
+                errors.append(c.insert_error)
+                continue
+            try:
+                from .vst3 import Plugin
+                plug = Plugin(self.lib, want, block=HOP, state=unb64(s.insert.get("state", "")))
+                info = plug.info()
+                name = f"{info['vendor']} {info['name']}".strip()
+                c.insert_error = None
+                plugins.append((plug, name, True))
+                events.append(("insert_loaded", f"{labels[i]}: {name}, latency {plug.latency} samples"))
+                LOG.info("Insert loaded for %s: %s (%s), latency %d samples", labels[i], name, want, plug.latency)
+            except Exception as e:
+                LOG.exception("Insert %s could not be loaded for %s", want, labels[i])
+                c.insert_error = str(e)
+                errors.append(f"{labels[i]}: {e}")
+                plugins.append((None, "", True))
+                events.append(("insert_error", f"{labels[i]}: {e}"))
+        for c, nm in zip(self.chains, labels):
+            c.name = nm
+        self.configure(settings, plugins)
+        return {"errors": errors, "events": events}
+
+    def _plugin_of(self, k):
+        """The insert talker k has, or is about to get."""
+        c = self.chains[k]
+        with self._lock:
+            pend = self._pending
+        if pend and pend[1][k][2]:
+            return pend[1][k][0]
+        return c.plugin
+
+    def insert_info(self, k):
+        c = self.chains[k]
+        plug = self._plugin_of(k)
+        if plug is None:
+            return {"loaded": False, "error": c.insert_error}
+        return {"loaded": True, "path": plug.path, "latency": plug.latency, **plug.info()}
+
+    def plugin_param(self, k, pid, norm):
+        plug = self._plugin_of(k)
+        if plug is None:
+            return {"ok": False, "error": "no insert loaded on this talker"}
+        plug.set_param(pid, norm)
+        return {"ok": True, "value": plug.param_text(pid, norm)}
+
+    def plugin_states(self):
+        """{talker: (plugin path, saved settings)} for every running insert."""
+        out = {}
+        for k in range(self.n):
+            plug = self._plugin_of(k)
+            if plug is not None:
+                out[k] = (plug.path, plug.get_state())
+        return out
+
+    # ------------------------------------------------------------ the block
+    def _apply_pending(self):
+        with self._lock:
+            p, self._pending = self._pending, None
+        if not p:
+            return
+        settings, plugins = p
+        for c, s, pl in zip(self.chains, settings, plugins):
+            c.apply(s)
+            plug, name, changed = pl
+            if changed:
+                if c.plugin is not None:
+                    self._to_close.append(c.plugin)
+                c.set_plugin(plug, name)
+
+    def process(self, mics, ref):
+        """mics: (n, HOP), ref: (HOP,). Returns (outputs, dry), each (n, HOP), for this block's
+        input (the chain's own 10 ms delay included). Faults go to self.faults."""
+        t0, c0 = time.perf_counter(), time.thread_time()
+        self._apply_pending()
+        self.refs_ring.write(np.asarray(ref, dtype=np.float64)[None])
+        self.ref_db = _db(float(np.mean(ref * ref)))
+        fronts = []
+        t_front = time.perf_counter()
+        for i, c in enumerate(self.chains):
+            Z, versions, fault = c.front(np.asarray(mics[i], dtype=np.float64), self.refs_ring)
+            c.level_in = _db(float(np.mean(mics[i] ** 2)))
+            fronts.append((Z, versions))
+            if fault:
+                self.faults.append((i, fault))
+        t_model = time.perf_counter()
+        Zc = None
+        # The speech model is the expensive part: run it only while someone is on Full clean
+        # (or crossfading to or from it). Rows that rejoin start from a clean model state.
+        need = [c.s.mode == "full" or c.w[MODES.index("full")] > 0 for c in self.chains]
+        if self.dfn is not None and any(need):
+            for i, n_ in enumerate(need):
+                if n_ and not self._dfn_rows[i]:
+                    self.dfn.reset_row(i)
+                self._dfn_rows[i] = bool(n_)
+            Zs = np.stack([f[0] for f in fronts])
+            try:
+                Zc = self.dfn.process_specs(Zs, rows=[i for i, n_ in enumerate(need) if n_])
+            except Exception as e:                   # the model failing is a fault for everyone
+                LOG.exception("Speech model error")
+                Zc = None
+                for i in range(self.n):
+                    self.faults.append((i, f"speech model error: {e!r}"))
+        t_back = time.perf_counter()
+        outs, drys = np.zeros((self.n, HOP)), np.zeros((self.n, HOP))
+        for i, c in enumerate(self.chains):
+            y, dry, fault = c.back(fronts[i][1], None if Zc is None else Zc[i], fronts[i][0])
+            if fault:
+                self.faults.append((i, fault))
+            outs[i], drys[i] = y, dry
+            c.level_out = _db(float(np.mean(y ** 2)))
+        t_end = time.perf_counter()
+        dt = 1000 * (t_end - t0)
+        for k, a_, b_ in (("front", t_front, t_model), ("model", t_model, t_back), ("back", t_back, t_end)):
+            self.stage_ms[k] = 0.98 * self.stage_ms[k] + 0.02 * 1000 * (b_ - a_)
+        self.cpu_ms = 0.98 * self.cpu_ms + 0.02 * 1000 * (time.thread_time() - c0)
+        self.proc_ms = 0.98 * self.proc_ms + 0.02 * dt
+        self.proc_ms_max = max(self.proc_ms_max * 0.999, dt)
+        return outs, drys
+
+    def close_retired(self):
+        """Closes inserts that were swapped out (after the block, never during it)."""
+        while self._to_close:
+            try:
+                self._to_close.pop().close()
+            except Exception:
+                LOG.exception("Could not close a retired insert")
+
+    def take_faults(self):
+        f, self.faults = self.faults, []
+        return f
+
+    def close(self):
+        for c in self.chains:
+            if c.plugin is not None:
+                try:
+                    c.plugin.close()
+                except Exception:
+                    pass
+        self.close_retired()
+
+    def talker_states(self):
+        return [{
+            "name": c.name, "mode": c.s.mode, "erle_db": round(c.erle, 1),
+            "speech_snr_db": None if self.dfn is None else round(float(self.dfn.lsnr[i]), 1),
+            "delay_ms": None if c.delay_samples is None else round(1000 * c.delay_samples / FS, 1),
+            "delay_status": c.delay_status,
+            "insert": None if c.plugin is None else {
+                "name": c.insert_name, "on": bool(c.s.insert.get("on")), "latency": c.plugin.latency},
+            "insert_error": c.insert_error,
+        } for i, c in enumerate(self.chains)]
+
+    def timing(self):
+        return {"proc_ms": round(self.proc_ms, 2), "proc_ms_max": round(self.proc_ms_max, 2),
+                "cpu_ms": round(self.cpu_ms, 2), "stage_ms": {k: round(v, 2) for k, v in self.stage_ms.items()},
+                "model_rows": int(sum(bool(x) for x in self._dfn_rows)), "thread": self.thread_note, "pgm_db": round(self.ref_db, 1)}
+
+
+class Processor:
+    """All talkers on one thread in Sotto's own process (workers=0). exchange() is called from the
+    audio callback; the work runs on the processing thread. workers.Pool has the same interface
+    and runs the work in separate processes instead."""
+
+    def __init__(self, names, settings, model=None, vst3_lib=None, track_delay=True, threads=1):
+        self.work = Chains(names, settings, model=model, vst3_lib=vst3_lib, threads=threads)
+        self.names, self.n = self.work.names, self.work.n
+        self.chains = self.work.chains
+        self.dfn = self.work.dfn
         self.q_in = queue.Queue(maxsize=2)
         self.q_out = queue.Queue(maxsize=4)
         self.history = collections.deque(maxlen=3)      # inputs k-2..k, for the miss fallback
@@ -274,23 +480,14 @@ class Processor:
         self.miss_run = 0
         self.max_miss_run = 0
         self.good_run = 0
-        self.proc_ms = 0.0
-        self.proc_ms_max = 0.0
-        self.stage_ms = {"front": 0.0, "model": 0.0, "back": 0.0}   # where the time goes
         self.errors = 0
-        self.cpu_ms = 0.0                                # thread CPU time: if far below proc_ms, the
-        self.thread_note = ""                            # thread is waiting, not computing
         self.faults = []                                 # (talker, why), drained by the app
         self.ok = True
         self.why = ""
-        self._pending = None
-        self._lock = threading.Lock()
-        self._to_close = []
         self.stop_ev = threading.Event()
         self.th = threading.Thread(target=self._loop, name="sotto-processing", daemon=True)
         self.th.start()
-        self.tracker = DelayTracker(self) if track_delay else None
-        self.ref_db = -120.0
+        self.tracker = DelayTracker(self.work) if track_delay else None
 
     # ------------------------------------------------------------ audio callback side
     def exchange(self, mics, ref):
@@ -337,34 +534,29 @@ class Processor:
             self.ok, self.why = True, ""
 
     def drain_faults(self):
-        f, self.faults = self.faults, []
+        f, self.faults = self.faults + self.work.take_faults(), []
         return f
 
     # ------------------------------------------------------------ settings (any thread)
     def configure(self, settings, plugins):
-        """settings: list of Settings; plugins: list per talker of (Plugin or None, name, changed).
-        Applied by the worker at the start of its next block."""
-        with self._lock:
-            self._pending = (settings, plugins)
+        self.work.configure(settings, plugins)
+
+    def apply(self, settings, labels):
+        return self.work.apply(settings, labels)
+
+    def insert_info(self, k):
+        return self.work.insert_info(k)
+
+    def plugin_param(self, k, pid, norm):
+        return self.work.plugin_param(k, pid, norm)
+
+    def plugin_states(self):
+        return self.work.plugin_states()
 
     # ------------------------------------------------------------ worker
-    def _apply_pending(self):
-        with self._lock:
-            p, self._pending = self._pending, None
-        if not p:
-            return
-        settings, plugins = p
-        for c, s, pl in zip(self.chains, settings, plugins):
-            c.apply(s)
-            plug, name, changed = pl
-            if changed:
-                if c.plugin is not None:
-                    self._to_close.append(c.plugin)
-                c.set_plugin(plug, name)
-
     def _loop(self):
-        _, self.thread_note = macos.fast_thread()
-        LOG.info("Processing thread started for %d talkers (%s)", self.n, self.thread_note)
+        _, self.work.thread_note = macos.fast_thread()
+        LOG.info("Processing thread started for %d talkers (%s)", self.n, self.work.thread_note)
         while not self.stop_ev.is_set():
             try:
                 self._one_block()
@@ -387,90 +579,24 @@ class Processor:
                     break
         except queue.Empty:
             return
-        t0, c0 = time.perf_counter(), time.thread_time()
-        self._apply_pending()
-        self.refs_ring.write(ref[None])
-        self.ref_db = _db(float(np.mean(ref * ref)))
-        fronts = []
-        t_front = time.perf_counter()
-        for i, c in enumerate(self.chains):
-            Z, versions, fault = c.front(mics[i].astype(np.float64), self.refs_ring)
-            c.level_in = _db(float(np.mean(mics[i] ** 2)))
-            fronts.append((Z, versions))
-            if fault:
-                self.faults.append((i, fault))
-        t_model = time.perf_counter()
-        Zc = None
-        # The speech model is the expensive part: run it only while someone is on Full clean
-        # (or crossfading to or from it). Rows that rejoin start from a clean model state.
-        need = [c.s.mode == "full" or c.w[MODES.index("full")] > 0 for c in self.chains]
-        if self.dfn is not None and any(need):
-            for i, n_ in enumerate(need):
-                if n_ and not self._dfn_rows[i]:
-                    self.dfn.reset_row(i)
-                self._dfn_rows[i] = n_
-            Zs = np.stack([f[0] for f in fronts])
-            try:
-                Zc = self.dfn.process_specs(Zs, rows=[i for i, n_ in enumerate(need) if n_])
-            except Exception as e:                   # the model failing is a fault for everyone
-                LOG.exception("Speech model error")
-                Zc = None
-                for i in range(self.n):
-                    self.faults.append((i, f"speech model error: {e!r}"))
-        t_back = time.perf_counter()
-        outs, drys = np.zeros((self.n, HOP)), np.zeros((self.n, HOP))
-        for i, c in enumerate(self.chains):
-            y, dry, fault = c.back(fronts[i][1], None if Zc is None else Zc[i], fronts[i][0])
-            if fault:
-                self.faults.append((i, fault))
-            outs[i], drys[i] = y, dry
-            c.level_out = _db(float(np.mean(y ** 2)))
+        outs, drys = self.work.process(mics, ref)
         try:
             self.q_out.put_nowait((tag, outs, drys))
         except queue.Full:
             pass
-        t_end = time.perf_counter()
-        dt = 1000 * (t_end - t0)
-        for k, a_, b_ in (("front", t_front, t_model), ("model", t_model, t_back), ("back", t_back, t_end)):
-            self.stage_ms[k] = 0.98 * self.stage_ms[k] + 0.02 * 1000 * (b_ - a_)
-        self.cpu_ms = 0.98 * self.cpu_ms + 0.02 * 1000 * (time.thread_time() - c0)
-        self.proc_ms = 0.98 * self.proc_ms + 0.02 * dt
-        self.proc_ms_max = max(self.proc_ms_max * 0.999, dt)
-        while self._to_close:
-            try:
-                self._to_close.pop().close()
-            except Exception:
-                pass
+        self.work.close_retired()
 
     def stop(self):
         self.stop_ev.set()
         self.th.join(timeout=2)
         if self.tracker:
             self.tracker.stop()
-        for c in self.chains:
-            if c.plugin is not None:
-                try:
-                    c.plugin.close()
-                except Exception:
-                    pass
+        self.work.close()
 
     def state(self):
-        return {
-            "on": True, "model": self.dfn is not None, "proc_ms": round(self.proc_ms, 2),
-            "proc_ms_max": round(self.proc_ms_max, 2), "cpu_ms": round(self.cpu_ms, 2),
-            "thread": self.thread_note, "stage_ms": {k: round(v, 2) for k, v in self.stage_ms.items()},
-            "model_rows": sum(self._dfn_rows), "misses": self.misses, "ok": self.ok, "why": self.why,
-            "latency_ms": round(1000 * (2 * HOP) / FS, 1), "pgm_db": round(self.ref_db, 1),
-            "talkers": [{
-                "name": c.name, "mode": c.s.mode, "erle_db": round(c.erle, 1),
-                "speech_snr_db": None if self.dfn is None else round(float(self.dfn.lsnr[i]), 1),
-                "delay_ms": None if c.delay_samples is None else round(1000 * c.delay_samples / FS, 1),
-                "delay_status": c.delay_status,
-                "insert": None if c.plugin is None else {
-                    "name": c.insert_name, "on": bool(c.s.insert.get("on")), "latency": c.plugin.latency},
-                "insert_error": c.insert_error,
-            } for i, c in enumerate(self.chains)],
-        }
+        return {"on": True, "model": self.dfn is not None, "workers": 0, "misses": self.misses, "ok": self.ok,
+                "why": self.why, "latency_ms": round(1000 * (2 * HOP) / FS, 1), **self.work.timing(),
+                "talkers": self.work.talker_states()}
 
 
 def settings_from_project(project, names):

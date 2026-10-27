@@ -1,9 +1,9 @@
-"""Sotto fail-safe bench tool.
+"""Sotto Voce fail-safe bench tool.
 
   python -m sotto_failsafe --list
   python -m sotto_failsafe --device "Dante Virtual Soundcard" --talker-in 1-4 --talker-out 1-4 --record
 
-Channels count from 1 and follow Sotto's fixed system channels unless you say otherwise:
+Channels count from 1 and follow Sotto Voce's fixed system channels unless you say otherwise:
 IN 61 PROBE return, IN 62 PGM, OUT 61 HEARTBEAT, OUT 62 PROBE, OUT 63/64 headphones (solo bus).
 Set Dante Virtual Soundcard to 64 x 64. Open http://127.0.0.1:8766 for the console.
 """
@@ -34,6 +34,7 @@ def config_dir():
     if os.environ.get("SOTTO_CONFIG_DIR"):             # tests and builds: never the user's own settings and logs
         return os.environ["SOTTO_CONFIG_DIR"]
     home = os.path.expanduser("~")
+    # The folders keep the app's original name, so settings, logs and uploaded audio carry over.
     if sys.platform == "darwin":
         return os.path.join(home, "Library", "Application Support", "Sotto Bench")
     if os.name == "nt":
@@ -210,7 +211,7 @@ class BenchApp:
         if self.core.arm.armed and self.tests.plan:     # arming switches every test source off
             self.tests.off()
             self.tests.switched_off += 1
-            self.log(Event(self.core.t, "test_sources_off", "Sotto armed: every test source switched off", "auto"))
+            self.log(Event(self.core.t, "test_sources_off", "Sotto Voce armed: every test source switched off", "auto"))
         exc, self._cb_exc = self._cb_exc, None
         if exc is not None:
             LOG.error("Audio callback error (%d so far); outputs were silenced for that block", self.callback_errors,
@@ -453,10 +454,10 @@ class BenchApp:
                 hr = self.a.headroom
             if hr != self.proc.headroom:
                 if self.core.arm.armed:              # it moves every talker's delay: never mid-show
-                    errors.append("Disarm Sotto before changing the processing headroom: it moves every talker's delay.")
+                    errors.append("Disarm Sotto Voce before changing the processing headroom: it moves every talker's delay.")
                 else:
                     self.proc.set_headroom(hr)
-                    self.log(Event(self.core.t, "headroom", f"{10 * hr} ms ({10 * (hr + 1)} ms through Sotto)", "console"))
+                    self.log(Event(self.core.t, "headroom", f"{10 * hr} ms ({10 * (hr + 1)} ms through Sotto Voce)", "console"))
         return {"ok": True, "applied": True, "errors": errors}
 
     def insert_info(self, talker):
@@ -552,7 +553,7 @@ class BenchApp:
         self.callback(inb, outb, len(inb), None, self._status)
 
     def callback(self, indata, outdata, frames, tinfo, status):
-        """Sotto's engine for one block (10 ms): straight from the soundcard, or regrouped."""
+        """Sotto Voce's engine for one block (10 ms): straight from the soundcard, or regrouped."""
         t0 = time.perf_counter()
         if self.regroup is None:
             self._device_timing(tinfo, t0)
@@ -794,7 +795,7 @@ class BenchApp:
                 changes["--io-buffer"] = saved_changes["io_buffer"] = str(io)
                 what.append(f"a {io}-sample buffer" if io else "10 ms blocks from the soundcard")
         if not changes:
-            return {"ok": False, "error": "That's what Sotto is already using."}
+            return {"ok": False, "error": "That's what Sotto Voce is already using."}
         self.log(Event(self.core.t, "engine_change", "restarting on " + " with ".join(what), "console"))
         try:                                             # remembered for the next launch too
             path = os.path.join(config_dir(), "config.json")
@@ -825,7 +826,7 @@ class BenchApp:
 
     def reconfigure(self, changes):
         """Checks a change to the I/O patch or the engine settings, saves it and restarts the engine
-        with it. Sotto starts again disarmed, so the frame falls back to dry until someone re-arms."""
+        with it. Sotto Voce starts again disarmed, so the frame falls back to dry until someone re-arms."""
         from . import launcher as L
         allowed = set(self.PATCH_KEYS + self.ENGINE_KEYS)
         bad = [k for k in changes if k not in allowed]
@@ -916,7 +917,7 @@ class BenchApp:
             if sys.platform == "darwin":
                 perm = macos.mic_permission()
                 out.append(["ok" if perm == "allowed" else "err",
-                            "Microphone permission: " + {"allowed": "allowed.", "denied": "denied. Allow Sotto Bench in System Settings, Privacy & Security, Microphone.",
+                            "Microphone permission: " + {"allowed": "allowed.", "denied": "denied. Allow Sotto Voce Bench in System Settings, Privacy & Security, Microphone.",
                                                          "not asked": "not asked yet (macOS asks when the soundcard opens).",
                                                          "restricted": "restricted by this Mac's management profile."}.get(perm, perm)])
         g = (self.gaps_last or self.gaps)
@@ -944,7 +945,7 @@ class BenchApp:
     # ------------------------------------------------------------ test sources, phones on this computer
     def test_source(self, b):
         if self.core.arm.armed:
-            return {"ok": False, "error": "Disarm Sotto first: test sources only play while disarmed."}
+            return {"ok": False, "error": "Disarm Sotto Voce first: test sources only play while disarmed."}
         try:
             if b.get("remove"):
                 r = self.tests.remove(b["remove"])
@@ -982,12 +983,12 @@ class BenchApp:
             return {"ok": False, "error": f"Couldn't read {os.path.basename(name or 'that file')}: {e!r}"}
 
     def test_choose(self):
-        """macOS's own file dialog, opened by Sotto Bench itself: works whatever the browser allows."""
+        """macOS's own file dialog, opened by Sotto Voce Bench itself: works whatever the browser allows."""
         if sys.platform != "darwin":
             return {"ok": False, "error": "Choosing with Finder only works on a Mac. Use Upload audio file."}
         LOG.info("Opening the macOS file dialog for a test audio file")
         script = ['-e', 'activate', '-e',
-                  'POSIX path of (choose file with prompt "Choose an audio file for Sotto Bench" of type {"public.audio"})']
+                  'POSIX path of (choose file with prompt "Choose an audio file for Sotto Voce Bench" of type {"public.audio"})']
         try:
             r = subprocess.run(["osascript"] + script, capture_output=True, text=True, timeout=600)
         except subprocess.TimeoutExpired:
@@ -1072,7 +1073,7 @@ class BenchApp:
             def _fail(self, e):
                 LOG.exception("HTTP %s %s failed", self.command, self.path)
                 try:
-                    self._send(500, json.dumps({"ok": False, "error": f"Sotto Bench hit an error: {e!r} (details in the log)"}).encode(),
+                    self._send(500, json.dumps({"ok": False, "error": f"Sotto Voce Bench hit an error: {e!r} (details in the log)"}).encode(),
                                "application/json")
                 except Exception:
                     pass
@@ -1098,7 +1099,7 @@ class BenchApp:
                     self._send(200, _json(app.check_device()).encode(), "application/json")
                 elif self.path.startswith("/api/diagnostics"):
                     # The speed test loads the computer for ~15 s: never while armed (it could make
-                    # processing late and disarm Sotto mid-show).
+                    # processing late and disarm Sotto Voce mid-show).
                     full = "quick" not in self.path and not app.core.arm.armed
                     text = diagnostics.build_report(app, run_speed_test=full)
                     diagnostics.save_report(text, app.dir)
@@ -1242,12 +1243,12 @@ def build_parser():
     p.add_argument("--workers", default="auto",
                    help="processing worker processes: auto (up to 3 talkers each), a number, or 0 for a thread in this process")
     p.add_argument("--io-buffer", type=int, default=0,
-                   help="soundcard buffer in samples (e.g. 128, 160, 256); Sotto regroups into 10 ms blocks. "
+                   help="soundcard buffer in samples (e.g. 128, 160, 256); Sotto Voce regroups into 10 ms blocks. "
                         "0 = ask the soundcard for 10 ms blocks directly (as before)")
     p.add_argument("--switch-interval", type=float, default=0.5,
                    help="ms another Python thread may hold the lock before the audio callback gets it back (Python's default is 5)")
     p.add_argument("--headroom", type=int, default=1, choices=[1, 2, 3],
-                   help="blocks of time the processing workers get per block (1 = 20 ms through Sotto, 2 = 30 ms)")
+                   help="blocks of time the processing workers get per block (1 = 20 ms through Sotto Voce, 2 = 30 ms)")
     p.add_argument("--track-delay", choices=["auto", "on", "off"], default="auto",
                    help="measure the PA delay into each talker's mic (auto: on unless --simulate)")
     p.add_argument("--project", help="project file shared with the console (default: in the app's settings folder)")

@@ -181,7 +181,7 @@ class PoolTests(unittest.TestCase):
             self.assertIn(bad, pool.crashed)
             while w.restarts < 1 and time.time() - t0 < 10:
                 time.sleep(0.05)
-            # Choosing it again (sent straight away: it waits for the restarted worker): Sotto leaves it out and says why, instead of crashing the worker again.
+            # Choosing it again (sent straight away: it waits for the restarted worker): Sotto Voce leaves it out and says why, instead of crashing the worker again.
             s = P.Settings(mode="bypass", insert={"path": bad, "on": True})
             r = pool.apply([s, P.Settings(mode="bypass")], ["a", "b"])
             self.assertTrue(any("Crashy crashed" in e for e in r["errors"]), r)

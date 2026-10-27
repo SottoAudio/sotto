@@ -65,7 +65,7 @@ class DiagnosticsTests(unittest.TestCase):
         def boom(self):
             raise RuntimeError("Error opening Stream: Invalid number of channels [PaErrorCode -9998]")
 
-        # pick_port: a Sotto Bench already open on this computer mustn't change the test
+        # pick_port: a Sotto Voce Bench already open on this computer mustn't change the test
         with mock.patch.object(launcher, "run_setup", side_effect=fake_setup), \
                 mock.patch.object(launcher, "pick_port", return_value=(8795, False)), \
                 mock.patch.object(appmod.BenchApp, "run", boom):
@@ -73,7 +73,7 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(calls[0], None)
         self.assertIn("64 x 64", calls[1])                           # plain reason on the page
         self.assertIn("Invalid number of channels", diagnostics.last_crash()["detail"])
-        self.assertIn("Sotto Bench stopped during starting the engine", self.read_log())
+        self.assertIn("Sotto Voce Bench stopped during starting the engine", self.read_log())
 
     def test_report_has_every_section(self):
         text = diagnostics.build_report(None, setup_config={"device": "0"}, run_speed_test=False)

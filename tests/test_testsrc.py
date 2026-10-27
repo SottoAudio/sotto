@@ -116,7 +116,7 @@ class TestSourceTests(unittest.TestCase):
     def test_files_sotto_cant_use_say_why(self):
         silent = riff(1, 1, 48000, 16, bytes(96000))
         for data, words in ((b"", "empty"), (silent, "silent"), (riff(1, 1, 48000, 16, bytes(200)), "too short"),
-                            (riff(2, 1, 48000, 4, bytes(9600)), "isn't one Sotto reads")):
+                            (riff(2, 1, 48000, 4, bytes(9600)), "isn't one Sotto Voce reads")):
             with self.assertRaises(ValueError) as cm:
                 T.load_audio(data, "x.wav")
             self.assertIn(words, str(cm.exception))

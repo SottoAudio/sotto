@@ -1,4 +1,4 @@
-# Sotto prototype: offline test pipeline
+# Sotto Voce prototype: offline test pipeline
 
 Tests the comms voice cleaner's processing on recordings before any hardware is built:
 reference delay finding, a partitioned-block frequency-domain echo canceller (the same

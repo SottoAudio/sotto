@@ -1,4 +1,4 @@
-"""Double-click entry point for the packaged Sotto Bench app.
+"""Double-click entry point for the packaged Sotto Voce Bench app.
 
 Opens a setup page in the browser (pick the virtual soundcard and channels, or the simulated
 Riedel frame), remembers the choices, then starts the bench tool and hands the same browser tab
@@ -186,7 +186,7 @@ def run_setup(open_browser=True, start_error=None):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     if open_browser:
         webbrowser.open(f"http://127.0.0.1:{PORT}/")
-    print(f"Sotto Bench setup: http://127.0.0.1:{PORT}/")
+    print(f"Sotto Voce Bench setup: http://127.0.0.1:{PORT}/")
     done.wait()
     srv.shutdown()
     srv.server_close()
@@ -216,7 +216,7 @@ def port_free(port):
 
 
 def sotto_on(port):
-    """True if the program on this port is Sotto Bench (its setup page or its console)."""
+    """True if the program on this port is Sotto Voce Bench (its setup page or its console)."""
     try:
         body = urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state", timeout=2).read()
     except urllib.error.HTTPError as e:                           # the setup page answers 503
@@ -231,7 +231,7 @@ def sotto_on(port):
 
 
 def pick_port():
-    """Returns (port, already_running). Sotto Bench normally uses 8766. If Sotto Bench is already
+    """Returns (port, already_running). Sotto Voce Bench normally uses 8766. If Sotto Voce Bench is already
     running there, the caller just opens it. If something else has the port, use the next free one."""
     if port_free(PORT):
         return PORT, False
@@ -257,7 +257,7 @@ def main(argv=None):
 
 
 def write_diagnostics(argv):
-    """Sotto Bench --diagnostics [--quick]: writes the diagnostics file to Downloads and exits."""
+    """Sotto Voce Bench --diagnostics [--quick]: writes the diagnostics file to Downloads and exits."""
     text = diagnostics.build_report(None, setup_config=load_config(), run_speed_test="--quick" not in argv)
     # Builds and tests set SOTTO_CONFIG_DIR: keep their files out of the computer's Downloads.
     paths = diagnostics.save_report(text, None if os.environ.get("SOTTO_CONFIG_DIR") else diagnostics.downloads_dir())
@@ -277,9 +277,9 @@ def _main(argv=None):
     if "--port" not in argv and not any(x in argv for x in ("--list", "-h", "--help")):
         port, running = pick_port()
         if running:
-            # Opened a second time (Sotto Bench has no window of its own): show the one that's running.
+            # Opened a second time (Sotto Voce Bench has no window of its own): show the one that's running.
             LOG.info("Already running on port %s: opening it", port)
-            print(f"Sotto Bench is already running: http://127.0.0.1:{port}/")
+            print(f"Sotto Voce Bench is already running: http://127.0.0.1:{port}/")
             if open_browser:
                 webbrowser.open(f"http://127.0.0.1:{port}/")
             return 0

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sotto Bench Setup</title>
+<title>Sotto Voce Bench Setup</title>
 <style>
   :root { --bg: #0e1012; --panel: #16191c; --panel2: #1d2125; --line: #2a2f35; --text: #e9ebee; --muted: #9aa3ad;
           --accent: #4fb3ff; --ok: #3ccf7a; --bad: #ff5d5d; }
@@ -41,11 +41,11 @@
 </head>
 <body>
 <main id="form">
-  <h1>Sotto Bench</h1>
+  <h1>Sotto Voce Bench</h1>
   <p class="lead">Fail-safe bench test. Try it with a simulated Riedel frame first, then connect the virtual soundcard for the real test.</p>
 
   <div class="panel alert" id="problem" hidden>
-    <h2 id="problemTitle">Sotto Bench couldn't start</h2>
+    <h2 id="problemTitle">Sotto Voce Bench couldn't start</h2>
     <p id="problemText"></p>
     <details id="problemMore" hidden><summary class="muted">Technical detail</summary><pre id="problemTrace"></pre></details>
     <p class="muted">Download the diagnostics file (below) and send it to whoever is helping you.</p>
@@ -74,7 +74,7 @@
       <div><label for="rrcs_host">RRCS IP address (optional)</label><input id="rrcs_host" placeholder="e.g. 10.0.0.10"></div>
       <div><label for="rrcs_port">RRCS port</label><input id="rrcs_port" placeholder="8193" inputmode="numeric"></div>
     </div>
-    <p class="muted">Channels are numbered as in Dante Controller. The defaults are Sotto's fixed system channels (IN 61 PROBE return, IN 62 PGM, OUT 61 HEARTBEAT, OUT 62 PROBE, OUT 63/64 headphones), so set Dante Virtual Soundcard to 64 &times; 64. <button type="button" id="patchDefaults" class="link">Back to defaults</button></p>
+    <p class="muted">Channels are numbered as in Dante Controller. The defaults are Sotto Voce's fixed system channels (IN 61 PROBE return, IN 62 PGM, OUT 61 HEARTBEAT, OUT 62 PROBE, OUT 63/64 headphones), so set Dante Virtual Soundcard to 64 &times; 64. <button type="button" id="patchDefaults" class="link">Back to defaults</button></p>
     <div class="row">
       <label class="check"><input type="checkbox" id="record"> Record the test</label>
     </div>
@@ -88,7 +88,7 @@
       <a href="/setup/diagnostics?quick=1" download class="muted">Quick version (no speed test)</a></div>
     <p class="muted" id="logPath"></p>
   </div>
-  <div class="row"><button id="quitBtn">Quit Sotto Bench</button></div>
+  <div class="row"><button id="quitBtn">Quit Sotto Voce Bench</button></div>
 </main>
 <div class="starting" id="starting">Starting… the console opens here in a moment.</div>
 <script>
@@ -160,7 +160,7 @@ async function init() {
   $('#patchDefaults').onclick = () => { if (defaults) { patch = patchFrom(defaults); renderPatch(); } };
   $('#record').checked = saved.record !== false;
   $('#runsDir').textContent = 'Recordings and event logs go to ' + c.runs_dir;
-  if (c.log) $('#logPath').textContent = 'Sotto Bench keeps a detailed log at ' + c.log;
+  if (c.log) $('#logPath').textContent = 'Sotto Voce Bench keeps a detailed log at ' + c.log;
   showProblem(c);
   await loadDevices();
 }
@@ -170,7 +170,7 @@ function showProblem(c) {
     $('#problemTitle').textContent = 'The soundcard didn\'t start';
     $('#problemText').textContent = c.start_error;
   } else if (c.last_crash) {
-    $('#problemTitle').textContent = 'Sotto Bench stopped unexpectedly last time';
+    $('#problemTitle').textContent = 'Sotto Voce Bench stopped unexpectedly last time';
     $('#problemText').textContent = `${c.last_crash.time}, during ${c.last_crash.where}: ${c.last_crash.error}`;
   } else { box.hidden = true; return; }
   const tb = c.last_crash && c.last_crash.traceback;
@@ -183,13 +183,13 @@ async function loadDevices() {
   sel.innerHTML = '<option value="">Looking for audio devices…</option>';
   let d;
   try { d = await (await fetch('/setup/devices', {cache: 'no-store'})).json(); }
-  catch (e) { d = {ok: false, error: 'Sotto Bench did not answer', devices: []}; }
+  catch (e) { d = {ok: false, error: 'Sotto Voce Bench did not answer', devices: []}; }
   if (!d.ok || !d.devices.length) {
     sel.innerHTML = '<option value="">No audio devices found</option>';
     $('#devNote').textContent = d.ok ? 'Is Dante Virtual Soundcard or Merging VAD running? Start it, then press Look again.' : 'Could not list audio devices: ' + d.error;
     return;
   }
-  // Sotto needs one device with as many inputs and outputs as the highest channel below (64 with
+  // Sotto Voce needs one device with as many inputs and outputs as the highest channel below (64 with
   // the fixed system channels). Others are listed, greyed out, so you can see why.
   const pv = patchTo(patch);
   const need = Math.max(64, ...['talker_in', 'talker_out', 'pgm_in', 'probe_in', 'probe_out', 'heartbeat_out', 'monitor', 'listen_in'].flatMap(f => chansParse(pv[f])));
@@ -203,7 +203,7 @@ async function loadDevices() {
                usable.find(x => /dante|merging|ravenna|virtual audio/i.test(x.name));
   if (prev) sel.value = prev.index;
   $('#devNote').textContent = usable.length
-    ? `${usable.length} of ${d.devices.length} devices can run Sotto (one device with at least ${need} inputs and ${need} outputs). The others are greyed out.`
+    ? `${usable.length} of ${d.devices.length} devices can run Sotto Voce (one device with at least ${need} inputs and ${need} outputs). The others are greyed out.`
     : `None of the ${d.devices.length} devices has ${need} inputs and ${need} outputs. Set Dante Virtual Soundcard to 64 × 64 in Dante Virtual Soundcard's settings, then press Look again.`;
 }
 async function start(simulate) {
@@ -222,12 +222,12 @@ async function start(simulate) {
       if (c.start_error) { $('#starting').style.display = 'none'; $('#form').style.display = ''; saved = c.config; showProblem(c); window.scrollTo(0, 0); return; }
     } catch (e) {}
   }
-  $('#starting').textContent = 'The console did not start. Check the soundcard and try opening Sotto Bench again.';
+  $('#starting').textContent = 'The console did not start. Check the soundcard and try opening Sotto Voce Bench again.';
 }
 $('#simBtn').onclick = () => start(true);
 $('#devAgain').onclick = () => loadDevices();
 $('#devBtn').onclick = () => start(false);
-$('#quitBtn').onclick = async () => { try { await fetch('/quit', {method: 'POST'}); } catch (e) {} document.body.innerHTML = '<p style="padding:24px">Sotto Bench has quit. You can close this tab.</p>'; };
+$('#quitBtn').onclick = async () => { try { await fetch('/quit', {method: 'POST'}); } catch (e) {} document.body.innerHTML = '<p style="padding:24px">Sotto Voce Bench has quit. You can close this tab.</p>'; };
 init();
 </script>
 </body>

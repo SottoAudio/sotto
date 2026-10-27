@@ -1,4 +1,4 @@
-# sotto-plugin-test: loads a VST3 plugin the way Sotto's engine will, outside any DAW.
+# sotto-plugin-test: loads a VST3 plugin the way Sotto Voce's engine will, outside any DAW.
 #
 #   cmake -S engine/plugin-test -B build/plugin-test -DCMAKE_BUILD_TYPE=Release
 #   cmake --build build/plugin-test --config Release
@@ -9,7 +9,7 @@
 # test this tool without a commercial plugin.
 cmake_minimum_required(VERSION 3.19)
 if(APPLE)
-    # Apple silicon only: Sotto runs on M-series Macs, and Apple's macOS 27 developer tools no
+    # Apple silicon only: Sotto Voce runs on M-series Macs, and Apple's macOS 27 developer tools no
     # longer include Intel (x86_64) libraries, so a universal build fails to link there.
     set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "")
     set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "")
@@ -75,7 +75,7 @@ else()
     list(APPEND host_sources ${SDK}/public.sdk/source/vst/hosting/module_linux.cpp)
 endif()
 
-# The command-line test host and the library Sotto's engine loads share the same hosting code.
+# The command-line test host and the library Sotto Voce's engine loads share the same hosting code.
 add_executable(sotto-plugin-test main.cpp wav.h ${host_sources})
 add_library(sotto_vst3host SHARED vst3host.cpp ${host_sources})
 set_target_properties(sotto_vst3host PROPERTIES CXX_VISIBILITY_PRESET hidden PREFIX "")

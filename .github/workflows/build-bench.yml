@@ -1,10 +1,10 @@
-name: build Sotto Bench
+name: build Sotto Voce Bench
 
-# Builds the double-click Sotto Bench app for Mac and Windows with the processing (echo canceller,
+# Builds the double-click Sotto Voce Bench app for Mac and Windows with the processing (echo canceller,
 # suppressor, DeepFilterNet3 speech model) and VST3 plugin inserts bundled in. Each build is
 # started against the simulated Riedel frame, given an operator profile with the VST3 SDK's
 # example plugin as its insert, and checked. The latest main-branch build is published as the
-# "Sotto Bench (latest build)" pre-release.
+# "Sotto Voce Bench (latest build)" pre-release.
 
 on:
   push:
@@ -17,7 +17,7 @@ on:
 permissions:
   contents: read
 
-# Tests and the smoke test keep their settings and logs out of the build machine's own Sotto folder.
+# Tests and the smoke test keep their settings and logs out of the build machine's own Sotto Voce folder.
 env:
   SOTTO_CONFIG_DIR: ${{ github.workspace }}/.sotto-test-config
 
@@ -99,7 +99,7 @@ jobs:
           MODELS=../prototype/models/DeepFilterNet3_ll_stream_batch
           # Which build this is, for the diagnostics file.
           python -c "import json, datetime, os; json.dump({'commit': os.environ['GITHUB_SHA'][:7], 'built': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'), 'run': os.environ['GITHUB_RUN_NUMBER'], 'ref': os.environ['GITHUB_REF_NAME'], 'platform': '${{ matrix.name }}'}, open('sotto_failsafe/build_info.json', 'w'))"
-          ARGS=(--noconfirm --name "Sotto Bench" --paths ../prototype
+          ARGS=(--noconfirm --name "Sotto Voce Bench" --paths ../prototype
                 --add-data "sotto_failsafe/console.html${{ matrix.sep }}sotto_failsafe"
                 --add-data "sotto_failsafe/console_bench.html${{ matrix.sep }}sotto_failsafe"
                 --add-data "sotto_failsafe/setup.html${{ matrix.sep }}sotto_failsafe"
@@ -113,13 +113,13 @@ jobs:
           if [ "${{ matrix.name }}" = "mac" ]; then ARGS+=(--windowed --osx-bundle-identifier audio.sotto.bench); fi
           pyinstaller "${ARGS[@]}" sotto_bench.py > build.log 2>&1 || { echo "::error title=PyInstaller (${{ matrix.name }})::$(tail -c 3000 build.log | tr '\n' ' ')"; exit 1; }
           if [ "${{ matrix.name }}" = "mac" ]; then
-            PLIST="dist/Sotto Bench.app/Contents/Info.plist"
-            plutil -insert NSMicrophoneUsageDescription -string "Sotto Bench listens to the talker, PGM and PROBE channels from the virtual soundcard." "$PLIST"
+            PLIST="dist/Sotto Voce Bench.app/Contents/Info.plist"
+            plutil -insert NSMicrophoneUsageDescription -string "Sotto Voce Bench listens to the talker, PGM and PROBE channels from the virtual soundcard." "$PLIST"
             plutil -replace CFBundleShortVersionString -string "0.2.0" "$PLIST"
-            codesign --force --deep -s - "dist/Sotto Bench.app"
-            echo 'APP=dist/Sotto Bench.app/Contents/MacOS/Sotto Bench' >> $GITHUB_ENV
+            codesign --force --deep -s - "dist/Sotto Voce Bench.app"
+            echo 'APP=dist/Sotto Voce Bench.app/Contents/MacOS/Sotto Voce Bench' >> $GITHUB_ENV
           else
-            echo 'APP=dist/Sotto Bench/Sotto Bench.exe' >> $GITHUB_ENV
+            echo 'APP=dist/Sotto Voce Bench/Sotto Voce Bench.exe' >> $GITHUB_ENV
           fi
 
       - name: Smoke test (simulated frame, processing, a plugin insert)
@@ -134,7 +134,7 @@ jobs:
           # every processing worker up (with its delay tracker, which starts a helper process)
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:8790/api/state > state.json; python -c "import json,sys; p=json.load(open('state.json'))['processing']; w=p.get('worker_detail') or []; sys.exit(0 if w and all(x['ready'] for x in w) else 1)" && break; sleep 1; done
           python -c "import json; p=json.load(open('state.json'))['processing']; w=p.get('worker_detail') or []; assert w and all(x['ready'] and not x['restarts'] for x in w), (p.get('why'), w); print('processing workers:', [(x['worker'], x['talkers'], x['pid']) for x in w])" || fail "processing workers didn't start:"
-          curl -sf http://127.0.0.1:8790/ -o page.html && grep -q "<title>Sotto Console</title>" page.html || fail "new console not served"
+          curl -sf http://127.0.0.1:8790/ -o page.html && grep -q "<title>Sotto Voce Console</title>" page.html || fail "new console not served"
           curl -sf http://127.0.0.1:8790/bench > /dev/null || fail "bench console not served"
           curl -sf "http://127.0.0.1:8790/api/plugins" -o plugins.json || fail "plugin list failed"
           python - <<'PY' || fail "plugin insert check failed:"
@@ -188,12 +188,12 @@ jobs:
 
       - name: Zip
         run: |
-          if [ "${{ matrix.name }}" = "mac" ]; then (cd failsafe/dist && ditto -c -k --keepParent "Sotto Bench.app" ../../Sotto-Bench-mac.zip)
-          else (cd failsafe/dist && 7z a ../../Sotto-Bench-windows.zip "Sotto Bench" > /dev/null); fi
+          if [ "${{ matrix.name }}" = "mac" ]; then (cd failsafe/dist && ditto -c -k --keepParent "Sotto Voce Bench.app" ../../Sotto-Voce-Bench-mac.zip)
+          else (cd failsafe/dist && 7z a ../../Sotto-Voce-Bench-windows.zip "Sotto Voce Bench" > /dev/null); fi
       - uses: actions/upload-artifact@v4
         with:
-          name: Sotto-Bench-${{ matrix.name }}
-          path: Sotto-Bench-${{ matrix.name }}.zip
+          name: Sotto-Voce-Bench-${{ matrix.name }}
+          path: Sotto-Voce-Bench-${{ matrix.name }}.zip
 
   release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -205,13 +205,13 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dl
-      - name: Publish "Sotto Bench (latest build)"
+      - name: Publish "Sotto Voce Bench (latest build)"
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
           gh release delete bench-latest --repo "$REPO" --yes --cleanup-tag || true
           gh release create bench-latest --repo "$REPO" --target "$GITHUB_SHA" --prerelease \
-            --title "Sotto Bench (latest build)" \
-            --notes "Built automatically from main ($GITHUB_SHA). Includes processing (echo canceller, suppressor, DeepFilterNet3) and VST3 plugin inserts. Not signed yet. On a Mac, the first time: right-click Sotto Bench, choose Open, then Open again (or System Settings, Privacy & Security, Open Anyway). Windows: if SmartScreen warns, choose More info, then Run anyway." \
-            dl/Sotto-Bench-mac/Sotto-Bench-mac.zip dl/Sotto-Bench-windows/Sotto-Bench-windows.zip
+            --title "Sotto Voce Bench (latest build)" \
+            --notes "Built automatically from main ($GITHUB_SHA). Includes processing (echo canceller, suppressor, DeepFilterNet3) and VST3 plugin inserts. Not signed yet. On a Mac, the first time: right-click Sotto Voce Bench, choose Open, then Open again (or System Settings, Privacy & Security, Open Anyway). Windows: if SmartScreen warns, choose More info, then Run anyway." \
+            dl/Sotto-Voce-Bench-mac/Sotto-Voce-Bench-mac.zip dl/Sotto-Voce-Bench-windows/Sotto-Voce-Bench-windows.zip

@@ -24,7 +24,7 @@ PORT = 8766
 DEFAULTS = {
     "device": "", "talker_in": "1-4", "talker_out": "1-4", "names": "Show caller,Creative director,Technical manager,Stage manager",
     "probe_in": "61", "probe_out": "62", "heartbeat_out": "61", "pgm_in": "62", "listen_in": "", "monitor": "63,64",
-    "rrcs_host": "", "record": True, "layout": 2,
+    "rrcs_host": "", "record": True, "layout": 2, "io_buffer": "0",
 }
 # Channels with a fixed job since layout 2 (IN 61 PROBE return, IN 62 PGM, OUT 61 HEARTBEAT,
 # OUT 62 PROBE, OUT 63/64 headphones). Settings saved by older versions are moved onto them.
@@ -79,6 +79,8 @@ def argv_from(cfg, simulate):
             argv += ["--monitor", cfg["monitor"]]
         if cfg.get("rrcs_host"):
             argv += ["--rrcs-host", cfg["rrcs_host"]]
+        if str(cfg.get("io_buffer") or "0") not in ("", "0"):
+            argv += ["--io-buffer", str(cfg["io_buffer"])]
     if cfg.get("names"):
         argv += ["--names", cfg["names"]]
     if cfg.get("record", True):
@@ -153,7 +155,9 @@ def run_setup(open_browser=True, start_error=None):
             except ValueError:
                 body = {}
             if self.path == "/setup/start":
-                cfg = {**DEFAULTS, **{k: body.get(k, v) for k, v in DEFAULTS.items()}}
+                # Settings the page doesn't show (the soundcard buffer, set from the console) keep
+                # their saved value.
+                cfg = {**load_config(), **{k: body[k] for k in DEFAULTS if k in body}}
                 simulate = bool(body.get("simulate"))
                 if not simulate and str(cfg["device"]) == "":
                     return self._send(200, b'{"ok": false, "error": "Pick a soundcard first"}')
@@ -317,20 +321,24 @@ def _main(argv=None):
 def run_engine(argv, a):
     app = BenchApp(a)
     app.run()
-    if app.restart_device is not None:                 # the console switched soundcard
-        LOG.info("Restarting on device %s", app.restart_device)
+    if app.restart_with:                               # the console switched soundcard or buffer
+        LOG.info("Restarting the engine with %s", app.restart_with)
         diagnostics.stop_logging()
-        restart(argv, app.restart_device)
+        restart(argv, app.restart_with)
     return 0
 
 
-def restart(argv, device):
-    """Starts again with another --device, in the same process slot (the browser stays open)."""
+def restart(argv, changes):
+    """Starts again with changed options (e.g. {"--device": "2", "--io-buffer": "160"}), in the same
+    process slot (the browser stays open). A plain string means a new --device."""
+    if isinstance(changes, str):
+        changes = {"--device": changes}
     argv = list(argv)
-    if "--device" in argv:
-        argv[argv.index("--device") + 1] = device
-    else:
-        argv += ["--device", device]
+    for opt, val in changes.items():
+        if opt in argv:
+            argv[argv.index(opt) + 1] = str(val)
+        else:
+            argv += [opt, str(val)]
     argv.append("--no-browser")
     cmd = [sys.executable] + ([] if getattr(sys, "frozen", False) else [os.path.abspath(sys.argv[0])]) + argv
     sys.stdout.flush()

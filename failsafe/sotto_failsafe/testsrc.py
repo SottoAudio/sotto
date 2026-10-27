@@ -115,38 +115,98 @@ def room(prog, delay_ms=40.0, seconds_rt=0.4, seed=11):
     return (y / rms(y) * rms(prog)).astype(np.float32)
 
 
-def load_wav(data_or_path):
-    """WAV (PCM 16/24/32-bit or 32-bit float) to mono float32 at 48 kHz, at most MAX_FILE_S seconds."""
-    import io
-    f = wave.open(io.BytesIO(data_or_path) if isinstance(data_or_path, (bytes, bytearray)) else data_or_path, "rb")
-    try:
-        ch, sw, rate, n = f.getnchannels(), f.getsampwidth(), f.getframerate(), f.getnframes()
-        n = min(n, rate * MAX_FILE_S)
-        raw = f.readframes(n)
-    finally:
-        f.close()
-    if sw == 2:
+AUDIO_EXTS = (".wav", ".wave", ".bwf", ".aif", ".aiff", ".aifc", ".caf", ".mp3", ".m4a", ".aac", ".flac", ".mp4")
+
+
+def parse_wav(data):
+    """Any WAV a DAW writes: PCM 8/16/24/32-bit, 32/64-bit float, plain or WAVE_FORMAT_EXTENSIBLE,
+    with any extra chunks (bext, iXML, ...). Returns (samples (frames, channels) float32, rate)."""
+    import struct
+    if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        raise ValueError("not a WAV file")
+    pos, fmt, raw = 12, None, None
+    while pos + 8 <= len(data):
+        cid, size = data[pos:pos + 4], struct.unpack_from("<I", data, pos + 4)[0]
+        body = data[pos + 8:pos + 8 + size]
+        if cid == b"fmt ":
+            tag, ch, rate, _, align, bits = struct.unpack_from("<HHIIHH", body, 0)
+            if tag == 0xFFFE and len(body) >= 26:            # extensible: the real format is in the GUID
+                tag = struct.unpack_from("<H", body, 24)[0]
+            fmt = (tag, ch, rate, align, bits)
+        elif cid == b"data":
+            raw = data[pos + 8:] if size in (0, 0xFFFFFFFF) or pos + 8 + size > len(data) else body
+        pos += 8 + size + (size & 1)
+    if fmt is None or raw is None:
+        raise ValueError("the WAV file has no audio in it")
+    tag, ch, rate, align, bits = fmt
+    width = align // ch if ch else 0
+    n = min(len(raw) // align, rate * MAX_FILE_S) if align else 0
+    raw = raw[:n * align]
+    if tag == 1 and width == 2:
         x = np.frombuffer(raw, "<i2").astype(np.float32) / 32768.0
-    elif sw == 3:
+    elif tag == 1 and width == 3:
         b = np.frombuffer(raw, np.uint8).reshape(-1, 3)
-        i = (b[:, 0].astype(np.int32) | (b[:, 1].astype(np.int32) << 8) | (b[:, 2].astype(np.int32) << 16))
-        i = np.where(i >= 1 << 23, i - (1 << 24), i)
-        x = i.astype(np.float32) / float(1 << 23)
-    elif sw == 4:
+        i = b[:, 0].astype(np.int32) | (b[:, 1].astype(np.int32) << 8) | (b[:, 2].astype(np.int32) << 16)
+        x = np.where(i >= 1 << 23, i - (1 << 24), i).astype(np.float32) / float(1 << 23)
+    elif tag == 1 and width == 4:
         x = np.frombuffer(raw, "<i4").astype(np.float32) / float(1 << 31)
-    elif sw == 1:
+    elif tag == 1 and width == 1:
         x = (np.frombuffer(raw, np.uint8).astype(np.float32) - 128) / 128.0
+    elif tag == 3 and width == 4:
+        x = np.frombuffer(raw, "<f4").astype(np.float32)
+    elif tag == 3 and width == 8:
+        x = np.frombuffer(raw, "<f8").astype(np.float32)
     else:
-        raise ValueError(f"unsupported WAV sample size: {sw} bytes")
-    x = x.reshape(-1, ch).mean(axis=1)
+        raise ValueError(f"this WAV's format ({'float' if tag == 3 else 'PCM' if tag == 1 else f'type {tag}'}, "
+                         f"{bits}-bit) isn't one Sotto reads")
+    return np.nan_to_num(x.reshape(-1, ch)), rate
+
+
+def to_wav(data, name="audio"):
+    """Other audio formats (AIFF, MP3, M4A, CAF, FLAC...) converted with macOS's own afconvert."""
+    if sys.platform != "darwin":
+        raise ValueError("Sotto reads WAV files on this computer. Save the audio as a WAV and upload that.")
+    ext = os.path.splitext(name)[1] or ".audio"
+    with tempfile.TemporaryDirectory() as d:
+        src, dst = os.path.join(d, "in" + ext), os.path.join(d, "out.wav")
+        with open(src, "wb") as f:
+            f.write(data)
+        r = subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEF32@48000", src, dst], capture_output=True, text=True,
+                           timeout=120)
+        if r.returncode != 0 or not os.path.isfile(dst):
+            raise ValueError(f"macOS couldn't read {os.path.basename(name)} as audio: "
+                             f"{(r.stderr or r.stdout).strip()[:200] or 'unknown format'}")
+        with open(dst, "rb") as f:
+            return f.read()
+
+
+def load_audio(data, name="audio.wav"):
+    """Audio file bytes to mono float32 at 48 kHz, at most MAX_FILE_S seconds."""
+    if not data:
+        raise ValueError("the file is empty")
+    if not (data[:4] == b"RIFF" and data[8:12] == b"WAVE"):
+        data = to_wav(data, name)
+    x, rate = parse_wav(data)
+    x = x.mean(axis=1)
     if rate != FS:
         from math import gcd
         from scipy.signal import resample_poly
-        g = gcd(FS, rate)
-        x = resample_poly(x, FS // g, rate // g).astype(np.float32)
+        g = gcd(FS, int(rate))
+        x = resample_poly(x, FS // g, int(rate) // g).astype(np.float32)
     if len(x) < FS // 10:
         raise ValueError("the file is too short (under 0.1 s)")
-    return x
+    peak = float(np.max(np.abs(x)))
+    if peak < 1e-6:
+        raise ValueError("the file is silent")
+    return np.ascontiguousarray(x, np.float32)
+
+
+def load_wav(data_or_path):
+    """Kept for callers that pass a path or WAV bytes."""
+    if not isinstance(data_or_path, (bytes, bytearray)):
+        with open(data_or_path, "rb") as f:
+            data_or_path = f.read()
+    return load_audio(bytes(data_or_path))
 
 
 def make_speech(folder):
@@ -232,12 +292,12 @@ class TestSources:
             if not os.path.isfile(path):
                 raise ValueError("load the file first")
             with open(path, "rb") as f:
-                self.files[name] = load_wav(f.read())
+                self.files[name] = load_audio(f.read(), name)
         return self.files[name]
 
     def saved_files(self):
         try:
-            on_disk = [f for f in os.listdir(self.folder) if f.lower().endswith(".wav") and f not in
+            on_disk = [f for f in os.listdir(self.folder) if f.lower().endswith(AUDIO_EXTS) and f not in
                        ("speech.wav", "speech-making.wav")]
         except OSError:
             on_disk = []
@@ -329,7 +389,9 @@ class TestSources:
 
     def load(self, name, data):
         name = os.path.basename(name or "recording.wav")
-        x = load_wav(data)
+        if not name.lower().endswith(AUDIO_EXTS):
+            raise ValueError(f"{name} doesn't look like an audio file (WAV, AIFF, MP3, M4A, CAF or FLAC)")
+        x = load_audio(data, name)
         os.makedirs(self.folder, exist_ok=True)
         with open(os.path.join(self.folder, name), "wb") as f:
             f.write(data)
@@ -342,7 +404,8 @@ class TestSources:
         return {"playing": {str(c + 1): d for c, d in self.desc.items()},
                 "allowed": {str(c + 1): w for c, w in self.allowed.items()},
                 "files": self.saved_files(),
-                "switched_off_by_arming": self.switched_off}
+                "switched_off_by_arming": self.switched_off,
+                "finder": sys.platform == "darwin"}
 
     # ------------------------------------------------------------ playing (audio thread)
     def apply(self, indata, frames):

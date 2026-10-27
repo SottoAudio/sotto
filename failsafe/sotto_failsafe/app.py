@@ -12,6 +12,7 @@ import csv
 import json
 import os
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -968,13 +969,43 @@ class BenchApp:
             return {"ok": False, "error": str(e)}
 
     def test_upload(self, name, data):
+        LOG.info("Audio file received: %s, %d bytes", name, len(data or b""))
         try:
             r = self.tests.load(name, data)
             self.log(Event(self.core.t, "test_file", f"{r['name']} ({r['seconds']} s)", "console"))
             return {"ok": True, **r, **self.tests.state()}
+        except ValueError as e:
+            LOG.warning("Could not use %s: %s", name, e)
+            return {"ok": False, "error": f"Couldn't use {os.path.basename(name or 'that file')}: {e}."}
         except Exception as e:
             LOG.exception("Could not load %s", name)
-            return {"ok": False, "error": f"Couldn't read that file: {e}. Use a WAV file."}
+            return {"ok": False, "error": f"Couldn't read {os.path.basename(name or 'that file')}: {e!r}"}
+
+    def test_choose(self):
+        """macOS's own file dialog, opened by Sotto Bench itself: works whatever the browser allows."""
+        if sys.platform != "darwin":
+            return {"ok": False, "error": "Choosing with Finder only works on a Mac. Use Upload audio file."}
+        LOG.info("Opening the macOS file dialog for a test audio file")
+        script = ['-e', 'activate', '-e',
+                  'POSIX path of (choose file with prompt "Choose an audio file for Sotto Bench" of type {"public.audio"})']
+        try:
+            r = subprocess.run(["osascript"] + script, capture_output=True, text=True, timeout=600)
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": "The file dialog was left open too long. Try again."}
+        if r.returncode != 0:
+            if "-128" in r.stderr:
+                return {"ok": False, "cancelled": True, "error": "No file chosen"}
+            LOG.warning("macOS file dialog failed: %s", r.stderr.strip())
+            return {"ok": False, "error": f"macOS couldn't open the file dialog: {r.stderr.strip()[:200]}"}
+        path = r.stdout.strip()
+        try:
+            if os.path.getsize(path) > 60_000_000:
+                return {"ok": False, "error": "That file is too big (60 MB at most)."}
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError as e:
+            return {"ok": False, "error": f"Couldn't open {os.path.basename(path)}: {e.strerror}"}
+        return self.test_upload(os.path.basename(path), data)
 
     def phones_local(self, device):
         try:
@@ -1111,6 +1142,8 @@ class BenchApp:
                     res = {"ok": True}
                 elif self.path == "/api/testsrc":
                     res = app.test_source(body if isinstance(body, dict) else {})
+                elif self.path == "/api/testsrc/choose":
+                    res = app.test_choose()
                 elif self.path == "/api/config":
                     res = app.reconfigure(body if isinstance(body, dict) else {})
                 elif self.path == "/api/setup":

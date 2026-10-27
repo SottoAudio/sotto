@@ -115,6 +115,9 @@ textarea{width:100%;resize:vertical;min-height:70px}
 .ptab select{min-width:72px}.ptab input{min-width:160px}select.clash{border-color:var(--led-red,#d33);box-shadow:0 0 0 2px rgba(220,50,50,.25)}.subh{margin:14px 0 8px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 .pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}.pgrid label{display:flex;flex-direction:column;gap:4px;font-size:13px}
 .tsrc label{display:flex;gap:8px;align-items:center;margin:0}.tsrc label input{flex:1;min-width:80px}.tsrc label select{flex:1}
+.upl{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:8px;border:1px dashed var(--line);border-radius:8px}
+.upl.drag,.drop.drag{border-color:var(--accent,#4c8dff);background:rgba(76,141,255,.08)}
+.filebtn{cursor:pointer}.vh{position:absolute!important;width:1px;height:1px;opacity:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .flist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}.flist li{display:flex;gap:10px;align-items:center;justify-content:space-between}
 @media (max-width:640px){.tsrc{grid-template-columns:1fr 1fr}}
 .strip .num{font:600 12.5px/1 var(--f-mono);color:var(--muted)}
@@ -1283,7 +1286,7 @@ table.t tr.unused td{color:var(--muted)}
     const files = T.files || [];
     // One dropdown for any audio choice: the built-in option (if any), every uploaded WAV, and upload.
     const audioSel = (ch, field, val, first) => `<select data-tf="${field}" data-ch="${ch}"${armed ? ' disabled' : ''}>${
-      [first || ['', files.length ? 'Choose a WAV file…' : 'No WAV files yet']].concat(files.map(x => [x, x])).concat([['__upload__', 'Upload a WAV file…']])
+      [first || ['', files.length ? 'Choose an audio file…' : 'No audio files yet']].concat(files.map(x => [x, x])).concat([['__upload__', 'Upload an audio file…']])
         .map(([v, l]) => `<option value="${esc(v)}"${v === (val || '') ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
     const rows = Object.entries(T.allowed).map(([ch, what]) => {
       const now = T.playing[ch];
@@ -1296,38 +1299,67 @@ table.t tr.unused td{color:var(--muted)}
       else if (f.kind === 'programme') pick = audioSel(ch, 'prog', f.prog, ['', 'Built-in programme (music)']);
       if (f.kind === 'bleed') extra = `<label class="muted" style="grid-column:1/-1">Programme that bleeds (also played on PGM) ${audioSel(ch, 'prog', f.prog, ['', 'Built-in programme (music)'])}</label>`;
       const needs = f.kind === 'file' && !f.file;
+      const up = UI.pick && UI.pick.ch === ch ? uploadStrip(T, `for input ${ch}`) : '';
       return `<div class="tsrc"><b>Input ${ch} · ${esc(label)}</b>
         <select data-tf="kind" data-ch="${ch}"${armed ? ' disabled' : ''}>${TKINDS.filter(([k]) => !(isPgm && k === 'bleed')).map(([k, l]) => `<option value="${k}"${k === f.kind ? ' selected' : ''}>${l}</option>`).join('')}</select>
         ${pick}
         <button class="btn sm" data-act="tplay" data-v="${ch}"${armed || needs || (f.kind === 'off' && !now) ? ' disabled' : ''}>${f.kind === 'off' ? 'Stop' : now ? 'Update' : 'Play'}</button>
-        ${extra}
+        ${extra}${up}
         <label class="muted" style="grid-column:1/3">Level <input type="range" min="-50" max="0" step="1" value="${f.level}" data-tf="level" data-ch="${ch}"> <span class="mono">${f.level} dBFS</span></label>
         ${f.kind === 'bleed' ? `<label class="muted" style="grid-column:3/-1">PA bleed <input type="range" min="-20" max="20" step="1" value="${f.bleed}" data-tf="bleed" data-ch="${ch}"> <span class="mono">${f.bleed > 0 ? '+' : ''}${f.bleed} dB</span></label>` : ''}
         <span class="now">${now ? 'Playing: ' + esc(now.what) : 'Live input'}</span></div>`;
     }).join('');
-    const list = files.length ? `<ul class="flist">${files.map(x => `<li><span class="mono">${esc(x)}</span><button class="btn sm" data-act="tremove" data-v="${esc(x)}"${armed ? ' disabled' : ''}>Remove</button></li>`).join('')}</ul>` : '<span class="muted">None yet. Choose “Upload a WAV file…” in any dropdown above.</span>';
+    const list = (files.length ? `<ul class="flist">${files.map(x => `<li><span class="mono">${esc(x)}</span><button class="btn sm" data-act="tremove" data-v="${esc(x)}"${armed ? ' disabled' : ''}>Remove</button></li>`).join('')}</ul>` : '<span class="muted">None yet.</span>') +
+      `<div class="drop" style="margin-top:8px">${uploadStrip(T, '')}</div>`;
     return box('Test sources', 'Play test audio into a channel inside Sotto, so you can hear the processing without a mic, a PGM feed or any Dante routing. Solo the channel and listen in Split (dry left, clean right). <b>Speech with PA bleed</b> puts a programme on PGM and the same programme, delayed 40 ms with room reverb, into the mic under the speech: the echo canceller should remove it. Use your own WAVs for both: speech recorded on a comms mic, and a recording of the show as the programme. Test sources only play while Sotto is disarmed; arming switches them all off. The test audio also goes out on that talker\'s return.',
       (armed ? '<p class="note warn">Sotto is armed: test sources are off. Disarm to use them.</p>' : '') + rows +
-      `<input type="file" accept=".wav,audio/wav,audio/x-wav" id="tfPick" hidden>` +
-      row('Uploaded WAV files', 'Kept on this computer for next time. Any sample rate, 16, 24 or 32-bit, up to 2 minutes.', list) +
+      row('Uploaded audio files', 'Kept on this computer for next time. WAV at any sample rate, 16, 24 or 32-bit, or 32-bit float. On a Mac also AIFF, MP3, M4A, CAF and FLAC. Up to 2 minutes; longer files are cut.', list) +
       row('', '', `<button class="btn sm" data-act="talloff"${armed ? ' disabled' : ''}>Stop every test source</button>`));
   }
+  const AUDIO_ACCEPT = 'audio/*,.wav,.wave,.bwf,.aif,.aiff,.aifc,.caf,.mp3,.m4a,.aac,.flac';
+  // Three ways in, so one always works: a real file button (clicked by you, which every browser
+  // allows), dropping a file on the box, and on a Mac the Finder dialog opened by Sotto Bench itself.
+  function uploadStrip(T, forWhat) {
+    const busy = UI.uploading ? ' disabled' : '', dis = APP.armed ? ' disabled' : '';
+    return `<div class="upl" data-drop="1">
+      ${busy || dis ? '<button class="btn sm" disabled>Upload audio file…</button>' : '<label class="btn sm filebtn" for="tfFile" role="button" tabindex="0">Upload audio file…</label>'}
+      ${T.finder ? `<button class="btn sm" data-act="tchoose"${busy || dis}>Choose with Finder…</button>` : ''}
+      <span class="muted">${UI.uploading ? esc(UI.uploading) : 'or drop a file here' + (forWhat ? ' ' + esc(forWhat) : '')}</span>
+      ${forWhat ? `<button class="btn sm" data-act="tpickcancel">Cancel</button>` : ''}</div>`;
+  }
+  // One file input that lives outside the re-drawn page, so a redraw while the picker is open
+  // can't lose the file you chose. The buttons are <label for> it: a direct click every browser allows.
+  const fileIn = document.createElement('input');
+  fileIn.type = 'file'; fileIn.id = 'tfFile'; fileIn.accept = AUDIO_ACCEPT; fileIn.className = 'vh'; fileIn.tabIndex = -1;
+  fileIn.setAttribute('aria-hidden', 'true');
+  document.body.appendChild(fileIn);
+  fileIn.addEventListener('change', () => { const f = fileIn.files && fileIn.files[0]; fileIn.value = ''; uploadWav(f); });
   function pickWav(ch, field) {
     UI.pick = { ch, field };
-    const inp = $('#tfPick'); if (inp) { inp.value = ''; inp.click(); }
+    renderSet();
+    try { fileIn.click(); } catch (e) {}           // opens the picker straight away where the browser allows it
   }
-  async function uploadWav(file) {
-    const pk = UI.pick; UI.pick = null;
-    if (!file) { renderSet(); return; }
-    toast(`Uploading ${file.name}…`);
-    try {
-      const r = await (await fetch('/api/testsrc/upload?name=' + encodeURIComponent(file.name), { method: 'POST', body: file })).json();
-      if (!r.ok) { toast(r.error); renderSet(); return; }
-      APP.tests = r;
+  function uploadDone(r) {
+    const pk = UI.pick;
+    UI.uploading = '';
+    if (r.ok) {
+      APP.tests = r; UI.pick = null;
       if (pk && UI.tf[pk.ch]) UI.tf[pk.ch][pk.field] = r.name;
       toast(`Uploaded ${r.name} (${r.seconds} s)`);
-    } catch (e) { toast('Sotto Bench did not answer'); }
+    } else if (!r.cancelled) toast(r.error || 'Could not upload that file');
     renderSet();
+  }
+  async function uploadWav(file) {
+    if (!file) return;
+    UI.uploading = `Uploading ${file.name}…`; renderSet();
+    try {
+      const res = await fetch('/api/testsrc/upload?name=' + encodeURIComponent(file.name), { method: 'POST', body: file });
+      uploadDone(await res.json());
+    } catch (e) { uploadDone({ ok: false, error: `Sotto Bench did not answer (${e.message || e})` }); }
+  }
+  async function chooseWithFinder() {
+    UI.uploading = 'Waiting for the Finder dialog… (it may open behind this window)'; renderSet();
+    uploadDone(await api('/api/testsrc/choose', {}).catch(e => ({ ok: false, error: 'Sotto Bench did not answer' })));
   }
   async function testCmd(body) {
     const r = await api('/api/testsrc', body).catch(() => ({ ok: false, error: 'Sotto Bench did not answer' }));
@@ -1756,7 +1788,6 @@ table.t tr.unused td{color:var(--muted)}
     const pk = e.target.closest('select[data-pk]');
     if (pk) { patchSet(pk.dataset.pk, pk.value); UI.patchErr = ''; renderSet(); return; }
     const t = e.target.closest('[data-tf]');
-    if (e.target.id === 'tfPick') { uploadWav(e.target.files && e.target.files[0]); return; }
     if (t) {
       const f = UI.tf[t.dataset.ch]; const k = t.dataset.tf;
       if (k === 'file' || k === 'prog') { if (t.value === '__upload__') { pickWav(t.dataset.ch, k); return; } f[k] = t.value; renderSet(); return; }
@@ -1765,6 +1796,19 @@ table.t tr.unused td{color:var(--muted)}
     }
     if (e.target.id === 'f-op-ch') { assignOp(UI.op, e.target.value === '' ? null : +e.target.value); return; }
     const el = e.target.closest('[data-b]'); if (!el) return; bindEl(el, !(el.type === 'text' || el.tagName === 'TEXTAREA')); });
+  ['dragenter', 'dragover'].forEach(ev => $('#setBody').addEventListener(ev, e => {
+    const z = e.target.closest('[data-drop]'); if (!z || !APP || APP.armed) return;
+    e.preventDefault(); z.classList.add('drag');
+  }));
+  $('#setBody').addEventListener('dragleave', e => { const z = e.target.closest('[data-drop]'); if (z && !z.contains(e.relatedTarget)) z.classList.remove('drag'); });
+  $('#setBody').addEventListener('drop', e => {
+    const z = e.target.closest('[data-drop]'); if (!z) return;
+    e.preventDefault(); z.classList.remove('drag');
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]; if (f) uploadWav(f);
+  });
+  window.addEventListener('dragover', e => { if (!e.target.closest || !e.target.closest('[data-drop]')) e.preventDefault(); });
+  window.addEventListener('drop', e => { if (!e.target.closest || !e.target.closest('[data-drop]')) e.preventDefault(); });   // never navigate away to a dropped file
+  $('#setBody').addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('label[for="tfFile"]')) { e.preventDefault(); fileIn.click(); } });
   $('#setBody').addEventListener('click', e => {
     const b = e.target.closest('[data-act]'); if (!b) return;
     const a = b.dataset.act, v = b.dataset.v, m = P.macros.find(x => x.id === UI.macro);
@@ -1793,6 +1837,8 @@ table.t tr.unused td{color:var(--muted)}
         return;
       }
       case 'tplay': { const f = UI.tf[v]; testCmd(f.kind === 'off' ? { channel: +v, kind: 'off' } : { channel: +v, kind: f.kind, file: f.file || null, programme_file: f.prog || null, level_db: f.level, bleed_db: f.bleed }); return; }
+      case 'tchoose': chooseWithFinder(); return;
+      case 'tpickcancel': UI.pick = null; renderSet(); return;
       case 'tremove': testCmd({ remove: v }); Object.values(UI.tf).forEach(f => { if (f.file === v) f.file = ''; if (f.prog === v) f.prog = ''; }); return;
       case 'talloff': UI.tf = {}; testCmd({ all_off: true }); return;
       case 'lphones': {

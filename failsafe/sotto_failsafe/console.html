@@ -1194,7 +1194,7 @@ table.t tr.unused td{color:var(--muted)}
   function procNote() {
     const pr = APP && APP.processing;
     if (!pr || !pr.on) return `Processing is off${pr && pr.why ? ': ' + pr.why : ''}. The talkers pass straight through.`;
-    return `Running${pr.model ? '' : ' without the speech model (Full clean works as Echo + noise)'}: ${pr.proc_ms} ms of each 10 ms block, peak ${pr.proc_ms_max} ms. Adds ${pr.latency_ms} ms plus the soundcard.${pr.misses ? ` ${pr.misses} late blocks so far.` : ''}`;
+    return `Running${pr.model ? '' : ' without the speech model (Full clean works as Echo + noise)'}: ${pr.proc_ms} ms of each 10 ms block, peak ${pr.proc_ms_max} ms. Adds ${pr.latency_ms} ms plus the soundcard.${pr.misses ? ` ${pr.misses} late blocks so far.` : ''}${pr.cpu_ms != null ? ` Computing takes ${pr.cpu_ms} ms of that${pr.proc_ms > 1.5 * pr.cpu_ms + 1 ? ' (the rest is waiting: the computer is holding Sotto back)' : ''}.` : ''}${pr.thread ? ` Processing thread: ${pr.thread}.` : ''}`;
   }
   function appNote(sec) {
     const m = {
@@ -1209,7 +1209,8 @@ table.t tr.unused td{color:var(--muted)}
     if (APP && APP.engine) {
       const e = APP.engine;
       return box('Audio engine', 'What Sotto Bench is running on now. Change it on the setup page: Quit, then open Sotto Bench again.',
-        row('Device', '', `<span class="fixed">${esc(e.simulate ? 'Simulated Riedel frame (no audio hardware)' : String(e.device))}</span>`) +
+        row('Device', '', `<span class="fixed">${esc(e.simulate ? 'Simulated Riedel frame (no audio hardware)' : (e.device_name || String(e.device)))}</span>`) +
+        (e.app_nap ? row('App Nap', 'macOS slows down apps with no window. Sotto turns this off while it runs.', `<span class="fixed">${esc(e.app_nap)}</span>`) : '') +
         row('Channels open', 'Inputs and outputs Sotto Bench asked the device for.', `<span class="fixed">${e.n_in} in / ${e.n_out} out</span>`) +
         row('Sample rate', '', `<span class="fixed">${e.fs / 1000} kHz</span>`) +
         row('Block', '', `<span class="fixed">${e.block} samples (${(1000 * e.block / e.fs).toFixed(1)} ms)</span>`) +

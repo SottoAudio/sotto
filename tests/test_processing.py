@@ -108,6 +108,10 @@ class ProcessingTests(unittest.TestCase):
             y = run(pr, 40, lambda b: (rng.standard_normal((2, 480)) * 0.02, rng.standard_normal(480) * 0.1))
             self.assertTrue(np.all(np.isfinite(y)))
             self.assertEqual([c.s.mode for c in pr.chains], ["aecns", "full"])
+            st = pr.state()                                # computing time is reported next to the total
+            self.assertGreater(st["cpu_ms"], 0)
+            self.assertLessEqual(st["cpu_ms"], st["proc_ms"] * 1.5 + 0.5)
+            self.assertTrue(st["thread"])
         finally:
             pr.stop()
 

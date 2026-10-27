@@ -21,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
 
+from . import macos
 from .arming import Event
 from .core import Config, FailsafeCore
 
@@ -102,24 +103,30 @@ class Recorder:
             self.w.close()
 
 
+def config_from_args(a):
+    """The fail-safe Config for parsed command-line options (channels converted to 0-based)."""
+    cfg = Config(
+        talker_in=chans(a.talker_in), talker_out=chans(a.talker_out),
+        probe_in=chans(a.probe_in), probe_out=chans(a.probe_out)[0],
+        heartbeat_out=chans(a.heartbeat_out)[0],
+        listen_in=(chans(a.listen_in)[0] if a.listen_in else None),
+        pgm_in=(chans(a.pgm_in)[0] if a.pgm_in else None),
+        monitor_out=chans(a.monitor),
+        arm_hold_s=a.arm_hold, probe_timeout_s=a.probe_timeout / 1000.0,
+        marker_on=not a.no_marker,
+    )
+    if a.names:
+        cfg.talker_names = [n.strip() for n in a.names.split(",")]
+    if len(cfg.talker_in) != len(cfg.talker_out):
+        raise SystemExit("--talker-in and --talker-out need the same number of channels")
+    cfg.talker_names = (cfg.talker_names + [f"talker {i + 1}" for i in range(len(cfg.talker_in))])[: len(cfg.talker_in)]
+    return cfg
+
+
 class BenchApp:
     def __init__(self, a):
         self.a = a
-        cfg = Config(
-            talker_in=chans(a.talker_in), talker_out=chans(a.talker_out),
-            probe_in=chans(a.probe_in), probe_out=chans(a.probe_out)[0],
-            heartbeat_out=chans(a.heartbeat_out)[0],
-            listen_in=(chans(a.listen_in)[0] if a.listen_in else None),
-            pgm_in=(chans(a.pgm_in)[0] if a.pgm_in else None),
-            monitor_out=chans(a.monitor),
-            arm_hold_s=a.arm_hold, probe_timeout_s=a.probe_timeout / 1000.0,
-            marker_on=not a.no_marker,
-        )
-        if a.names:
-            cfg.talker_names = [n.strip() for n in a.names.split(",")]
-        if len(cfg.talker_in) != len(cfg.talker_out):
-            raise SystemExit("--talker-in and --talker-out need the same number of channels")
-        cfg.talker_names = (cfg.talker_names + [f"talker {i + 1}" for i in range(len(cfg.talker_in))])[: len(cfg.talker_in)]
+        cfg = config_from_args(a)
         self.cfg = cfg
         self.core = FailsafeCore(cfg)
         self.take = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -470,8 +477,12 @@ class BenchApp:
 
     def run(self):
         a, cfg = self.a, self.cfg
+        clash = channel_clashes(cfg)
+        if clash:
+            raise SystemExit(clash)
         if not a.simulate:
             import sounddevice as sd
+        self.app_nap = macos.keep_responsive()[1]
         n_in = max(cfg.talker_in + cfg.probe_in + [c for c in (cfg.listen_in, cfg.pgm_in) if c is not None]) + 1
         n_out = max(cfg.talker_out + [cfg.probe_out, cfg.heartbeat_out] + cfg.monitor_out) + 1
         dev = int(a.device) if a.device and str(a.device).isdigit() else a.device
@@ -499,7 +510,14 @@ class BenchApp:
         with stream as st:
             il, ol = st.latency if isinstance(st.latency, tuple) else (0.0, st.latency)
             self.latency_note = f"interface in {1000 * il:.1f} ms + out {1000 * ol:.1f} ms"
-            self.engine_info = {"device": "simulated" if a.simulate else str(a.device), "simulate": bool(a.simulate),
+            name = "simulated"
+            if not a.simulate:
+                try:
+                    name = sd.query_devices(st.device[0] if isinstance(st.device, (tuple, list)) else st.device)["name"]
+                except Exception:
+                    name = str(a.device)
+            self.engine_info = {"device": "simulated" if a.simulate else str(a.device), "device_name": name,
+                                "app_nap": self.app_nap, "simulate": bool(a.simulate),
                                 "fs": cfg.fs, "block": a.block, "n_in": n_in, "n_out": n_out,
                                 "latency_note": self.latency_note}
             print(f"Running ({self.latency_note}). Console: http://{a.host}:{a.port}   Ctrl+C to stop")
@@ -585,6 +603,24 @@ class BenchApp:
 
         self.srv = ThreadingHTTPServer((self.a.host, self.a.port), H)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+
+def channel_clashes(cfg):
+    """Plain-English message if one soundcard channel is given two jobs, else None."""
+    used = {}
+    ins = [(c, f"talker {i + 1} input") for i, c in enumerate(cfg.talker_in)]
+    ins += [(c, "PROBE return") for c in cfg.probe_in]
+    ins += [(c, n) for c, n in ((cfg.pgm_in, "PGM"), (cfg.listen_in, "listen input")) if c is not None]
+    outs = [(c, f"talker {i + 1} output") for i, c in enumerate(cfg.talker_out)]
+    outs += [(cfg.probe_out, "PROBE send"), (cfg.heartbeat_out, "HEARTBEAT")]
+    outs += [(c, "headphones") for c in cfg.monitor_out]
+    for side, items in (("Input", ins), ("Output", outs)):
+        used = {}
+        for c, what in items:
+            if c in used and not (what == "headphones" and used[c] == "headphones"):
+                return f"{side} {c + 1} is set as both {used[c]} and {what}. Give each job its own channel."
+            used[c] = what
+    return None
 
 
 def list_devices():

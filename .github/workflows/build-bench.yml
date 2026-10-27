@@ -123,6 +123,7 @@ jobs:
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:8790/api/state > state.json && break; sleep 1; done
           fail() { echo "::error title=Smoke test (${{ matrix.name }})::$1 $(tail -c 2000 smoke.log | tr '\n' ' ')"; exit 1; }
           python -c "import json; s=json.load(open('state.json')); assert s['armed'] is False and s['solo']['ids'] == []; p=s['processing']; assert p['on'] and p['model'] and p['plugins_available'], p; print('console up, disarmed, processing on with the speech model')" || fail "state check failed:"
+          python -c "import json, sys; s=json.load(open('state.json')); e, p = s['engine'], s['processing']; print('App Nap:', e.get('app_nap'), '| processing thread:', p.get('thread')); sys.exit(0 if sys.platform != 'darwin' or (e.get('app_nap') == 'App Nap off' and p.get('thread') == 'performance cores') else 1)" || fail "macOS priority check failed:"
           curl -sf http://127.0.0.1:8790/ -o page.html && grep -q "<title>Sotto Console</title>" page.html || fail "new console not served"
           curl -sf http://127.0.0.1:8790/bench > /dev/null || fail "bench console not served"
           curl -sf "http://127.0.0.1:8790/api/plugins" -o plugins.json || fail "plugin list failed"

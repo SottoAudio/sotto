@@ -82,3 +82,99 @@ class LauncherTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SecondLaunchTests(unittest.TestCase):
+    """Opening Sotto Bench while it's already running must not fail silently."""
+
+    def setUp(self):
+        import socket
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        self.port = s.getsockname()[1]
+        s.close()
+        self.saved = launcher.PORT
+        launcher.PORT = self.port
+
+    def tearDown(self):
+        launcher.PORT = self.saved
+
+    def _serve(self, code, body):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                self.send_response(code)
+                self.end_headers()
+                self.wfile.write(body)
+
+        srv = ThreadingHTTPServer(("127.0.0.1", self.port), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+
+    def test_free_port_is_used(self):
+        self.assertEqual(launcher.pick_port(), (self.port, False))
+
+    def test_sotto_already_running_is_reused(self):
+        self._serve(503, b'{"setup": true}')
+        self.assertEqual(launcher.pick_port(), (self.port, True))
+
+    def test_other_program_on_the_port_moves_sotto(self):
+        self._serve(200, b"<html>someone else</html>")
+        port, running = launcher.pick_port()
+        self.assertFalse(running)
+        self.assertNotEqual(port, self.port)
+        self.assertTrue(launcher.port_free(port))
+
+
+class ChannelLayoutTests(unittest.TestCase):
+    """Settings from older versions move to the fixed channels; a channel can't have two jobs."""
+
+    def test_old_saved_settings_move_to_the_fixed_channels(self):
+        from unittest import mock
+        old = {"device": "2", "talker_in": "1-5", "talker_out": "1-5", "probe_in": "5", "probe_out": "5",
+               "heartbeat_out": "6", "listen_in": "6", "monitor": "7,8", "names": "a,b,c,d,e"}
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(launcher, "config_dir", return_value=d):
+            with open(os.path.join(d, "config.json"), "w") as f:
+                json.dump(old, f)
+            cfg = launcher.load_config()
+        self.assertEqual((cfg["probe_in"], cfg["probe_out"], cfg["heartbeat_out"], cfg["pgm_in"], cfg["monitor"]),
+                         ("61", "62", "61", "62", "63,64"))
+        self.assertEqual(cfg["listen_in"], "")
+        self.assertEqual((cfg["device"], cfg["talker_in"], cfg["names"]), ("2", "1-5", "a,b,c,d,e"))   # kept
+
+    def test_new_saved_settings_are_kept(self):
+        from unittest import mock
+        new = dict(launcher.DEFAULTS, monitor="7,8")
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(launcher, "config_dir", return_value=d):
+            with open(os.path.join(d, "config.json"), "w") as f:
+                json.dump(new, f)
+            self.assertEqual(launcher.load_config()["monitor"], "7,8")
+
+    def test_clashes(self):
+        from sotto_failsafe.app import channel_clashes, config_from_args
+        ok = config_from_args(parse_args(launcher.argv_from(dict(launcher.DEFAULTS, device="0"), simulate=False)))
+        self.assertIsNone(channel_clashes(ok))
+        bad = dict(launcher.DEFAULTS, device="0", talker_in="1-5", talker_out="1-5", probe_in="5")
+        msg = channel_clashes(config_from_args(parse_args(launcher.argv_from(bad, simulate=False))))
+        self.assertEqual(msg, "Input 5 is set as both talker 5 input and PROBE return. Give each job its own channel.")
+        bad = dict(launcher.DEFAULTS, device="0", monitor="61,62")
+        self.assertIn("Output 61", channel_clashes(config_from_args(parse_args(launcher.argv_from(bad, simulate=False)))))
+        mono = dict(launcher.DEFAULTS, device="0", monitor="63,63")                 # mono phones: fine
+        self.assertIsNone(channel_clashes(config_from_args(parse_args(launcher.argv_from(mono, simulate=False)))))
+        sim = config_from_args(parse_args(launcher.argv_from(dict(launcher.DEFAULTS), simulate=True)))
+        self.assertIsNone(channel_clashes(sim))
+
+
+class MacOSTests(unittest.TestCase):
+    def test_calls_never_raise(self):
+        from sotto_failsafe import macos
+        for f in (macos.keep_responsive, macos.fast_thread):
+            ok, msg = f()
+            self.assertIsInstance(msg, str)
+            if sys.platform == "darwin":
+                self.assertTrue(ok, msg)

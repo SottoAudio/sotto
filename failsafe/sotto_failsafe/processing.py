@@ -35,6 +35,8 @@ from cct.engine import Ring, DelayTracker                    # noqa: E402
 from cct.stream_dfn import StreamSTFT, BatchedDFN            # noqa: E402
 from scipy.signal import butter, sosfilt                     # noqa: E402
 
+from . import macos                                          # noqa: E402
+
 FS = 48000
 HOP = 480
 NFFT = 960
@@ -273,6 +275,8 @@ class Processor:
         self.good_run = 0
         self.proc_ms = 0.0
         self.proc_ms_max = 0.0
+        self.cpu_ms = 0.0                                # thread CPU time: if far below proc_ms, the
+        self.thread_note = ""                            # thread is waiting, not computing
         self.faults = []                                 # (talker, why), drained by the app
         self.ok = True
         self.why = ""
@@ -356,6 +360,7 @@ class Processor:
                 c.set_plugin(plug, name)
 
     def _loop(self):
+        _, self.thread_note = macos.fast_thread()
         while not self.stop_ev.is_set():
             try:
                 tag, mics, ref = self.q_in.get(timeout=0.2)
@@ -366,7 +371,7 @@ class Processor:
                         break
             except queue.Empty:
                 continue
-            t0 = time.perf_counter()
+            t0, c0 = time.perf_counter(), time.thread_time()
             self._apply_pending()
             self.refs_ring.write(ref[None])
             self.ref_db = _db(float(np.mean(ref * ref)))
@@ -405,6 +410,7 @@ class Processor:
             except queue.Full:
                 pass
             dt = 1000 * (time.perf_counter() - t0)
+            self.cpu_ms = 0.98 * self.cpu_ms + 0.02 * 1000 * (time.thread_time() - c0)
             self.proc_ms = 0.98 * self.proc_ms + 0.02 * dt
             self.proc_ms_max = max(self.proc_ms_max * 0.999, dt)
             while self._to_close:
@@ -428,7 +434,8 @@ class Processor:
     def state(self):
         return {
             "on": True, "model": self.dfn is not None, "proc_ms": round(self.proc_ms, 2),
-            "proc_ms_max": round(self.proc_ms_max, 2), "misses": self.misses, "ok": self.ok, "why": self.why,
+            "proc_ms_max": round(self.proc_ms_max, 2), "cpu_ms": round(self.cpu_ms, 2),
+            "thread": self.thread_note, "misses": self.misses, "ok": self.ok, "why": self.why,
             "latency_ms": round(1000 * (2 * HOP) / FS, 1), "pgm_db": round(self.ref_db, 1),
             "talkers": [{
                 "name": c.name, "mode": c.s.mode, "erle_db": round(c.erle, 1),

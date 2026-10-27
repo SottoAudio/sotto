@@ -112,6 +112,8 @@ class ProcessingTests(unittest.TestCase):
             self.assertGreater(st["cpu_ms"], 0)
             self.assertLessEqual(st["cpu_ms"], st["proc_ms"] * 1.5 + 0.5)
             self.assertTrue(st["thread"])
+            self.assertEqual(set(st["stage_ms"]), {"front", "model", "back"})
+            self.assertGreater(st["stage_ms"]["model"], 0)
         finally:
             pr.stop()
 

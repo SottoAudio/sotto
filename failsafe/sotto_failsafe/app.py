@@ -306,6 +306,7 @@ class BenchApp:
             frame = self.rrcs.frame_state()
         s["frame"] = frame
         s["engine"] = getattr(self, "engine_info", None)
+        s["power"] = getattr(self, "power", {})
         s["processing"] = self.proc.state() if self.proc is not None else {"on": False, "why": self.proc_note}
         if self.proc is not None:
             s["processing"]["plugins_available"] = self.vst3 is not None
@@ -523,10 +524,14 @@ class BenchApp:
             print(f"Running ({self.latency_note}). Console: http://{a.host}:{a.port}   Ctrl+C to stop")
             print(f"Events and recordings: {self.dir}")
             try:
+                next_power = 0.0
                 while not self.quit_ev.is_set():
                     time.sleep(0.05)
                     self._drain()
                     self._save_plugin_states()
+                    if time.monotonic() >= next_power:      # Low Power Mode, heat, battery
+                        self.power = macos.power_state()
+                        next_power = time.monotonic() + 10
             except KeyboardInterrupt:
                 print("\nStopping ...")
         self._drain()

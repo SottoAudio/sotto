@@ -1194,7 +1194,13 @@ table.t tr.unused td{color:var(--muted)}
   function procNote() {
     const pr = APP && APP.processing;
     if (!pr || !pr.on) return `Processing is off${pr && pr.why ? ': ' + pr.why : ''}. The talkers pass straight through.`;
-    return `Running${pr.model ? '' : ' without the speech model (Full clean works as Echo + noise)'}: ${pr.proc_ms} ms of each 10 ms block, peak ${pr.proc_ms_max} ms. Adds ${pr.latency_ms} ms plus the soundcard.${pr.misses ? ` ${pr.misses} late blocks so far.` : ''}${pr.cpu_ms != null ? ` Computing takes ${pr.cpu_ms} ms of that${pr.proc_ms > 1.5 * pr.cpu_ms + 1 ? ' (the rest is waiting: the computer is holding Sotto back)' : ''}.` : ''}${pr.thread ? ` Processing thread: ${pr.thread}.` : ''}`;
+    return `Running${pr.model ? '' : ' without the speech model (Full clean works as Echo + noise)'}: ${pr.proc_ms} ms of each 10 ms block, peak ${pr.proc_ms_max} ms. Adds ${pr.latency_ms} ms plus the soundcard.${pr.misses ? ` ${pr.misses} late blocks so far.` : ''}${pr.cpu_ms != null ? ` Computing takes ${pr.cpu_ms} ms of that${pr.proc_ms > 1.5 * pr.cpu_ms + 1 ? ' (the rest is waiting: the computer is holding Sotto back)' : ''}.` : ''}${pr.thread ? ` Processing thread: ${pr.thread}.` : ''}${pr.stage_ms ? ` Echo and suppressor ${pr.stage_ms.front} ms, speech model ${pr.stage_ms.model} ms (${pr.model_rows} talkers), mix and inserts ${pr.stage_ms.back} ms.` : ''}${powerNote()}`;
+  }
+  function powerNote() {
+    const w = APP && APP.power;
+    if (!w) return '';
+    const bad = [w.low_power && 'Low Power Mode is on', w.thermal && !/^normal/.test(w.thermal) && 'the Mac is ' + w.thermal, w.power === 'battery' && 'running on battery'].filter(Boolean);
+    return bad.length ? ` Note: ${bad.join(', ')}. Use mains power with Low Power Mode off for live work.` : '';
   }
   function appNote(sec) {
     const m = {

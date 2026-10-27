@@ -73,3 +73,29 @@ def fast_thread():
         return (rc == 0), ("performance cores" if rc == 0 else f"couldn't raise thread priority (error {rc})")
     except Exception as e:
         return False, f"couldn't raise thread priority: {e!r}"
+
+
+THERMAL = ("normal", "warm", "hot (slowing down)", "critical (slowing down)")
+
+
+def power_state():
+    """Low Power Mode, thermal state and power source, for the status page. {} elsewhere."""
+    if sys.platform != "darwin":
+        return {}
+    out = {}
+    try:
+        objc = _objc()
+        sel = objc.sel_registerName
+        info = _send(objc, ctypes.c_void_p, [])(objc.objc_getClass(b"NSProcessInfo"), sel(b"processInfo"))
+        out["low_power"] = bool(_send(objc, ctypes.c_bool, [])(info, sel(b"isLowPowerModeEnabled")))
+        t = int(_send(objc, ctypes.c_long, [])(info, sel(b"thermalState")))
+        out["thermal"] = THERMAL[t] if 0 <= t < len(THERMAL) else str(t)
+    except Exception as e:
+        out["error"] = repr(e)
+    try:
+        import subprocess
+        r = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True, timeout=3)
+        out["power"] = "battery" if "Battery Power" in r.stdout else "mains" if "AC Power" in r.stdout else "unknown"
+    except Exception:
+        pass
+    return out

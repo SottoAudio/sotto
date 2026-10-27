@@ -150,6 +150,7 @@ class BenchApp:
         self.lock = threading.Lock()
         self._was_armed = False
         self.quit_ev = threading.Event()
+        self.restart_device = None                       # set by /api/engine: the launcher restarts
         self.srv = None
         self.timing = []
         self.sim = None
@@ -548,6 +549,35 @@ class BenchApp:
             self.srv.shutdown()
             self.srv.server_close()
 
+    def switch_device(self, device):
+        """Restarts on another soundcard. The new engine starts disarmed, like any start, so the
+        frame falls back to dry until someone re-arms."""
+        if self.a.simulate:
+            return {"ok": False, "error": "The simulated frame has no soundcard. Quit and choose a soundcard on the setup page."}
+        devs = device_list()
+        if not devs["ok"]:
+            return {"ok": False, "error": "Could not list audio devices: " + devs["error"]}
+        d = next((x for x in devs["devices"] if str(x["index"]) == str(device)), None)
+        if d is None:
+            return {"ok": False, "error": "That device is no longer there."}
+        need_in, need_out = self.engine_info["n_in"], self.engine_info["n_out"]
+        if d["inputs"] < need_in or d["outputs"] < need_out:
+            return {"ok": False, "error": f"{d['name']} has {d['inputs']} inputs and {d['outputs']} outputs. "
+                                          f"These channel settings need {need_in} in and {need_out} out."}
+        self.log(Event(self.core.t, "device_change", f"restarting on {d['name']}", "console"))
+        try:                                             # remembered for the next launch too
+            path = os.path.join(config_dir(), "config.json")
+            with open(path) as f:
+                saved = json.load(f)
+            saved["device"] = str(d["index"])
+            with open(path, "w") as f:
+                json.dump(saved, f, indent=2)
+        except (OSError, ValueError):
+            pass
+        self.restart_device = str(d["index"])
+        self.quit_ev.set()
+        return {"ok": True, "device": d["name"]}
+
     def _start_web(self):
         app = self
         with open(os.path.join(HERE, "console.html"), "rb") as f:
@@ -577,6 +607,8 @@ class BenchApp:
                     self._send(200, json.dumps({"project": app.project, "path": app.project_path}).encode(), "application/json")
                 elif self.path.startswith("/api/plugins"):
                     self._send(200, json.dumps(app.plugins(rescan="rescan" in self.path)).encode(), "application/json")
+                elif self.path == "/api/devices":
+                    self._send(200, json.dumps(device_list()).encode(), "application/json")
                 elif self.path.startswith("/api/insert"):
                     from urllib.parse import urlparse, parse_qs
                     q = parse_qs(urlparse(self.path).query)
@@ -602,6 +634,8 @@ class BenchApp:
                 elif self.path == "/quit":
                     app.quit_ev.set()
                     res = {"ok": True}
+                elif self.path == "/api/engine":
+                    res = app.switch_device(body.get("device") if isinstance(body, dict) else None)
                 else:
                     return self._send(404, b"not found", "text/plain")
                 self._send(200, json.dumps(res).encode(), "application/json")
@@ -626,6 +660,18 @@ def channel_clashes(cfg):
                 return f"{side} {c + 1} is set as both {used[c]} and {what}. Give each job its own channel."
             used[c] = what
     return None
+
+
+def device_list():
+    """Every audio device, for the setup page and the console."""
+    try:
+        import sounddevice as sd
+        apis = sd.query_hostapis()
+        return {"ok": True, "error": None, "devices": [
+            {"index": i, "name": d["name"], "inputs": d["max_input_channels"], "outputs": d["max_output_channels"],
+             "api": apis[d["hostapi"]]["name"]} for i, d in enumerate(sd.query_devices())]}
+    except Exception as e:                       # no PortAudio, no permission, ...
+        return {"ok": False, "error": repr(e), "devices": []}
 
 
 def list_devices():

@@ -1191,6 +1191,38 @@ table.t tr.unused td{color:var(--muted)}
       row('Output trim', 'Level change on every clean return.', rng('proc.trim', pp.trim, -12, 6, 0.5, 'dB')) +
       row('Added delay (estimate)', 'Through Sotto, on top of the DVS latency. Latency work comes later.', `<span class="fixed">${lat.toFixed(1)} ms</span><span class="muted">${buf.toFixed(1)} ms in + ${buf.toFixed(1)} ms out${pp.mode === 'full' ? ' + 10 ms speech model frame' : ''}</span>`));
   }
+  function loadDevices() {
+    if (UI.devsLoading) return;
+    UI.devsLoading = true;
+    api('/api/devices').then(r => { UI.devs = r; }).catch(() => { UI.devs = { ok: false, error: 'Sotto Bench did not answer', devices: [] }; })
+      .finally(() => { UI.devsLoading = false; if (UI.sec === 'engine' && !$('#pSet').hidden) renderSet(); });
+  }
+  function appDeviceRow(e) {
+    if (UI.restarting) return row('Switch to', '', `<span class="fixed">Restarting on ${esc(UI.restarting)}… Sotto starts disarmed.</span>`);
+    if (!UI.devs) { loadDevices(); return row('Switch to', '', '<span class="muted">Looking for audio devices…</span>'); }
+    if (!UI.devs.ok) return row('Switch to', esc(UI.devs.error || ''), '<button class="btn sm" data-act="devrefresh">Look again</button>');
+    const opts = UI.devs.devices.map(d => {
+      const enough = d.inputs >= e.n_in && d.outputs >= e.n_out;
+      return `<option value="${d.index}"${String(d.index) === String(UI.devPick ?? e.device) ? ' selected' : ''}${enough ? '' : ' disabled'}>${esc(d.name)} (${d.inputs} in / ${d.outputs} out${enough ? '' : ', too few channels'})</option>`;
+    }).join('');
+    const pick = UI.devs.devices.find(d => String(d.index) === String(UI.devPick));
+    const confirm = UI.devConfirm && pick
+      ? `<div class="note warn" style="margin-top:8px">Switching to <b>${esc(pick.name)}</b> restarts the audio engine. HEARTBEAT stops, so the frame puts every listener on dry, and Sotto starts again disarmed. Re-arm when the checks are green.
+           <div class="row" style="margin-top:8px"><button class="btn sm" data-act="devgo">Restart on ${esc(pick.name)}</button><button class="btn sm" data-act="devno">Cancel</button></div></div>` : '';
+    return row('Switch to', `Every device the Mac can see. Greyed-out devices have fewer than the ${e.n_in} inputs and ${e.n_out} outputs these channel settings need.`,
+      `<select id="f-appdev">${opts}</select><button class="btn sm" data-act="devswitch">Switch</button><button class="btn sm" data-act="devrefresh">Look again</button>${confirm}`);
+  }
+  async function restartOn(idx, name) {
+    const r = await api('/api/engine', { device: idx }).catch(() => ({ ok: false, error: 'Sotto Bench did not answer' }));
+    if (!r.ok) { toast(r.error || 'Could not switch'); return; }
+    UI.restarting = name; UI.devConfirm = false; renderSet();
+    for (let i = 0; i < 80; i++) {                       // the old engine stops, the new one starts disarmed
+      await new Promise(res => setTimeout(res, 500));
+      try { const st = await api('/api/state'); if (st.engine && String(st.engine.device) === String(idx) && st.t < 30) { location.reload(); return; } } catch (e) {}
+    }
+    UI.restarting = null; renderSet();
+    toast('Sotto Bench did not come back. Open it again from the Applications or Downloads folder.');
+  }
   function procNote() {
     const pr = APP && APP.processing;
     if (!pr || !pr.on) return `Processing is off${pr && pr.why ? ': ' + pr.why : ''}. The talkers pass straight through.`;
@@ -1214,8 +1246,9 @@ table.t tr.unused td{color:var(--muted)}
   function secEngine() {
     if (APP && APP.engine) {
       const e = APP.engine;
-      return box('Audio engine', 'What Sotto Bench is running on now. Change it on the setup page: Quit, then open Sotto Bench again.',
-        row('Device', '', `<span class="fixed">${esc(e.simulate ? 'Simulated Riedel frame (no audio hardware)' : (e.device_name || String(e.device)))}</span>`) +
+      return box('Audio engine', 'What Sotto Bench is running on now.',
+        row('Device', e.simulate ? 'Quit and choose a soundcard on the setup page to leave the simulation.' : 'Switching restarts the audio engine.', `<span class="fixed">${esc(e.simulate ? 'Simulated Riedel frame (no audio hardware)' : (e.device_name || String(e.device)))}</span>`) +
+        (e.simulate ? '' : appDeviceRow(e)) +
         (e.app_nap ? row('App Nap', 'macOS slows down apps with no window. Sotto turns this off while it runs.', `<span class="fixed">${esc(e.app_nap)}</span>`) : '') +
         row('Channels open', 'Inputs and outputs Sotto Bench asked the device for.', `<span class="fixed">${e.n_in} in / ${e.n_out} out</span>`) +
         row('Sample rate', '', `<span class="fixed">${e.fs / 1000} kHz</span>`) +
@@ -1482,6 +1515,15 @@ table.t tr.unused td{color:var(--muted)}
       case 'mode': P.proc.mode = v; break;
       case 'driver': P.engine.driver = v; if (!dev().drivers.includes(v)) P.engine.device = 'dvs'; UI.check = null; break;
       case 'buffer': P.engine.buffer = +v; UI.check = null; break;
+      case 'devrefresh': UI.devs = null; UI.devConfirm = false; break;
+      case 'devswitch': {
+        const el = $('#f-appdev'); UI.devPick = el ? el.value : null;
+        if (APP && APP.engine && String(UI.devPick) === String(APP.engine.device)) { toast('Sotto is already using that device'); UI.devConfirm = false; }
+        else UI.devConfirm = true;
+        break;
+      }
+      case 'devno': UI.devConfirm = false; UI.devPick = null; break;
+      case 'devgo': { const d = UI.devs.devices.find(x => String(x.index) === String(UI.devPick)); if (d) restartOn(d.index, d.name); return; }
       case 'check': {
         const d = dev(), e2 = P.engine, ok = engineOk();
         UI.check = [

@@ -178,3 +178,46 @@ class MacOSTests(unittest.TestCase):
             self.assertIsInstance(msg, str)
             if sys.platform == "darwin":
                 self.assertTrue(ok, msg)
+
+
+class SwitchDeviceTests(unittest.TestCase):
+    def test_restart_replaces_the_device_and_keeps_the_rest(self):
+        from unittest import mock
+        argv = ["--out-dir", "/x", "--port", "8766", "--device", "0", "--talker-in", "1-4"]
+        with mock.patch.object(launcher.os, "execv") as ex:
+            launcher.restart(argv, "3")
+        exe, cmd = ex.call_args[0]
+        self.assertEqual(exe, sys.executable)
+        tail = cmd[cmd.index("--out-dir"):]
+        self.assertEqual(tail, ["--out-dir", "/x", "--port", "8766", "--device", "3", "--talker-in", "1-4", "--no-browser"])
+
+    def test_simulated_app_refuses_to_switch(self):
+        with tempfile.TemporaryDirectory() as d:
+            app = BenchApp(parse_args(["--simulate", "--port", "8798", "--out-dir", d]))
+            r = app.switch_device("0")
+            self.assertFalse(r["ok"])
+            self.assertIsNone(app.restart_device)
+            self.assertFalse(app.quit_ev.is_set())
+
+    def test_switch_checks_channels_saves_and_stops(self):
+        from unittest import mock
+        from sotto_failsafe import app as appmod
+        devs = {"ok": True, "error": None, "devices": [
+            {"index": 0, "name": "Dante Virtual Soundcard", "inputs": 64, "outputs": 64, "api": "Core Audio"},
+            {"index": 1, "name": "MacBook Pro Microphone", "inputs": 1, "outputs": 0, "api": "Core Audio"},
+            {"index": 2, "name": "Merging VAD", "inputs": 64, "outputs": 64, "api": "Core Audio"}]}
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(appmod, "device_list", return_value=devs), \
+                mock.patch.object(appmod, "config_dir", return_value=d):
+            with open(os.path.join(d, "config.json"), "w") as f:
+                json.dump({"device": "0", "layout": 2}, f)
+            app = BenchApp(parse_args(["--device", "0", "--port", "8799", "--out-dir", d]))
+            app.engine_info = {"n_in": 62, "n_out": 64}
+            r = app.switch_device("1")
+            self.assertFalse(r["ok"])
+            self.assertIn("1 inputs and 0 outputs", r["error"])
+            r = app.switch_device("2")
+            self.assertTrue(r["ok"])
+            self.assertEqual(app.restart_device, "2")
+            self.assertTrue(app.quit_ev.is_set())
+            with open(os.path.join(d, "config.json")) as f:
+                self.assertEqual(json.load(f)["device"], "2")

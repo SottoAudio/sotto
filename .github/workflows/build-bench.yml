@@ -103,7 +103,7 @@ jobs:
                 --add-data "$MODELS${{ matrix.sep }}models/DeepFilterNet3_ll_stream_batch"
                 --add-binary "../$LIB${{ matrix.sep }}."
                 --add-binary "../$EXE${{ matrix.sep }}."
-                --hidden-import sotto_failsafe.processing --hidden-import sotto_failsafe.vst3 --hidden-import sotto_failsafe.workers --hidden-import sotto_failsafe.diagnostics
+                --hidden-import sotto_failsafe.processing --hidden-import sotto_failsafe.vst3 --hidden-import sotto_failsafe.workers --hidden-import sotto_failsafe.diagnostics --hidden-import sotto_failsafe.testsrc --hidden-import sotto_failsafe.phones --hidden-import sotto_failsafe.regroup --hidden-import sotto_failsafe.coreaudio
                 --hidden-import cct.aec --hidden-import cct.engine --hidden-import cct.stream_dfn --hidden-import cct.delay --hidden-import cct.denoise
                 --collect-all sounddevice --collect-all _sounddevice_data --collect-all onnxruntime)
           if [ "${{ matrix.name }}" = "mac" ]; then ARGS+=(--windowed --osx-bundle-identifier audio.sotto.bench); fi
@@ -157,6 +157,19 @@ jobs:
           grep -q "Soundcard open" diag.txt || fail "the log in the diagnostics file is empty"
           grep -qE "Processing in [0-9]+ worker process|Processing thread started" diag.txt || fail "the log doesn't say how processing runs"
           sed -n '/==== Speed test/,/^====/p' diag.txt | head -40
+          # a test source plays into input 2 at the level asked for, and the PROBE return refuses one
+          python - <<'PY' || fail "test sources:"
+          import json, time, urllib.request
+          post = lambda p, b: json.load(urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:8790" + p, data=json.dumps(b).encode(), method="POST"), timeout=60))
+          assert post("/api/testsrc", {"channel": 2, "kind": "tone", "level_db": -20})["ok"]
+          assert not post("/api/testsrc", {"channel": 61, "kind": "tone"})["ok"]
+          time.sleep(1.0)
+          st = json.load(urllib.request.urlopen("http://127.0.0.1:8790/api/state", timeout=10))
+          lv = st["levels_in"][1]
+          assert abs(lv + 20) < 1.0, lv
+          assert post("/api/testsrc", {"all_off": True})["ok"]
+          print("test tone on input 2 at", lv, "dBFS")
+          PY
           curl -sf -X POST http://127.0.0.1:8790/quit
           sleep 2
           "$APP" --diagnostics --quick > cli.txt 2>&1 || fail "--diagnostics failed: $(cat cli.txt)"

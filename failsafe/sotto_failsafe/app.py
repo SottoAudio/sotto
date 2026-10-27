@@ -175,6 +175,13 @@ class BenchApp:
         self.cb_ms_max = 0.0
         self._cb_last = None                             # when the last block arrived
         self.regroup = None                              # set when the soundcard runs on a small buffer
+        from .phones import LocalPhones
+        from .testsrc import TestSources
+        allowed = {c: f"talker {i + 1}" for i, c in enumerate(cfg.talker_in)}
+        if cfg.pgm_in is not None:
+            allowed[cfg.pgm_in] = "PGM"
+        self.tests = TestSources(os.path.join(config_dir(), "test-audio"), allowed)
+        self.local_phones = LocalPhones()
         self._status = None
         self.coreaudio = None
         self.gaps = self._new_gaps()                     # how evenly the soundcard delivers blocks
@@ -194,6 +201,10 @@ class BenchApp:
         self.recent = (self.recent + [row])[-60:]
 
     def _drain(self):
+        if self.core.arm.armed and self.tests.plan:     # arming switches every test source off
+            self.tests.off()
+            self.tests.switched_off += 1
+            self.log(Event(self.core.t, "test_sources_off", "Sotto armed: every test source switched off", "auto"))
         exc, self._cb_exc = self._cb_exc, None
         if exc is not None:
             LOG.error("Audio callback error (%d so far); outputs were silenced for that block", self.callback_errors,
@@ -338,6 +349,8 @@ class BenchApp:
                          "gaps": {"blocks": g["n"], "min_ms": round(g["min_ms"], 2) if g["n"] else None,
                                   "max_ms": round(g["max_ms"], 2), "bunched": g["bunched"], "late": g["late"]}}
         s["power"] = getattr(self, "power", {})
+        s["tests"] = self.tests.state()
+        s["local_phones"] = self.local_phones.state()
         s["processing"] = self.proc.state() if self.proc is not None else {"on": False, "why": self.proc_note}
         if self.proc is not None:
             s["processing"]["plugins_available"] = self.vst3 is not None
@@ -508,6 +521,10 @@ class BenchApp:
                 g["late"] += 1
         self._cb_last = t0
         try:
+            if self.tests.plan and not self.core.arm.armed:    # test sources: never while armed
+                indata = self.tests.apply(indata, frames)
+            else:
+                self.tests.clock += frames
             if self.proc is not None and frames == 480:
                 cfg = self.cfg
                 mics = np.asarray(indata[:, cfg.talker_in], dtype=np.float64).T
@@ -522,6 +539,9 @@ class BenchApp:
             else:
                 with self.lock:
                     self.core.process(indata, outdata, status)
+            if self.local_phones.stream is not None and self.cfg.monitor_out:
+                mon = self.cfg.monitor_out
+                self.local_phones.push(outdata[:, mon[0]], outdata[:, mon[-1]])
             if self.rec.on:
                 cfg = self.cfg
                 cols = [indata[:, c] for c in cfg.talker_in + cfg.probe_in]
@@ -602,6 +622,7 @@ class BenchApp:
                                     "pa_latency_ms": {"in": round(1000 * il, 2), "out": round(1000 * ol, 2)}}
                 if not a.simulate:
                     self._read_coreaudio(name)
+                    self._reopen_local_phones()
                 LOG.info("Soundcard open: %s (%s)", name, self.latency_note)
                 diagnostics.last_crash(clear=True)       # started fine: the setup page stops showing it
                 print(f"Running ({self.latency_note}). Console: http://{a.host}:{a.port}   Ctrl+C to stop")
@@ -667,6 +688,7 @@ class BenchApp:
                          ("plugin settings", lambda: self.proc is not None and self._save_plugin_states(force=True)),
                          ("processing", lambda: self.proc is not None and self.proc.stop()),
                          ("RRCS", lambda: self.rrcs and (self.rrcs.set_armed_safe(False), self.rrcs.stop())),
+                         ("phones on this computer", self.local_phones.close),
                          ("event log", self.events_f.close)):
             try:
                 fn()
@@ -729,6 +751,70 @@ class BenchApp:
         self.quit_ev.set()
         return {"ok": True, "device": " with ".join(what)}
 
+    # ------------------------------------------------------------ test sources, phones on this computer
+    def test_source(self, b):
+        if self.core.arm.armed:
+            return {"ok": False, "error": "Disarm Sotto first: test sources only play while disarmed."}
+        try:
+            if b.get("all_off"):
+                self.tests.off()
+                self.log(Event(self.core.t, "test_sources_off", "all", "console"))
+                return {"ok": True, **self.tests.state()}
+            ch = int(b.get("channel")) - 1
+            kind = b.get("kind")
+            if kind in (None, "", "off"):
+                self.tests.off(ch)
+                self.log(Event(self.core.t, "test_source", f"input {ch + 1}: off", "console"))
+                return {"ok": True, **self.tests.state()}
+            d = self.tests.set(ch, kind, float(b.get("level_db", -20)), b.get("file") or None,
+                               float(b.get("bleed_db", -6)))
+            self.log(Event(self.core.t, "test_source", f"input {ch + 1}: {d['what']}", "console"))
+            return {"ok": True, **self.tests.state()}
+        except Exception as e:
+            LOG.exception("Test source %s failed", b)
+            return {"ok": False, "error": str(e)}
+
+    def test_upload(self, name, data):
+        try:
+            r = self.tests.load(name, data)
+            self.log(Event(self.core.t, "test_file", f"{r['name']} ({r['seconds']} s)", "console"))
+            return {"ok": True, **r, **self.tests.state()}
+        except Exception as e:
+            LOG.exception("Could not load %s", name)
+            return {"ok": False, "error": f"Couldn't read that file: {e}. Use a WAV file."}
+
+    def phones_local(self, device):
+        try:
+            r = self.local_phones.open(None if device in (None, "", "off") else int(device))
+        except Exception as e:
+            LOG.exception("Phones on this computer: could not open %s", device)
+            return {"ok": False, "error": f"Couldn't play on that device: {e}"}
+        try:                                              # remembered by name for the next start
+            path = os.path.join(config_dir(), "config.json")
+            with open(path) as f:
+                saved = json.load(f)
+            saved["local_phones"] = r.get("name") or ""
+            with open(path, "w") as f:
+                json.dump(saved, f, indent=2)
+        except (OSError, ValueError):
+            pass
+        return {**r, "state": self.local_phones.state()}
+
+    def _reopen_local_phones(self):
+        try:
+            with open(os.path.join(config_dir(), "config.json")) as f:
+                name = json.load(f).get("local_phones")
+        except (OSError, ValueError):
+            return
+        if not name or self.a.simulate:
+            return
+        d = next((x for x in device_list().get("devices", []) if x["name"] == name and x["outputs"] > 0), None)
+        if d:
+            try:
+                self.local_phones.open(d["index"])
+            except Exception:
+                LOG.exception("Phones on this computer: could not reopen %s", name)
+
     def _start_web(self):
         app = self
         with open(os.path.join(HERE, "console.html"), "rb") as f:
@@ -780,6 +866,8 @@ class BenchApp:
                     self._send(200, json.dumps(app.plugins(rescan="rescan" in self.path)).encode(), "application/json")
                 elif self.path == "/api/devices":
                     self._send(200, json.dumps(device_list()).encode(), "application/json")
+                elif self.path == "/api/testsrc":
+                    self._send(200, _json(app.tests.state()).encode(), "application/json")
                 elif self.path.startswith("/api/diagnostics"):
                     # The speed test loads the computer for ~15 s: never while armed (it could make
                     # processing late and disarm Sotto mid-show).
@@ -802,6 +890,12 @@ class BenchApp:
 
             def _post(self):
                 n = int(self.headers.get("Content-Length", 0))
+                if self.path.startswith("/api/testsrc/upload"):      # a WAV file, as the body
+                    from urllib.parse import parse_qs, urlparse
+                    if n > 60_000_000:
+                        return self._send(200, b'{"ok": false, "error": "That file is too big (60 MB at most)."}', "application/json")
+                    name = parse_qs(urlparse(self.path).query).get("name", ["recording.wav"])[0]
+                    return self._send(200, _json(app.test_upload(name, self.rfile.read(n))).encode(), "application/json")
                 try:
                     body = json.loads(self.rfile.read(n) or b"{}")
                 except ValueError:
@@ -818,6 +912,10 @@ class BenchApp:
                 elif self.path == "/quit":
                     app.quit_ev.set()
                     res = {"ok": True}
+                elif self.path == "/api/testsrc":
+                    res = app.test_source(body if isinstance(body, dict) else {})
+                elif self.path == "/api/phones":
+                    res = app.phones_local((body or {}).get("device") if isinstance(body, dict) else None)
                 elif self.path == "/api/engine":
                     b = body if isinstance(body, dict) else {}
                     res = app.switch_device(b.get("device"), b.get("io_buffer"))

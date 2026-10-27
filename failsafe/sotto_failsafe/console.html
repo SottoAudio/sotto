@@ -108,6 +108,12 @@ textarea{width:100%;resize:vertical;min-height:70px}
 .sys .strip:hover,.pin .strip:hover{background:color-mix(in srgb,var(--ink) 4%,var(--sunk))}
 .strip.feed{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}
 .strip.static{cursor:default}.strip.static:hover{background:none}
+.tst{display:inline-block;margin-left:6px;padding:0 5px;border-radius:4px;font:600 10px/16px var(--f-mono,monospace);letter-spacing:.04em;background:var(--solo);color:#1b1500;vertical-align:1px}
+.tsrc{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) minmax(0,1fr) auto;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}
+.tsrc:last-child{border-bottom:0}
+.tsrc .now{grid-column:1/-1;font-size:12px;color:var(--muted)}
+.tsrc label{display:flex;gap:8px;align-items:center;margin:0}.tsrc label input{flex:1;min-width:80px}
+@media (max-width:640px){.tsrc{grid-template-columns:1fr 1fr}}
 .strip .num{font:600 12.5px/1 var(--f-mono);color:var(--muted)}
 .strip .nm{min-width:0;display:flex;gap:6px;align-items:baseline}
 .strip .nm b{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
@@ -832,7 +838,7 @@ table.t tr.unused td{color:var(--muted)}
   function stripHTML(k, n, sub, opts = {}) {
     const name = nameOf(k, n), off = n <= MAXT && !P.ch[n - 1].used;
     const tagged = k === 'o' && n <= MAXT;
-    const subHTML = tagged ? `<small class="tag" data-tag>–</small>` : `<small>${esc(sub)}</small>`;
+    const subHTML = tagged ? `<small class="tag" data-tag>–</small>` : `<small>${esc(sub)}<i class="tst" data-test hidden>TEST</i></small>`;
     const cls = ['strip', off && 'off', opts.cls, opts.static && 'static'].filter(Boolean).join(' ');
     const label = `${k === 'i' ? 'Input' : 'Output'} ${n}, ${name}${opts.static ? '' : '. Press to solo it to the headphones'}`;
     const tag = opts.static ? 'div' : 'button';
@@ -1119,13 +1125,14 @@ table.t tr.unused td{color:var(--muted)}
   $('#editMacros').onclick = () => { UI.sec = 'macros'; showTab('set'); };
 
   // ------------------------------------------------------------ settings
-  const UI = { insInfo: {}, insLoading: {}, realPlugins: null, pluginsLoading: false, op: 'op-caller', sec: 'project', macro: 'dry', confirmDel: false, confirmReset: false, check: null, rrcsTest: null };
+  const UI = { tf: {}, insInfo: {}, insLoading: {}, realPlugins: null, pluginsLoading: false, op: 'op-caller', sec: 'project', macro: 'dry', confirmDel: false, confirmReset: false, check: null, rrcsTest: null };
   const SECS = [
     ['project', 'Project', 'Name and notes for this show'],
     ['channels', 'Channels', 'How many talkers, names, patching'],
     ['operators', 'Operators', 'Profiles that follow each person: insert, settings, processing'],
     ['processing', 'Processing', 'What Sotto removes from each voice'],
     ['engine', 'Audio engine', 'Dante Virtual Soundcard or Merging VAD'],
+    ['tests', 'Test sources', 'Tone, speech or PA bleed into a channel'],
     ['plugins', 'Plugins', 'VST3 and AU plugins Sotto can host'],
     ['riedel', 'Riedel and fail-safe', 'RRCS, logic sources, VOX, PROBE'],
     ['macros', 'Macros', 'Steps behind the macro keys'],
@@ -1263,6 +1270,45 @@ table.t tr.unused td{color:var(--muted)}
     UI.restarting = null; renderSet();
     toast('Sotto Bench did not come back. Open it again from the Applications or Downloads folder.');
   }
+  const TKINDS = [['off', 'Off'], ['tone', 'Test tone (1 kHz)'], ['pink', 'Pink noise'], ['speech', 'Speech'], ['bleed', 'Speech with PA bleed'], ['programme', 'Programme (music)'], ['file', 'A WAV file']];
+  function secTests() {
+    if (!APP) return box('Test sources', 'In the app, Sotto can play a test tone, pink noise, speech, or speech with PA bleed into any talker input or into PGM, so you can hear the processing before anything is routed in Dante Controller. This preview has no audio engine.', '');
+    const T = APP.tests || { playing: {}, allowed: {}, files: [] };
+    const armed = APP.armed;
+    const files = T.files || [];
+    const rows = Object.entries(T.allowed).map(([ch, what]) => {
+      const now = T.playing[ch];
+      const f = UI.tf[ch] || (UI.tf[ch] = { kind: now ? now.kind : 'off', level: now ? now.level_db : -20, file: now && now.file || '', bleed: -6 });
+      const isPgm = what === 'PGM';
+      const label = isPgm ? 'PGM (reference)' : chName(+what.split(' ')[1] - 1);
+      const needsFile = f.kind === 'file' || ((f.kind === 'speech' || f.kind === 'bleed') && files.length);
+      const fileSel = needsFile ? `<select data-tf="file" data-ch="${ch}">${(f.kind === 'file' ? [] : [['', f.kind === 'bleed' || f.kind === 'speech' ? 'Speech made by this Mac' : '']]).concat(files.map(x => [x, x])).map(([v, l]) => `<option value="${esc(v)}"${v === f.file ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>` : '<span></span>';
+      return `<div class="tsrc"><b>Input ${ch} · ${esc(label)}</b>
+        <select data-tf="kind" data-ch="${ch}"${armed ? ' disabled' : ''}>${TKINDS.filter(([k]) => !(isPgm && k === 'bleed')).map(([k, l]) => `<option value="${k}"${k === f.kind ? ' selected' : ''}>${l}</option>`).join('')}</select>
+        ${fileSel}
+        <button class="btn sm" data-act="tplay" data-v="${ch}"${armed || (f.kind === 'off' && !now) ? ' disabled' : ''}>${f.kind === 'off' ? 'Stop' : now ? 'Update' : 'Play'}</button>
+        <label class="muted" style="grid-column:1/3">Level <input type="range" min="-50" max="0" step="1" value="${f.level}" data-tf="level" data-ch="${ch}"> <span class="mono">${f.level} dBFS</span></label>
+        ${f.kind === 'bleed' ? `<label class="muted" style="grid-column:3/-1">PA bleed <input type="range" min="-20" max="20" step="1" value="${f.bleed}" data-tf="bleed" data-ch="${ch}"> <span class="mono">${f.bleed > 0 ? '+' : ''}${f.bleed} dB</span></label>` : ''}
+        <span class="now">${now ? 'Playing: ' + esc(now.what) : 'Live input'}</span></div>`;
+    }).join('');
+    return box('Test sources', 'Play test audio into a channel inside Sotto, so you can hear the processing without a mic, a PGM feed or any Dante routing. Solo the channel and listen in Split (dry left, clean right). <b>Speech with PA bleed</b> puts a programme on PGM and the same programme, delayed 40 ms with room reverb, into the mic under the speech: the echo canceller should remove it. Test sources only play while Sotto is disarmed; arming switches them all off. The test audio also goes out on that talker\'s return.',
+      (armed ? '<p class="note warn">Sotto is armed: test sources are off. Disarm to use them.</p>' : '') + rows +
+      row('Your own recording', 'A WAV file (any sample rate, up to 2 minutes): speech recorded on a comms mic is the best test.', `<input type="file" accept=".wav,audio/wav" id="tfUpload"><button class="btn sm" data-act="tupload">Load</button>`) +
+      row('', '', `<button class="btn sm" data-act="talloff"${armed ? ' disabled' : ''}>Stop every test source</button>`));
+  }
+  async function testCmd(body) {
+    const r = await api('/api/testsrc', body).catch(() => ({ ok: false, error: 'Sotto Bench did not answer' }));
+    if (!r.ok) toast(r.error || 'Could not change the test source'); else { APP.tests = r; renderSet(); }
+  }
+  function phonesRow(e) {
+    const lp = (APP && APP.local_phones) || {};
+    if (!UI.devs) { loadDevices(); return ''; }
+    const outs = (UI.devs.devices || []).filter(d => d.outputs > 0 && String(d.index) !== String(e.device));
+    const opts = [['', 'Off']].concat(outs.map(d => [d.index, `${d.name} (${d.outputs} out)`]));
+    const cur = lp.device == null ? '' : lp.device;
+    return row('Phones on this Mac', `Also play the phones bus on this computer's headphones or speakers, for listening without a Dante headphone device. The two clocks differ, so now and then a few samples are skipped or repeated: fine for listening, not for show audio. ${lp.name ? `Playing on ${esc(lp.name)}, ${lp.buffered_ms} ms buffered${lp.skips || lp.gaps ? `, ${lp.skips} catch-ups, ${lp.gaps} gaps` : ''}.` : ''}`,
+      `<select id="f-lphones">${opts.map(([v, l]) => `<option value="${v}"${String(v) === String(cur) ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select><button class="btn sm" data-act="lphones">Apply</button>`);
+  }
   function procNote() {
     const pr = APP && APP.processing;
     if (!pr || !pr.on) return `Processing is off${pr && pr.why ? ': ' + pr.why : ''}. The talkers pass straight through.`;
@@ -1290,6 +1336,7 @@ table.t tr.unused td{color:var(--muted)}
         row('Device', e.simulate ? 'Quit and choose a soundcard on the setup page to leave the simulation.' : 'Switching restarts the audio engine.', `<span class="fixed">${esc(e.simulate ? 'Simulated Riedel frame (no audio hardware)' : (e.device_name || String(e.device)))}</span>`) +
         (e.simulate ? '' : appDeviceRow(e)) +
         (e.simulate ? '' : appBufferRow(e)) +
+        (e.simulate ? '' : phonesRow(e)) +
         latencyRow(e) +
         coreAudioRow(e) +
         (e.app_nap ? row('App Nap', 'macOS slows down apps with no window. Sotto turns this off while it runs.', `<span class="fixed">${esc(e.app_nap)}</span>`) : '') +
@@ -1506,7 +1553,7 @@ table.t tr.unused td{color:var(--muted)}
   });
   function renderSet() {
     renderRail();
-    const f = { project: secProject, channels: secChannels, processing: secProcessing, engine: secEngine, riedel: secRiedel, macros: secMacros, operators: APP ? secOperatorsApp : secOperators, plugins: APP ? secPluginsApp : secPlugins }[UI.sec];
+    const f = { tests: secTests, project: secProject, channels: secChannels, processing: secProcessing, engine: secEngine, riedel: secRiedel, macros: secMacros, operators: APP ? secOperatorsApp : secOperators, plugins: APP ? secPluginsApp : secPlugins }[UI.sec];
     const y = window.scrollY, ae = document.activeElement && document.activeElement.id;
     $('#setBody').innerHTML = (APP ? appNote(UI.sec) : '') + f();
     if (ae && document.getElementById(ae)) document.getElementById(ae).focus({ preventScroll: true });
@@ -1545,7 +1592,14 @@ table.t tr.unused td{color:var(--muted)}
     if (rerender) renderSet(); else renderRail();
   }
   $('#setBody').addEventListener('input', e => { const el = e.target.closest('[data-b]'); if (el && (el.type === 'text' || el.tagName === 'TEXTAREA' || el.type === 'range')) bindEl(el, false); });
+  $('#setBody').addEventListener('input', e => {
+    const t = e.target.closest('[data-tf]'); if (!t) return;
+    const f = UI.tf[t.dataset.ch]; const k = t.dataset.tf;
+    if (k === 'level' || k === 'bleed') { f[k] = +t.value; const lab = t.nextElementSibling; if (lab) lab.textContent = k === 'level' ? `${f.level} dBFS` : `${f.bleed > 0 ? '+' : ''}${f.bleed} dB`; }
+  });
   $('#setBody').addEventListener('change', e => {
+    const t = e.target.closest('[data-tf]');
+    if (t) { const f = UI.tf[t.dataset.ch]; const k = t.dataset.tf; if (k === 'kind' || k === 'file') { f[k] = t.value; if (k === 'kind') renderSet(); } return; }
     if (e.target.id === 'f-op-ch') { assignOp(UI.op, e.target.value === '' ? null : +e.target.value); return; }
     const el = e.target.closest('[data-b]'); if (!el) return; bindEl(el, !(el.type === 'text' || el.tagName === 'TEXTAREA')); });
   $('#setBody').addEventListener('click', e => {
@@ -1560,6 +1614,23 @@ table.t tr.unused td{color:var(--muted)}
       case 'driver': P.engine.driver = v; if (!dev().drivers.includes(v)) P.engine.device = 'dvs'; UI.check = null; break;
       case 'buffer': P.engine.buffer = +v; UI.check = null; break;
       case 'devrefresh': UI.devs = null; UI.devConfirm = false; break;
+      case 'tplay': { const f = UI.tf[v]; testCmd(f.kind === 'off' ? { channel: +v, kind: 'off' } : { channel: +v, kind: f.kind === 'speech' && f.file ? 'file' : f.kind, file: f.file || null, level_db: f.level, bleed_db: f.bleed }); return; }
+      case 'talloff': UI.tf = {}; testCmd({ all_off: true }); return;
+      case 'tupload': {
+        const inp = $('#tfUpload'); const file = inp && inp.files && inp.files[0];
+        if (!file) { toast('Choose a WAV file first'); return; }
+        toast(`Loading ${file.name}…`);
+        fetch('/api/testsrc/upload?name=' + encodeURIComponent(file.name), { method: 'POST', body: file }).then(r => r.json())
+          .then(r => { if (!r.ok) toast(r.error); else { APP.tests = r; toast(`Loaded ${r.name} (${r.seconds} s)`); renderSet(); } })
+          .catch(() => toast('Sotto Bench did not answer'));
+        return;
+      }
+      case 'lphones': {
+        const el = $('#f-lphones'); const dev = el && el.value !== '' ? +el.value : null;
+        api('/api/phones', { device: dev }).then(r => { if (r.ok === false) toast(r.error); else { APP.local_phones = r.state; toast(dev == null ? 'Phones on this Mac: off' : `Phones also on ${r.name}`); renderSet(); } })
+          .catch(() => toast('Sotto Bench did not answer'));
+        return;
+      }
       case 'diag': downloadDiagnostics(); return;
       case 'devswitch': {
         const el = $('#f-appdev'); UI.devPick = el ? el.value : null;
@@ -1644,6 +1715,13 @@ table.t tr.unused td{color:var(--muted)}
     const f = st.faults || [];
     S.outputsLive = !f.includes('silence_all'); S.muted = f.includes('mute_returns'); S.frozen = false;
     (st.levels_in || []).forEach((v, k) => { S.lv['i' + (k + 1)] = v; });
+    const playing = (st.tests && st.tests.playing) || {};
+    for (const r of strips) {
+      if (r.id[0] !== 'i') continue;
+      const b = r.el.querySelector('[data-test]'); if (!b) continue;
+      const on = !!playing[r.id.slice(1)];
+      if (b.hidden === on) { b.hidden = !on; b.title = on ? playing[r.id.slice(1)].what : ''; }
+    }
     (st.levels_out || []).forEach((v, k) => { S.lv['o' + (k + 1)] = v; });
     const ev = (st.events || []).slice().reverse().map(r => [r[1], describe(r[2], r[3]), r[4]]);
     if (ev.length !== S.log.length || (ev[0] && S.log[0] && ev[0].join() !== S.log[0].join())) { S.log = ev; logDirty = true; }

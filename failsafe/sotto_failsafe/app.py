@@ -358,18 +358,23 @@ class BenchApp:
         workers = self.a.workers
         if str(workers) == "0":                         # the old way: a thread in this process
             self.proc = processing.Processor(labels, settings, model=model, vst3_lib=self.vst3,
-                                             track_delay=not self.a.simulate)
+                                             track_delay=self._track_delay())
         else:
             # The audio engine stays in this process; the processing runs in worker processes, so
             # the two never compete for a core or for Python's lock, and a crash in one can't
             # freeze the other.
             from . import workers as W
             n = None if workers in (None, "", "auto") else int(workers)
-            self.proc = W.Pool(labels, settings, model=model, workers=n, track_delay=not self.a.simulate)
+            self.proc = W.Pool(labels, settings, model=model, workers=n, track_delay=self._track_delay())
         self.core.extra_health = self.proc.health
         self.log(Event(0.0, "processing_on", f"speech model {'loaded' if model else 'not found: echo removal only'}; "
                        f"plugin inserts {'available' if self.vst3 else 'not available'}", "auto"))
         self.apply_project(self.project or {}, save=False)
+
+    def _track_delay(self):
+        """PA delay tracking: on with a real frame, off with the simulated one, unless set."""
+        t = getattr(self.a, "track_delay", "auto")
+        return (t == "on") or (t == "auto" and not self.a.simulate)
 
     def apply_project(self, project, save=True):
         """Saves the console's project and applies it to the running chains: processing settings,
@@ -780,6 +785,8 @@ def build_parser():
     p.add_argument("--no-processing", action="store_true", help="pass the talkers straight through (no echo removal, model or inserts)")
     p.add_argument("--workers", default="auto",
                    help="processing worker processes: auto (up to 3 talkers each), a number, or 0 for a thread in this process")
+    p.add_argument("--track-delay", choices=["auto", "on", "off"], default="auto",
+                   help="measure the PA delay into each talker's mic (auto: on unless --simulate)")
     p.add_argument("--project", help="project file shared with the console (default: in the app's settings folder)")
     p.add_argument("--latency", default="low")
     p.add_argument("--record", action="store_true", help="record from the start")

@@ -15,6 +15,9 @@ if(APPLE)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "")
 endif()
 project(sotto_plugin_test CXX)
+if(APPLE)
+    enable_language(OBJCXX)      # the Mac module loader (module_mac.mm) is Objective-C++
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -66,7 +69,6 @@ set(host_sources
 if(APPLE)
     list(APPEND host_sources ${SDK}/public.sdk/source/vst/hosting/module_mac.mm)
     set_source_files_properties(${SDK}/public.sdk/source/vst/hosting/module_mac.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
-    enable_language(OBJCXX)
 elseif(WIN32)
     list(APPEND host_sources ${SDK}/public.sdk/source/vst/hosting/module_win32.cpp)
 else()

@@ -446,7 +446,8 @@ class Pool:
                 code = w.proc.exitcode
                 why = w.failed or f"exit code {code}"
                 w.ready = False
-                self._fail_requests(w, f"stopped ({why})")
+                # Record the plugin that did it first, then tell whoever is waiting: their next
+                # request must already leave it out.
                 for path in getattr(w, "loading", set()) or set():
                     name = os.path.basename(path).rsplit(".", 1)[0]
                     self.crashed[path] = (f"{name} crashed Sotto's processing when it was opened ({why}), so it's "
@@ -454,6 +455,7 @@ class Pool:
                     LOG.error("Processing worker %d stopped while opening the plugin %s: not loading it again this session",
                               w.wid + 1, path)
                 w.loading = set()
+                self._fail_requests(w, f"stopped ({why})")
                 self.faults.extend((i, f"processing worker {w.wid + 1} stopped ({why})") for i in w.rows)
                 now = time.monotonic()
                 w.restart_times = [t for t in w.restart_times if now - t < 60] + [now]

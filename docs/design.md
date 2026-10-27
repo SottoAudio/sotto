@@ -90,8 +90,39 @@ Measured in Python on one core of the development machine:
 - **Speech model, batched:** 0.35 ms per talker for a batch of 16, and 25 ms for a batch of 64.
 - **Echo canceller and suppressor:** about 1.2 ms per talker with 2 references.
 
-Four talkers fit easily on an M2. 64 talkers needs parallel batches across several cores (Max
-chip), or the speech model running on the Neural Engine.
+Four talkers were expected to fit easily on an M2. The first bench run on an M2 MacBook Pro measured
+about 15 ms of computing per 10 ms block for five talkers on Full clean, all on one thread. 64 talkers
+needs parallel batches across several cores (a Max chip), or the speech model running on the Neural
+Engine.
+
+## Engine and processing are separate processes
+
+The audio engine and the processing never share a process.
+
+- **The engine stays in Sotto's own process.** That is the soundcard callback on Core Audio's
+  real-time thread, HEARTBEAT, PROBE, the fail-safe checks and the phones bus. Its per-block work
+  is small (about 0.3 ms).
+- **Worker processes do the processing.** The talkers are split into groups, up to three per worker
+  by default, and each group is processed by its own worker process (`workers.py`).
+- **They never compete.** Neither can stall the other on a core or on Python's global lock, and a
+  crash in a worker can't freeze the engine.
+- **macOS can't pin a process to a core.** Apple silicon offers no affinity control, and the
+  scheduler decides placement. Separate processes at the right priorities give the same isolation
+  in practice: the engine runs on the real-time audio thread, and the workers run at
+  user-interactive QoS with App Nap off.
+
+Per block, the callback writes each group's mics and PGM into that worker's shared memory and
+posts a semaphore. It never waits, and takes back the previous block's result. The delay through
+the chain is the same 20 ms as before.
+
+Failure handling forms two layers:
+1. **A worker fails.** A late result is a miss: that group's talkers get dry at the same delay.
+   Three misses in a row make processing unhealthy, so Sotto disarms (latched), HEARTBEAT stops and
+   the frame goes to dry. A worker that dies is logged, its talkers are tripped to dry, and it is
+   restarted with the current settings. Re-arming stays manual and needs 5 s of green.
+2. **The engine fails.** HEARTBEAT stops and the frame's VOX puts every listener on dry.
+
+`--workers 0` keeps the old single processing thread inside the engine process, for comparison.
 
 ## Toolkit and licence
 

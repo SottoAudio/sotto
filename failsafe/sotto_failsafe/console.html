@@ -2073,11 +2073,15 @@ table.t tr.unused td{color:var(--muted)}
   runMacro('restore');
   for (let i = 0; i < 900; i++) step();
   try { if (localStorage.getItem('sotto.console.tab') === 'set') showTab('set'); } catch (e) {}
-  let last = performance.now(), acc = 0;
+  let last = performance.now(), acc = 0, drawn = 0;
+  // Connected to the app, the meters are drawn about 20 times a second, not at the display's
+  // rate (up to 120 on a MacBook Pro): drawing is work for the Mac, and the audio needs it more.
+  // A hidden tab draws nothing at all (the browser pauses this loop).
+  const DRAW_MS = 50;
   function frame(now) {
     acc += Math.min(250, now - last); last = now;
     while (acc >= DT) { if (!APP) step(); acc -= DT; }
-    render(now);
+    if (!APP || now - drawn >= DRAW_MS) { render(now); drawn = now; }
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);

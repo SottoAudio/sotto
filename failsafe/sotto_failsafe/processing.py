@@ -556,7 +556,7 @@ class Processor:
 
     # ------------------------------------------------------------ worker
     def _loop(self):
-        _, self.work.thread_note = macos.fast_thread()
+        _, self.work.thread_note = macos.realtime_thread(10.0, 6.0, 10.0)
         LOG.info("Processing thread started for %d talkers (%s)", self.n, self.work.thread_note)
         while not self.stop_ev.is_set():
             try:

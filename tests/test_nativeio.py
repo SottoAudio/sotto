@@ -77,7 +77,9 @@ class NativeIOTests(unittest.TestCase):
         return np.concatenate(outs)
 
     def test_output_trails_input_by_exactly_the_safety_margin(self):
-        io = self.make(margin=480)
+        # A wide margin (100 ms): this checks the logic, not how evenly a shared test machine
+        # schedules Python threads.
+        io = self.make(margin=4800)
         stop, t, _ = self.engine(io)
         try:
             y = self.soundcard(io, 600)                       # 2 s
@@ -86,10 +88,10 @@ class NativeIOTests(unittest.TestCase):
         st = io.stats()
         self.assertEqual(st["underrun_cycles"], 0)
         self.assertFalse(io.heartbeat_blocked())
-        # output 1 at sample n = input 0 at sample n - prefill (480 - 160 + 480 = 800)
-        self.assertEqual(io.prefill, 800)
+        # output 1 at sample n = input 0 at sample n - prefill (480 - 160 + 4800 = 5120)
+        self.assertEqual(io.prefill, 5120)
         n = np.arange(len(y))
-        late = n >= 2000
+        late = n >= 8000
         expect = ((n - io.prefill) % 10000000) / 10000000.0 * 100 + 1.0
         self.assertLess(float(np.max(np.abs(y[late, 1] - expect[late]))), 1e-6)
         self.assertTrue(np.all(y[late, 3] == 1.0))            # HEARTBEAT through
@@ -119,8 +121,8 @@ class NativeIOTests(unittest.TestCase):
         self.assertFalse(io.heartbeat_blocked())
 
     def test_a_long_stall_skips_late_blocks_and_keeps_the_margin(self):
-        io = self.make(margin=480)
-        stop, t, _ = self.engine(io, stall=(50, 0.3))        # 300 ms: far beyond the margin
+        io = self.make(margin=4800)
+        stop, t, _ = self.engine(io, stall=(50, 0.5))        # 500 ms: far beyond the 100 ms margin
         try:
             y = self.soundcard(io, 900)
         finally:

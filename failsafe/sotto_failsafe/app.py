@@ -572,8 +572,11 @@ class BenchApp:
     def _engine_loop(self, n_in, n_out):
         """Sotto Voce's engine on its own thread: a 10 ms block in, the same engine as before, a
         block out. The soundcard's real-time thread never waits for it."""
-        ok, msg = macos.fast_thread()
+        ok, msg = macos.realtime_thread(10.0, 4.0, 10.0)
+        self.engine_thread_note = msg
         LOG.info("Engine thread started: %s", msg)
+        if isinstance(getattr(self, "engine_info", None), dict):
+            self.engine_info["engine_thread"] = msg
         B = self.a.block
         inb = np.zeros((B, n_in), np.float32)
         outb = np.zeros((B, n_out), np.float32)
@@ -674,7 +677,7 @@ class BenchApp:
     def callback(self, indata, outdata, frames, tinfo, status):
         """Sotto Voce's engine for one block (10 ms): straight from the soundcard, or regrouped."""
         t0 = time.perf_counter()
-        if self.regroup is None:
+        if self.regroup is None and self.native is None:   # this callback is the soundcard's own cycle
             self._device_timing(tinfo, t0)
         if self._cb_last is not None:                # time since the last block (should be 10 ms)
             gap = 1000 * (t0 - self._cb_last)
@@ -843,6 +846,7 @@ class BenchApp:
                         name = str(a.device)
                 self.engine_info = {"device": "simulated" if a.simulate else str(a.device), "device_name": name,
                                     "native": bool(self.native),
+                                    "engine_thread": getattr(self, "engine_thread_note", "") if self.native else None,
                                     "margin_ms": round(a.margin_ms, 1) if self.native else None,
                                     "added_ms": round(self.native.added_ms, 2) if self.native else None,
                                     "app_nap": self.app_nap, "simulate": bool(a.simulate),

@@ -471,7 +471,13 @@ def build_report(app=None, setup_config=None, run_speed_test=True):
         n = len(getattr(getattr(app, "cfg", None), "talker_in", []) or []) or 4
         speed = safe(speed_test, n_talkers=n)
 
-    sec("What looks wrong", "\n".join(f"- {x}" for x in _findings(state, sysinfo, devs, crash, speed)))
+    found = _findings(state, sysinfo, devs, crash, speed)
+    tr = getattr(app, "trace", None) if app is not None else None
+    if tr is not None and tr.skipped:
+        found.insert(0, f"Core Audio skipped {tr.skipped} soundcard cycles in {tr.skip_events} places since the engine "
+                        f"started ({1000 * tr.skipped * tr.io / tr.fs:.0f} ms of audio lost): heard as clicks and "
+                        f"dropouts. See 'Audio timing in detail'.")
+    sec("What looks wrong", "\n".join(f"- {x}" for x in found))
     sec("Build", {**build_info(), "packages": safe(package_versions)})
     sec("Computer", sysinfo)
     sec("Audio devices (PortAudio, what Sotto Voce can open)", devs)
@@ -496,6 +502,11 @@ def build_report(app=None, setup_config=None, run_speed_test=True):
             sec("Engine", {"engine": state.get("engine"), "latency": state.get("latency_note"), "xruns": state.get("xruns"),
                            "callback_errors": state.get("callback_errors"), "power": state.get("power")})
             sec("Processing", state.get("processing"))
+            tr = getattr(app, "trace", None)
+            if tr is not None:
+                sec("Audio timing in detail (every soundcard cycle and block, last ~40 s)", safe(tr.summary))
+                sec("Audio timing, last 10 s (CSV: one row per soundcard cycle and per block; times in seconds)",
+                    safe(lambda: tr.csv(10)))
     if speed is not None:
         sec("Speed test (thread CPU ms per 10 ms block; 'background' = efficiency cores)", speed)
     if isinstance(state, dict):

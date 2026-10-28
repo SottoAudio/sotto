@@ -300,6 +300,7 @@ class Pool:
         self.dry_buf = np.zeros((self.n, HOP), np.float32)
         self.blocks = 0
         self.misses = 0
+        self.last_missed = 0
         self.miss_run = 0
         self.max_miss_run = 0
         self.good_run = 0
@@ -340,6 +341,7 @@ class Pool:
         nh = len(self.history)
         self.history[k % nh][:] = mics
         missed = False
+        n_missed = 0
         for w in self.workers:
             tg, mv, rv = w.ins[k % SLOTS]
             mv[:] = mics[w.rows[0]:w.rows[-1] + 1]
@@ -357,6 +359,7 @@ class Pool:
                 got = int(otg[0]) == j
             if not got:
                 missed = True
+                n_missed += 1
                 # dry at the same delay as the processed path: the chain's own 10 ms + headroom
                 rows = slice(w.rows[0], w.rows[-1] + 1)
                 if k - h - 1 >= 0:
@@ -366,6 +369,7 @@ class Pool:
                 else:
                     self.out_buf[rows] = 0
                     self.dry_buf[rows] = 0
+        self.last_missed = n_missed                      # for the diagnostics' timing record
         if not missed:
             self.miss_run = 0
             self.good_run += 1

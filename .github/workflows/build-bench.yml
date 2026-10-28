@@ -86,6 +86,15 @@ jobs:
           echo "PLUGDIR=$PLUG" >> $GITHUB_ENV
           echo "lib $LIB, scanner $EXE, test plugin in $PLUG"
 
+      - name: Build the native audio library
+        run: |
+          cmake -S engine/audio-io -B build/audio-io -DCMAKE_BUILD_TYPE=Release ${SDKROOT:+-DCMAKE_OSX_SYSROOT=$SDKROOT} > audio-io.log 2>&1 \
+            && cmake --build build/audio-io --config Release >> audio-io.log 2>&1 \
+            || { echo "::error title=Native audio library (${{ matrix.name }})::$(grep -iE 'error|warning' audio-io.log | head -c 3000 | tr '\n' ' ')"; exit 1; }
+          AIO=$(find build/audio-io -type f \( -name 'sotto_audio_io.dylib' -o -name 'sotto_audio_io.dll' \) | head -1)
+          echo "AIO=$AIO" >> $GITHUB_ENV
+          echo "native audio library: $AIO"
+
       - name: Tests with the plugin host
         run: |
           export SOTTO_VST3HOST_DIR="$(dirname "$LIB")"
@@ -107,7 +116,8 @@ jobs:
                 --add-data "$MODELS${{ matrix.sep }}models/DeepFilterNet3_ll_stream_batch"
                 --add-binary "../$LIB${{ matrix.sep }}."
                 --add-binary "../$EXE${{ matrix.sep }}."
-                --hidden-import sotto_failsafe.processing --hidden-import sotto_failsafe.vst3 --hidden-import sotto_failsafe.workers --hidden-import sotto_failsafe.diagnostics --hidden-import sotto_failsafe.testsrc --hidden-import sotto_failsafe.phones --hidden-import sotto_failsafe.regroup --hidden-import sotto_failsafe.coreaudio
+                --add-binary "../$AIO${{ matrix.sep }}."
+                --hidden-import sotto_failsafe.processing --hidden-import sotto_failsafe.vst3 --hidden-import sotto_failsafe.workers --hidden-import sotto_failsafe.diagnostics --hidden-import sotto_failsafe.testsrc --hidden-import sotto_failsafe.phones --hidden-import sotto_failsafe.regroup --hidden-import sotto_failsafe.coreaudio --hidden-import sotto_failsafe.nativeio --hidden-import sotto_failsafe.timing
                 --hidden-import cct.aec --hidden-import cct.engine --hidden-import cct.stream_dfn --hidden-import cct.delay --hidden-import cct.denoise
                 --collect-all sounddevice --collect-all _sounddevice_data --collect-all onnxruntime)
           if [ "${{ matrix.name }}" = "mac" ]; then ARGS+=(--windowed --osx-bundle-identifier audio.sotto.bench); fi
@@ -154,12 +164,15 @@ jobs:
           assert t0["name"] == "Show caller" and t0["insert"]["name"].endswith("ADelay"), t0
           print("insert loaded in the built app:", t0["insert"], "| processing", st["processing"]["proc_ms"], "ms per block")
           PY
-          curl -sf "http://127.0.0.1:8790/api/diagnostics" -o diag.txt || fail "diagnostics download failed"
-          for s in "What looks wrong" "Computer" "Speed test" "Busy threads" "Threads right now" "Log (last"; do
+          curl -sf "http://127.0.0.1:8790/api/diagnostics?speed=1" -o diag.txt || fail "diagnostics download failed"
+          for s in "What looks wrong" "Computer" "Speed test" "Busy threads" "Threads right now" "Log (last" "Audio timing in detail"; do
             grep -q "==== $s" diag.txt || fail "diagnostics file has no '$s' section"
           done
           grep -q "Soundcard open" diag.txt || fail "the log in the diagnostics file is empty"
           grep -qE "Processing in [0-9]+ worker process|Processing thread started" diag.txt || fail "the log doesn't say how processing runs"
+          grep -q "Native audio: the soundcard's thread only copies audio" diag.txt || fail "the native audio engine didn't start"
+          grep -q "Native soundcard side since start" diag.txt || fail "no native timing in the diagnostics file"
+          python -c "import json; e=json.load(open('state.json'))['engine']; assert e.get('native') is True, e; print('native audio engine: margin', e['margin_ms'], 'ms, output', e['added_ms'], 'ms behind input')" || fail "engine not native:"
           sed -n '/==== Speed test/,/^====/p' diag.txt | head -40
           # a test source plays into input 2 at the level asked for, and the PROBE return refuses one
           python - <<'PY' || fail "test sources:"

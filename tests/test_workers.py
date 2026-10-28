@@ -227,3 +227,21 @@ class PoolTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeclickTests(unittest.TestCase):
+    def test_switching_to_unprocessed_audio_is_faded_not_stepped(self):
+        p = W.Pool.__new__(W.Pool)                         # just the hand-over's fade, no processes
+        n = 2
+        p.out_buf = np.zeros((n, W.HOP), np.float32)
+        p._was_missed = np.zeros(n, bool)
+        p._last_out = np.zeros(n, np.float32)
+        p._fade = np.linspace(1.0, 0.0, W.RAMP, endpoint=False).astype(np.float32)
+        p.out_buf[:] = 0.8                                 # processed: ends at 0.8
+        p._declick(np.array([False, False]))
+        p.out_buf[:] = -0.5                                # talker 1 late: unprocessed audio, a 1.3 step
+        p._declick(np.array([True, False]))
+        self.assertAlmostEqual(float(p.out_buf[0, 0]), 0.8, places=5)          # starts where it left off
+        self.assertLess(float(np.max(np.abs(np.diff(p.out_buf[0])))), 0.02)    # no step
+        self.assertAlmostEqual(float(p.out_buf[0, -1]), -0.5, places=5)
+        self.assertAlmostEqual(float(p.out_buf[1, 0]), -0.5, places=5)         # talker 2 didn't switch: untouched

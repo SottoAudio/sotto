@@ -26,7 +26,8 @@ class TimingTrace:
         n_dev = int(seconds * fs / max(16, self.io)) + 1
         n_blk = int(seconds * fs / self.block) + 1
         # one row per soundcard cycle: wall time, capture time, frames, callback ms, status bits
-        self.dev = np.full((n_dev, 5), np.nan)
+        self.dev = np.full((n_dev, 6), np.nan)          # + margin: engine output waiting (native side)
+        self.native_stats = None
         self.dev_i = 0
         # one row per block: wall time, engine ms, per-stage ms, workers late, queue level
         self.blk = np.full((n_blk, 4 + len(STAGES)), np.nan)
@@ -42,7 +43,7 @@ class TimingTrace:
         self.lock = threading.Lock()                        # summary()/csv() only, never the audio thread
 
     # ------------------------------------------------------------ audio thread
-    def cycle(self, t, adc, frames, cb_ms, status_bits):
+    def cycle(self, t, adc, frames, cb_ms, status_bits, margin=float("nan")):
         if adc == adc and adc > 0:                          # not NaN: count skipped cycles as they happen
             if self._last_adc is not None:
                 d = (adc - self._last_adc) * self.fs / self.io
@@ -51,7 +52,7 @@ class TimingTrace:
                     self.skip_events += 1
             self._last_adc = adc
         r = self.dev[self.dev_i % len(self.dev)]
-        r[0], r[1], r[2], r[3], r[4] = t, adc, frames, cb_ms, status_bits
+        r[0], r[1], r[2], r[3], r[4], r[5] = t, adc, frames, cb_ms, status_bits, margin
         self.dev_i += 1
 
     def block_done(self, t, engine_ms, stages, late_workers, queue):
@@ -146,6 +147,20 @@ class TimingTrace:
                  (("input underflow", IN_UNDERFLOW), ("input overflow", IN_OVERFLOW),
                   ("output underflow", OUT_UNDERFLOW), ("output overflow", OUT_OVERFLOW))}
         out.append("PortAudio status flags: " + ", ".join(f"{k} {v}" for k, v in flags.items()) + ".")
+        m = dev[:, 5]
+        if np.any(~np.isnan(m)):
+            ms = m * 1000.0 / self.fs
+            mm = ms[~np.isnan(ms)]
+            low = np.percentile(mm, [1, 10, 50])
+            out.append(f"Native engine margin (engine output ready ahead of each cycle; below 0 = played dry): "
+                       f"median {low[2]:.2f} ms, lowest 10% {low[1]:.2f} ms, lowest 1% {low[0]:.2f} ms, "
+                       f"lowest {mm.min():.2f} ms; {int((mm < 0).sum())} cycles below 0.")
+        ns = self.native_stats
+        if ns:
+            out.append(f"Native soundcard side since start: {ns['cycles']} cycles, {ns['underrun_cycles']} with the "
+                       f"engine late ({1000 * ns['fallback_frames'] / self.fs:.0f} ms played dry), "
+                       f"{ns['dropped_blocks']} blocks skipped as too late, {ns['overruns']} input overruns, "
+                       f"{ns['resyncs']} resyncs.")
         if len(blk):
             out.append(f"Engine time per 10 ms block: {self._pct(blk[:, 1])}.")
             for k, name in enumerate(STAGES):
@@ -190,12 +205,12 @@ class TimingTrace:
         if not len(dev):
             return ""
         t_end = dev[-1, 0]
-        rows = ["kind,t_s,capture_s,frames,callback_ms,status,engine_ms,late_workers,queue," + ",".join(STAGES)]
+        rows = ["kind,t_s,capture_s,frames,callback_ms,status,margin_frames,engine_ms,late_workers,queue," + ",".join(STAGES)]
         for r in dev[dev[:, 0] >= t_end - seconds]:
-            rows.append(f"cycle,{r[0] - self.t_start:.5f},{r[1]:.5f},{int(r[2])},{r[3]:.3f},{int(r[4])},,,,"
-                        + "," * (len(STAGES) - 1))
+            rows.append(f"cycle,{r[0] - self.t_start:.5f},{r[1]:.5f},{int(r[2])},{r[3]:.3f},{int(r[4])},"
+                        f"{'' if r[5] != r[5] else int(r[5])},,,," + "," * (len(STAGES) - 1))
         for r in blk[blk[:, 0] >= t_end - seconds] if len(blk) else []:
-            rows.append(f"block,{r[0] - self.t_start:.5f},,,,,{r[1]:.3f},{int(r[2])},{int(r[3])},"
+            rows.append(f"block,{r[0] - self.t_start:.5f},,,,,,{r[1]:.3f},{int(r[2])},{int(r[3])},"
                         + ",".join(f"{v:.3f}" for v in r[4:]))
         rows[1:] = sorted(rows[1:], key=lambda s: float(s.split(",")[1]))
         return "\n".join(rows)

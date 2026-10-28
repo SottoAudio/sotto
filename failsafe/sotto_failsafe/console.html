@@ -1252,6 +1252,12 @@ table.t tr.unused td{color:var(--muted)}
     return row('Soundcard buffer', `How much audio the soundcard hands Sotto Voce at a time. Smaller is lower latency and arrives evenly; Sotto Voce regroups it into its 10 ms blocks, which adds ${e.regroup_ms ? e.regroup_ms + ' ms now' : 'up to 10 ms'}. 160 samples (3.3 ms) divides evenly into 10 ms. If the log shows dropouts, go one size up.`,
       `<select id="f-appio">${opts}</select><button class="btn sm" data-act="ioswitch">Apply</button>${confirm}`);
   }
+  function marginRow(e) {
+    const cur = e.margin_ms || 10, pick = UI.marginPick ?? cur;
+    const opts = [5, 10, 20, 40].map(v => `<option value="${v}"${+v === +pick ? ' selected' : ''}>${v} ms${v === 10 ? ' (default)' : ''}</option>`).join('');
+    return row('Engine safety margin', 'How far ahead of the soundcard Sotto Voce\'s engine works. More margin rides out longer hiccups but adds that much delay. If the engine is ever later than this, the talkers play dry and HEARTBEAT stops until you re-arm. The diagnostics file shows how close it gets (\'Native engine margin\').',
+      `<select id="f-margin">${opts}</select><button class="btn sm" data-act="marginapply"${+pick === +cur ? ' disabled' : ''}>Apply (restarts the engine)</button>`);
+  }
   function latencyRow(e) {
     const pa = e.pa_latency_ms || {}, pr = (APP && APP.processing) || {};
     const sotto = (e.regroup_ms || 0) + (pr.latency_ms || 0);
@@ -1527,8 +1533,11 @@ table.t tr.unused td{color:var(--muted)}
         row('Device', e.simulate ? 'Quit and choose a soundcard on the setup page to leave the simulation.' : 'Switching restarts the audio engine.', `<span class="fixed">${esc(e.simulate ? 'Simulated Riedel frame (no audio hardware)' : (e.device_name || String(e.device)))}</span>`) +
         (e.simulate ? '' : appDeviceRow(e)) +
         (e.simulate ? '' : appBufferRow(e)) +
+        (e.native ? marginRow(e) : '') +
         (e.simulate ? '' : phonesRow(e)) +
         latencyRow(e) +
+        row('Audio path', e.native ? 'The soundcard\'s real-time thread only copies audio, in native code; Sotto Voce\'s engine runs on its own thread with a safety margin. If the engine is ever later than the margin, the talkers play dry with a short fade and HEARTBEAT stops until you re-arm.' : 'The engine runs inside the soundcard\'s real-time callback (the older way): anything that holds it up can drop audio.',
+          `<span class="fixed">${e.native ? `Native, margin ${e.margin_ms} ms (output ${e.added_ms} ms behind input)` : 'Python callback'}</span>`) +
         coreAudioRow(e) +
         (e.app_nap ? row('App Nap', 'macOS slows down apps with no window. Sotto Voce turns this off while it runs.', `<span class="fixed">${esc(e.app_nap)}</span>`) : '') +
         row('Channels open', 'Inputs and outputs Sotto Voce asked the device for.', `<span class="fixed">${e.n_in} in / ${e.n_out} out</span>`) +
@@ -1541,7 +1550,7 @@ table.t tr.unused td{color:var(--muted)}
         row('Setup page', 'Stops the engine and goes back to the setup page (soundcard, channels, the Riedel frame\'s IP and port). HEARTBEAT stops, so the frame puts every listener on dry. Everything you set is kept.', '<button class="btn sm" data-act="tosetup">Back to setup</button>') +
         row('Latency', 'Reported by the audio driver.', `<span class="fixed">${esc(e.latency_note || 'not reported')}</span>`) +
         row('Recordings', 'Where this run is saved.', `<span class="fixed">${esc(APP.folder || '')}</span>`) +
-        row('Diagnostics', 'One file with everything needed to troubleshoot this computer: the Mac, its audio devices, these settings, timings, a speed test, the log and any crash records. Send it to whoever is helping you. The speed test is skipped while Sotto Voce is armed, so it can\'t disturb a show.', '<button class="btn sm" data-act="diag">Download diagnostics</button>') +
+        row('Diagnostics', 'One file with everything needed to troubleshoot this computer: the Mac, its audio devices, these settings, detailed audio timing, the log and any crash records. Send it to whoever is helping you. Making it doesn\'t disturb the audio. The version with a speed test loads the computer for about 15 s, so the audio may drop out meanwhile; it\'s never run while Sotto Voce is armed.', `<button class="btn sm" data-act="diag">Download diagnostics</button><button class="btn sm" data-act="diagspeed"${APP.armed ? ' disabled' : ''}>With speed test</button>`) +
         row('Processing', 'Echo canceller, suppressor and speech model, on their own thread.', `<span class="fixed">${esc(procNote())}</span>`) +
         row('Plugin inserts', '', `<span class="fixed">${APP.processing && APP.processing.plugins_available ? 'available (VST3)' : 'not available in this build'}</span>`));
     }
@@ -1806,6 +1815,7 @@ table.t tr.unused td{color:var(--muted)}
       if (k === 'kind') { f.kind = t.value; renderSet(); }
       return;
     }
+    if (e.target.id === 'f-margin') { UI.marginPick = +e.target.value; renderSet(); return; }
     if (e.target.id === 'f-op-ch') { assignOp(UI.op, e.target.value === '' ? null : +e.target.value); return; }
     const el = e.target.closest('[data-b]'); if (!el) return; bindEl(el, !(el.type === 'text' || el.tagName === 'TEXTAREA')); });
   ['dragenter', 'dragover'].forEach(ev => $('#setBody').addEventListener(ev, e => {
@@ -1859,7 +1869,17 @@ table.t tr.unused td{color:var(--muted)}
           .catch(() => toast('Sotto Voce did not answer'));
         return;
       }
-      case 'diag': downloadDiagnostics(); return;
+      case 'marginapply': {
+        const v = +(($('#f-margin') || {}).value || 10);
+        api('/api/config', { margin_ms: v }).then(r => {
+          if (r.ok === false) { toast(r.error); return; }
+          UI.restarting = `a ${v} ms margin`; toast(`Restarting the engine with a ${v} ms safety margin…`); renderSet();
+          (async () => { for (let i = 0; i < 80; i++) { await new Promise(res => setTimeout(res, 500)); try { const st = await api('/api/state'); if (st.t < 30) { location.reload(); return; } } catch (e) {} } toast('Sotto Voce did not come back. Open it again.'); })();
+        }).catch(() => toast('Sotto Voce did not answer'));
+        return;
+      }
+      case 'diag': downloadDiagnostics(false); return;
+      case 'diagspeed': downloadDiagnostics(true); return;
       case 'devswitch': {
         const el = $('#f-appdev'); UI.devPick = el ? el.value : null;
         if (APP && APP.engine && String(UI.devPick) === String(APP.engine.device)) { toast('Sotto Voce is already using that device'); UI.devConfirm = false; }
@@ -2010,16 +2030,19 @@ table.t tr.unused td{color:var(--muted)}
     buildMain(); buildPhones();
     applyState(st);
     soloChanged();                                     // solos always start empty
-    setInterval(poll, 150);
+    // One question at a time: the next one waits for the answer (never a pile of requests).
+    (async function pollLoop() { await poll(); setTimeout(pollLoop, 150); })();
     toast(st.engine && st.engine.simulate ? 'Connected to Sotto Voce (simulated frame)' : 'Connected to Sotto Voce');
   }
-  async function downloadDiagnostics() {
+  // The quick file never disturbs the audio. The speed test loads the computer for about 15 s
+  // (enough to cause dropouts), so it's a separate, deliberate choice, and never while armed.
+  async function downloadDiagnostics(speed) {
     if (UI.diagBusy) return;
     UI.diagBusy = true;
     const armed = APP && APP.armed;
-    toast(armed ? 'Making the diagnostics file (quick version: Sotto Voce is armed)…' : 'Making the diagnostics file: about 20 seconds…');
+    toast(speed && !armed ? 'Making the diagnostics file with a speed test: about 20 seconds, and the audio may drop out meanwhile…' : 'Making the diagnostics file…');
     try {
-      const r = await fetch('/api/diagnostics' + (armed ? '?quick=1' : ''), { cache: 'no-store' });
+      const r = await fetch('/api/diagnostics' + (speed && !armed ? '?speed=1' : ''), { cache: 'no-store' });
       if (!r.ok) throw new Error(r.status);
       const name = (/filename="([^"]+)"/.exec(r.headers.get('Content-Disposition') || '') || [])[1] || 'sotto-diagnostics.txt';
       const url = URL.createObjectURL(await r.blob());
@@ -2029,7 +2052,7 @@ table.t tr.unused td{color:var(--muted)}
     } catch (e) { toast('Could not make the diagnostics file: Sotto Voce did not answer'); }
     UI.diagBusy = false;
   }
-  $('#diagBtn').onclick = () => downloadDiagnostics();
+  $('#diagBtn').onclick = () => downloadDiagnostics(false);
   $('#setupBtn').onclick = () => {
     if (!UI.setupConfirm) { UI.setupConfirm = true; $('#setupBtn').textContent = 'Stop engine?'; toast('Press again to stop the engine and go to the setup page. The frame goes to dry.'); setTimeout(() => { UI.setupConfirm = false; $('#setupBtn').textContent = 'Setup'; }, 4000); return; }
     UI.setupConfirm = false; $('#setupBtn').textContent = 'Setup'; toSetup();

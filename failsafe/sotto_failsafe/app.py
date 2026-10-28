@@ -184,6 +184,11 @@ class BenchApp:
         self._dev_last = None                            # when the last soundcard callback ran
         self.regroup = None                              # set when the soundcard runs on a small buffer
         self.trace = None                                # detailed audio timing for the diagnostics file
+        self.native = None                               # nativeio.NativeIO when the soundcard side runs in C
+        self._native_seen = 0                            # underrun cycles already acted on
+        self._native_bad_until = -1.0                    # audio time until which the engine counts as not green
+        self._native_why = ""
+        self._was_armed = False
         from .phones import LocalPhones
         from .testsrc import TestSources
         allowed = {c: f"talker {i + 1}" for i, c in enumerate(cfg.talker_in)}
@@ -539,6 +544,105 @@ class BenchApp:
                 if d > g["delay_max_ms"]:
                     g["delay_max_ms"] = d
 
+    # ------------------------------------------------------------ native soundcard side
+    def _native_sim_cycle(self, indata, outdata, frames, tinfo, status):
+        """The simulated frame's soundcard cycle, through the native side (as Core Audio would call it)."""
+        x = np.ascontiguousarray(indata, dtype=np.float32)
+        y = np.zeros((frames, outdata.shape[1]), np.float32)
+        self._sim_adc = getattr(self, "_sim_adc", 0.0) + frames / self.cfg.fs
+        self.native.cycle(x, y, frames, adc=self._sim_adc)
+        outdata[:] = y
+
+    def _start_engine_thread(self, n_in, n_out):
+        self._proc_health = self.core.extra_health
+        self.core.extra_health = self._health
+        self._eng_stop = threading.Event()
+        self._eng_thread = threading.Thread(target=self._engine_loop, args=(n_in, n_out), name="engine", daemon=True)
+        self._eng_thread.start()
+
+    def _stop_engine_thread(self):
+        if getattr(self, "_eng_thread", None) is not None:
+            self._eng_stop.set()
+            self._eng_thread.join(2.0)
+            self._eng_thread = None
+        if self.native is not None:
+            self.native.close()
+            self.native.destroy()
+
+    def _engine_loop(self, n_in, n_out):
+        """Sotto Voce's engine on its own thread: a 10 ms block in, the same engine as before, a
+        block out. The soundcard's real-time thread never waits for it."""
+        ok, msg = macos.fast_thread()
+        LOG.info("Engine thread started: %s", msg)
+        B = self.a.block
+        inb = np.zeros((B, n_in), np.float32)
+        outb = np.zeros((B, n_out), np.float32)
+        nat = self.native
+        while not self._eng_stop.is_set():
+            try:
+                if nat.read(inb, 100) != 1:
+                    continue
+                outb.fill(0.0)
+                self.callback(inb, outb, B, None, None)
+                nat.write(outb)
+                self._native_check(nat)
+            except Exception as e:                   # the callback guards itself; this is the plumbing
+                self.callback_errors += 1
+                if self._cb_exc is None:
+                    self._cb_exc = e
+
+    def _native_check(self, nat):
+        """Engine late (the native side played dry and latched HEARTBEAT off) = a fault: disarm, and
+        not green for 5 s. A manual re-arm afterwards lets HEARTBEAT through the native side again."""
+        st = nat.stats()
+        u = st["underrun_cycles"]
+        t = self.core.t
+        if u > self._native_seen:
+            n, self._native_seen = u - self._native_seen, u
+            why = (f"Sotto Voce's engine was late: {n} soundcard cycle{'s' if n > 1 else ''} played dry "
+                   f"and HEARTBEAT held off until re-armed")
+            self._native_bad_until = t + 5.0
+            self._native_why = why
+            if self.core.arm.armed:
+                self.core.arm.request_disarm(t, "auto", why)
+            self.core.log.append(Event(t, "engine_late", why, "auto"))
+        armed = self.core.arm.armed
+        if armed and not self._was_armed and nat.heartbeat_blocked():
+            nat.clear_heartbeat()
+            self.core.log.append(Event(t, "heartbeat_released", "re-armed: HEARTBEAT allowed again", "auto"))
+        self._was_armed = armed
+
+    def _health(self):
+        if self.native is not None and self.core.t < self._native_bad_until:
+            return False, self._native_why
+        return self._proc_health() if self._proc_health is not None else (True, "")
+
+    def _pull_native(self):
+        """The native side's per-cycle timing into the diagnostics record and the 10 s log line."""
+        if self.native is None or self.trace is None:
+            return
+        rows = self.native.new_trace_rows()
+        if not len(rows):
+            return
+        g = self.gaps
+        for r in rows:
+            self.trace.cycle(r[0], r[1], int(r[2]), r[3], int(r[4]), margin=r[5])
+            if self._dev_last is not None:
+                gap = 1000 * (r[0] - self._dev_last)
+                g["dev_n"] += 1
+                if gap > g["dev_max_ms"]:
+                    g["dev_max_ms"] = gap
+            self._dev_last = r[0]
+        self.trace.native_stats = self.native.stats()
+
+    def _settle_memory(self):
+        """Everything loaded at start-up is moved out of the garbage collector's way, and it runs
+        far less often: fewer pauses that hold up the engine."""
+        import gc
+        gc.collect()
+        gc.freeze()
+        gc.set_threshold(20000, 50, 100)
+
     def device_callback(self, indata, outdata, frames, tinfo, status):
         """The soundcard's callback when it runs on a small buffer: regroup into 10 ms blocks."""
         t0 = time.perf_counter()
@@ -642,7 +746,7 @@ class BenchApp:
         self.cb_ms_max = max(self.cb_ms_max * 0.999, dt)
         if self.trace is not None:
             self.trace.block_done(t0, dt, st, late, self.regroup.count if self.regroup is not None else 0)
-            if self.regroup is None:                     # this callback is the soundcard's own cycle
+            if self.regroup is None and self.native is None:   # this callback is the soundcard's own cycle
                 self._trace_cycle(t0, tinfo, frames, status)
 
     def run(self):
@@ -679,16 +783,36 @@ class BenchApp:
             if a.record:
                 self.command({"cmd": "rec", "on": True, "source": "startup"})
             self.log(Event(0.0, "started", f"take {self.take}; starts DISARMED", "auto"))
-            if a.io_buffer and a.io_buffer != a.block:
+            io = a.io_buffer or a.block
+            native_lib = None
+            if a.native_io != "off":
+                from . import nativeio
+                native_lib = nativeio.library()
+                if native_lib is None:
+                    msg = "this build has no native audio library: using the Python callback"
+                    if a.native_io == "on":
+                        raise SystemExit("--native-io on: " + msg)
+                    LOG.warning("Native audio: %s", msg)
+            if native_lib is not None:
+                from . import nativeio
+                self.native = nativeio.NativeIO(n_in, n_out, a.block, io, cfg.fs, margin=round(a.margin_ms * cfg.fs / 1000))
+                self.native.set_fallback(cfg.talker_in, cfg.talker_out, cfg.heartbeat_out)
+                LOG.info("Native audio: the soundcard's thread only copies audio; the engine runs on its own thread, "
+                         "%.1f ms behind the input (engine deadline %.1f ms per block)", self.native.added_ms,
+                         a.margin_ms + 1000 * io / cfg.fs)
+            elif a.io_buffer and a.io_buffer != a.block:
                 from .regroup import Regrouper
                 self.regroup = Regrouper(n_in, n_out, a.block, a.io_buffer)
                 LOG.info("Soundcard buffer %d samples, regrouped into %d-sample blocks (adds %.1f ms)",
                          a.io_buffer, a.block, self.regroup.added_ms)
-            io = a.io_buffer if self.regroup else a.block
+            io = io if (self.native or self.regroup) else a.block
             from .timing import TimingTrace
             self.trace = TimingTrace(48000, io, a.block)
             self.trace.watch_gc()
-            cb = self.device_callback if self.regroup else self.callback
+            if self.native:
+                cb = self._native_sim_cycle
+            else:
+                cb = self.device_callback if self.regroup else self.callback
             if a.simulate:
                 from .sim import SimRiedel, SimStream
                 self.sim = SimRiedel(cfg, vox_hold_ms=a.sim_hold, model_armed=True)
@@ -700,8 +824,14 @@ class BenchApp:
                              dev, n_in, n_out, cfg.fs, a.block, lat, sd.query_devices(dev))
                 except Exception:
                     LOG.exception("Could not read the soundcard's details before opening it")
-                stream = sd.Stream(device=dev, samplerate=cfg.fs, blocksize=io, channels=(n_in, n_out),
-                                   dtype="float32", latency=lat, callback=cb)
+                if self.native:
+                    stream = _NativeStream(self.native, dev, lat if isinstance(lat, float) else io / cfg.fs)
+                else:
+                    stream = sd.Stream(device=dev, samplerate=cfg.fs, blocksize=io, channels=(n_in, n_out),
+                                       dtype="float32", latency=lat, callback=cb)
+            if self.native:
+                self._start_engine_thread(n_in, n_out)
+            self._settle_memory()
             with stream as st:
                 il, ol = st.latency if isinstance(st.latency, tuple) else (0.0, st.latency)
                 self.latency_note = f"interface in {1000 * il:.1f} ms + out {1000 * ol:.1f} ms"
@@ -712,10 +842,14 @@ class BenchApp:
                     except Exception:
                         name = str(a.device)
                 self.engine_info = {"device": "simulated" if a.simulate else str(a.device), "device_name": name,
+                                    "native": bool(self.native),
+                                    "margin_ms": round(a.margin_ms, 1) if self.native else None,
+                                    "added_ms": round(self.native.added_ms, 2) if self.native else None,
                                     "app_nap": self.app_nap, "simulate": bool(a.simulate),
                                     "fs": cfg.fs, "block": a.block, "n_in": n_in, "n_out": n_out,
                                     "latency_note": self.latency_note,
-                                    "io_buffer": io, "regroup_ms": round(self.regroup.added_ms, 2) if self.regroup else 0.0,
+                                    "io_buffer": io, "regroup_ms": round(self.regroup.added_ms, 2) if self.regroup else
+                                    (round(self.native.added_ms, 2) if self.native else 0.0),
                                     "pa_latency_ms": {"in": round(1000 * il, 2), "out": round(1000 * ol, 2)}}
                 if not a.simulate:
                     self._read_coreaudio(name)
@@ -728,6 +862,7 @@ class BenchApp:
                     next_power = next_stats = 0.0
                     while not self.quit_ev.is_set():
                         time.sleep(0.05)
+                        self._pull_native()
                         self._drain()
                         self._save_plugin_states()
                         now = time.monotonic()
@@ -791,6 +926,7 @@ class BenchApp:
                          ("RRCS", lambda: self.rrcs and (self.rrcs.set_armed_safe(False), self.rrcs.stop())),
                          ("phones on this computer", self.local_phones.close),
                          ("timing record", lambda: self.trace is not None and self.trace.stop()),
+                         ("engine thread", self._stop_engine_thread),
                          ("event log", self.events_f.close)):
             try:
                 fn()
@@ -855,7 +991,8 @@ class BenchApp:
     # ------------------------------------------------------------ engine settings and the I/O patch
     PATCH_KEYS = ("talker_in", "talker_out", "names", "probe_in", "probe_out", "heartbeat_out", "pgm_in", "monitor",
                   "listen_in")
-    ENGINE_KEYS = ("device", "io_buffer", "rrcs_host", "rrcs_port")
+    ENGINE_KEYS = ("device", "io_buffer", "rrcs_host", "rrcs_port", "margin_ms")
+    MARGINS = (5, 10, 20, 40)
 
     def config(self):
         from . import launcher as L
@@ -864,7 +1001,7 @@ class BenchApp:
                 "channels": self.channels_available(),
                 "running": {"device": self.a.device, "io_buffer": self.a.io_buffer or 0, "simulate": self.a.simulate,
                             **{k: getattr(self.a, k) for k in self.PATCH_KEYS}},
-                "io_buffers": list(self.IO_BUFFERS)}
+                "io_buffers": list(self.IO_BUFFERS), "margins": list(self.MARGINS)}
 
     def channels_available(self):
         """The running soundcard's channels, for the patch dropdowns: {"device", "inputs", "outputs", "names"?}.
@@ -884,6 +1021,12 @@ class BenchApp:
         bad = [k for k in changes if k not in allowed]
         if bad:
             return {"ok": False, "error": f"Unknown settings: {', '.join(bad)}"}
+        if "margin_ms" in changes:
+            try:
+                if float(changes["margin_ms"]) not in self.MARGINS:
+                    raise ValueError
+            except (TypeError, ValueError):
+                return {"ok": False, "error": f"The safety margin is one of {', '.join(map(str, self.MARGINS))} ms."}
         cfg = L.load_config()
         cfg.update({k: ("" if v is None else str(v).strip()) for k, v in changes.items()})
         # Start from this run's own options (port, folder, processing, ...) and change only what
@@ -891,7 +1034,8 @@ class BenchApp:
         cur = argv_of(self.a)
         new = {"--talker-in": cfg["talker_in"], "--talker-out": cfg["talker_out"], "--names": cfg.get("names", ""),
                "--probe-in": cfg["probe_in"], "--probe-out": cfg["probe_out"], "--heartbeat-out": cfg["heartbeat_out"],
-               "--pgm-in": cfg.get("pgm_in", ""), "--monitor": cfg.get("monitor", ""), "--listen-in": cfg.get("listen_in", "")}
+               "--pgm-in": cfg.get("pgm_in", ""), "--monitor": cfg.get("monitor", ""), "--listen-in": cfg.get("listen_in", ""),
+               "--margin-ms": str(cfg.get("margin_ms") or 10)}
         if not self.a.simulate:
             new.update({"--device": cfg.get("device", ""), "--io-buffer": str(cfg.get("io_buffer") or 0),
                         "--rrcs-host": cfg.get("rrcs_host", ""), "--rrcs-port": str(cfg.get("rrcs_port") or 8193)})
@@ -1150,9 +1294,9 @@ class BenchApp:
                 elif self.path == "/api/check":
                     self._send(200, _json(app.check_device()).encode(), "application/json")
                 elif self.path.startswith("/api/diagnostics"):
-                    # The speed test loads the computer for ~15 s: never while armed (it could make
-                    # processing late and disarm Sotto Voce mid-show).
-                    full = "quick" not in self.path and not app.core.arm.armed
+                    # The speed test loads the computer for ~15 s (enough for dropouts): only when asked
+                    # for (?speed=1), and never while armed.
+                    full = "speed=1" in self.path and not app.core.arm.armed
                     text = diagnostics.build_report(app, run_speed_test=full)
                     diagnostics.save_report(text, app.dir)
                     name = diagnostics.report_filename()
@@ -1255,6 +1399,22 @@ def argv_of(a):
     return out
 
 
+class _NativeStream:
+    """The soundcard through the native side, used like a sounddevice stream (`with ... as st`)."""
+
+    def __init__(self, nat, device, latency_s):
+        self.nat, self.device, self.latency_s = nat, device, float(latency_s)
+        self.latency = (0.0, 0.0)
+
+    def __enter__(self):
+        self.latency = self.nat.open(self.device, self.latency_s)
+        return self
+
+    def __exit__(self, *exc):
+        self.nat.close()
+        return False
+
+
 def channel_clashes(cfg):
     """Plain-English message if one soundcard channel is given two jobs, else None."""
     used = {}
@@ -1345,8 +1505,14 @@ def build_parser():
                         "0 = ask the soundcard for 10 ms blocks directly (as before)")
     p.add_argument("--switch-interval", type=float, default=0.5,
                    help="ms another Python thread may hold the lock before the audio callback gets it back (Python's default is 5)")
-    p.add_argument("--headroom", type=int, default=1, choices=[1, 2, 3],
+    p.add_argument("--headroom", type=int, default=2, choices=[1, 2, 3],
                    help="blocks of time the processing workers get per block (1 = 20 ms through Sotto Voce, 2 = 30 ms)")
+    p.add_argument("--native-io", choices=["auto", "on", "off"], default="auto",
+                   help="run the soundcard side in C (the real-time thread only copies audio; Sotto Voce's engine "
+                        "runs on its own thread). auto: when this build has the library")
+    p.add_argument("--margin-ms", type=float, default=10.0,
+                   help="native engine: how much time the engine gets for each block beyond one soundcard buffer "
+                        "(adds this much delay; if the engine is ever later, the talkers go dry and HEARTBEAT stops)")
     p.add_argument("--track-delay", choices=["auto", "on", "off"], default="auto",
                    help="measure the PA delay into each talker's mic (auto: on unless --simulate)")
     p.add_argument("--project", help="project file shared with the console (default: in the app's settings folder)")

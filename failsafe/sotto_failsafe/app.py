@@ -178,10 +178,12 @@ class BenchApp:
         self.callback_errors = 0
         self._cb_exc = None                              # the audio thread's last error, logged by the main loop
         self.cb_ms = 0.0
+        self._stage_ms = np.zeros(5)                     # tests, exchange, core, phones, record (ms, last block)
         self.cb_ms_max = 0.0
         self._cb_last = None                             # when the last block arrived
         self._dev_last = None                            # when the last soundcard callback ran
         self.regroup = None                              # set when the soundcard runs on a small buffer
+        self.trace = None                                # detailed audio timing for the diagnostics file
         from .phones import LocalPhones
         from .testsrc import TestSources
         allowed = {c: f"talker {i + 1}" for i, c in enumerate(cfg.talker_in)}
@@ -539,7 +541,8 @@ class BenchApp:
 
     def device_callback(self, indata, outdata, frames, tinfo, status):
         """The soundcard's callback when it runs on a small buffer: regroup into 10 ms blocks."""
-        self._device_timing(tinfo, time.perf_counter())
+        t0 = time.perf_counter()
+        self._device_timing(tinfo, t0)
         self._status = status
         try:
             self.regroup.process(indata, outdata, frames, self._regrouped_block)
@@ -548,6 +551,18 @@ class BenchApp:
             self.callback_errors += 1
             if self._cb_exc is None:
                 self._cb_exc = e
+        self._trace_cycle(t0, tinfo, frames, status)
+
+    def _trace_cycle(self, t0, tinfo, frames, status):
+        tr = self.trace
+        if tr is None:
+            return
+        try:
+            adc = tinfo.inputBufferAdcTime if tinfo is not None else float("nan")
+        except Exception:
+            adc = float("nan")
+        from .timing import status_bits
+        tr.cycle(t0, adc, frames, 1000 * (time.perf_counter() - t0), status_bits(status))
 
     def _regrouped_block(self, inb, outb):
         self.callback(inb, outb, len(inb), None, self._status)
@@ -570,16 +585,26 @@ class BenchApp:
             elif gap > 17.0:
                 g["late"] += 1
         self._cb_last = t0
+        pc = time.perf_counter
+        st = self._stage_ms
+        st[:] = 0.0
+        late = 0
         try:
             if self.tests.plan and not self.core.arm.armed:    # test sources: never while armed
                 indata = self.tests.apply(indata, frames)
             else:
                 self.tests.clock += frames
+            t1 = pc()
+            st[0] = 1000 * (t1 - t0)
             if self.proc is not None and frames == 480:
                 cfg = self.cfg
                 mics = np.asarray(indata[:, cfg.talker_in], dtype=np.float64).T
                 ref = indata[:, cfg.pgm_in] if cfg.pgm_in is not None else np.zeros(frames)
                 out, dry = self.proc.exchange(mics, ref)
+                late = getattr(self.proc, "last_missed", 0)
+                t2 = pc()
+                st[1] = 1000 * (t2 - t1)
+                t1 = t2
                 with self.lock:
                     self.core.process(indata, outdata, status, returns=out.T, dry=dry.T)
                     for i, why in self.proc.drain_faults():
@@ -589,9 +614,13 @@ class BenchApp:
             else:
                 with self.lock:
                     self.core.process(indata, outdata, status)
+            t2 = pc()
+            st[2] = 1000 * (t2 - t1)
             if self.local_phones.stream is not None and self.cfg.monitor_out:
                 mon = self.cfg.monitor_out
                 self.local_phones.push(outdata[:, mon[0]], outdata[:, mon[-1]])
+            t3 = pc()
+            st[3] = 1000 * (t3 - t2)
             if self.rec.on:
                 cfg = self.cfg
                 cols = [indata[:, c] for c in cfg.talker_in + cfg.probe_in]
@@ -605,9 +634,16 @@ class BenchApp:
             if self._cb_exc is None:
                 self._cb_exc = e                         # logged with its traceback by the main loop
                 self.core.log.append(Event(self.core.t, "callback_error", repr(e), "auto"))
-        dt = 1000 * (time.perf_counter() - t0)
+        t4 = time.perf_counter()
+        dt = 1000 * (t4 - t0)
+        if st[3] or st[2]:
+            st[4] = max(0.0, dt - st[0] - st[1] - st[2] - st[3])
         self.cb_ms = 0.98 * self.cb_ms + 0.02 * dt
         self.cb_ms_max = max(self.cb_ms_max * 0.999, dt)
+        if self.trace is not None:
+            self.trace.block_done(t0, dt, st, late, self.regroup.count if self.regroup is not None else 0)
+            if self.regroup is None:                     # this callback is the soundcard's own cycle
+                self._trace_cycle(t0, tinfo, frames, status)
 
     def run(self):
         a, cfg = self.a, self.cfg
@@ -649,6 +685,9 @@ class BenchApp:
                 LOG.info("Soundcard buffer %d samples, regrouped into %d-sample blocks (adds %.1f ms)",
                          a.io_buffer, a.block, self.regroup.added_ms)
             io = a.io_buffer if self.regroup else a.block
+            from .timing import TimingTrace
+            self.trace = TimingTrace(48000, io, a.block)
+            self.trace.watch_gc()
             cb = self.device_callback if self.regroup else self.callback
             if a.simulate:
                 from .sim import SimRiedel, SimStream
@@ -722,9 +761,11 @@ class BenchApp:
         if g["n"]:
             self.gaps_last = g
             LOG.info("block timing (last 10 s): %d blocks, gap %.2f to %.2f ms, %d bunched (<3 ms), %d late (>17 ms) | "
-                     "soundcard callbacks %d, longest gap %.2f ms, run %.2f to %.2f ms after capture",
+                     "soundcard callbacks %d, longest gap %.2f ms, run %.2f to %.2f ms after capture | "
+                     "skipped cycles so far %s",
                      g["n"], g["min_ms"], g["max_ms"], g["bunched"], g["late"], g["dev_n"], g["dev_max_ms"],
-                     g["delay_min_ms"] if g["delay_max_ms"] else 0, g["delay_max_ms"])
+                     g["delay_min_ms"] if g["delay_max_ms"] else 0, g["delay_max_ms"],
+                     f"{self.trace.skipped} in {self.trace.skip_events} places" if self.trace is not None else "n/a")
         try:
             st = self.core.state()
             pr = self.proc.state() if self.proc is not None else {}
@@ -749,6 +790,7 @@ class BenchApp:
                          ("processing", lambda: self.proc is not None and self.proc.stop()),
                          ("RRCS", lambda: self.rrcs and (self.rrcs.set_armed_safe(False), self.rrcs.stop())),
                          ("phones on this computer", self.local_phones.close),
+                         ("timing record", lambda: self.trace is not None and self.trace.stop()),
                          ("event log", self.events_f.close)):
             try:
                 fn()

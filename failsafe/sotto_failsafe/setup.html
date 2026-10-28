@@ -64,17 +64,17 @@
     <p class="muted" id="devNote"></p>
     <h3 class="sub">Talkers</h3>
     <div class="row" style="margin-top:0"><label for="count" style="margin:0">How many</label><select id="count" style="width:auto"></select>
-      <span class="muted">Talkers use channels 1–60; 61–64 are kept for the system.</span></div>
+      <span class="muted" id="chNote">Any channel the soundcard has. New talkers take the next free one.</span></div>
     <div class="scroll"><table class="pt"><thead><tr><th>#</th><th>Name</th><th>Input</th><th>Return (clean)</th></tr></thead><tbody id="talkers"></tbody></table></div>
     <h3 class="sub">System channels</h3>
-    <div class="grid" id="system"></div>
+    <div class="grid" id="system" style="grid-template-columns:repeat(auto-fill,minmax(230px,1fr))"></div>
     <p class="err" id="clash"></p>
     <h3 class="sub">Riedel frame</h3>
     <div class="grid">
       <div><label for="rrcs_host">RRCS IP address (optional)</label><input id="rrcs_host" placeholder="e.g. 10.0.0.10"></div>
       <div><label for="rrcs_port">RRCS port</label><input id="rrcs_port" placeholder="8193" inputmode="numeric"></div>
     </div>
-    <p class="muted">Channels are numbered as in Dante Controller. The defaults are Sotto Voce's fixed system channels (IN 61 PROBE return, IN 62 PGM, OUT 61 HEARTBEAT, OUT 62 PROBE, OUT 63/64 headphones), so set Dante Virtual Soundcard to 64 &times; 64. <button type="button" id="patchDefaults" class="link">Back to defaults</button></p>
+    <p class="muted">Channels are numbered as in Dante Controller, and every dropdown lists the channels the chosen soundcard has (an aggregate device's extra channels too, named where macOS gives a name). The defaults put the system on 61–64 (IN 61 PROBE return, IN 62 PGM, OUT 61 HEARTBEAT, OUT 62 PROBE, OUT 63/64 headphones), so Dante Virtual Soundcard needs at least 64 &times; 64 for them. <button type="button" id="patchDefaults" class="link">Back to defaults</button></p>
     <div class="row">
       <label class="check"><input type="checkbox" id="record"> Record the test</label>
     </div>
@@ -94,8 +94,13 @@
 <script>
 const $ = s => document.querySelector(s);
 const fields = ['rrcs_host', 'rrcs_port'];
-// ---- the I/O patch: every choice a dropdown. Talkers on 1-60; 61-64 for the system.
-const TALK = Array.from({length: 60}, (_, k) => k + 1), SYSCH = [61, 62, 63, 64];
+// ---- the I/O patch: every choice a dropdown, listing every channel the chosen soundcard has.
+// Up to 60 talkers. Before a soundcard is chosen the lists run to 64, Sotto Voce's usual layout.
+const COUNTS = Array.from({length: 60}, (_, k) => k + 1);
+let devices = [], dev = null;                    // dev: the chosen soundcard {name, inputs, outputs, names?}
+const nIn = () => dev ? dev.inputs : 64, nOut = () => dev ? dev.outputs : 64;
+const range = n => Array.from({length: n}, (_, k) => k + 1);
+const label = (side, c) => { const n = dev && dev.names && dev.names[side] && dev.names[side][c - 1]; return n ? `${c} · ${n}` : String(c); };
 const SYS = [['pgm_in', 'PGM input (echo reference)'], ['probe_in', 'PROBE return input'], ['listen_in', 'Listener feed input (optional)', true],
              ['probe_out', 'PROBE output'], ['heartbeat_out', 'HEARTBEAT output (to the VOX)'], ['mon_l', 'Headphones left (phones bus)'], ['mon_r', 'Headphones right']];
 let patch = null, defaults = null;
@@ -116,20 +121,27 @@ function patchTo(p) {
 function clashes(p) {
   const bad = new Set(), msgs = [];
   const check = (side, items) => { const seen = {}; items.forEach(([key, ch, what]) => { if (!ch) return;
+    const have = side === 'Input' ? nIn() : nOut();
+    if (ch > have) { bad.add(key); msgs.push(`${side} ${ch} (${what}) isn't on ${dev ? dev.name : 'this soundcard'}, which has ${have} ${side.toLowerCase()}s.`); }
     if (seen[ch] && !(what === 'headphones' && seen[ch][1] === 'headphones')) { bad.add(key); bad.add(seen[ch][0]); msgs.push(`${side} ${ch} is set as both ${seen[ch][1]} and ${what}.`); } else seen[ch] = [key, what]; }); };
   check('Input', [...p.talkers.map((t, k) => [`t${k}.in`, t.in, `talker ${k + 1}`]), ['pgm_in', p.pgm_in, 'PGM'], ['probe_in', p.probe_in, 'PROBE return'], ['listen_in', p.listen_in, 'listener feed']]);
   check('Output', [...p.talkers.map((t, k) => [`t${k}.out`, t.out, `talker ${k + 1}`]), ['probe_out', p.probe_out, 'PROBE'], ['heartbeat_out', p.heartbeat_out, 'HEARTBEAT'], ['mon_l', p.mon_l, 'headphones'], ['mon_r', p.mon_r, 'headphones']]);
   return { bad, msgs };
 }
-const opts = (list, val, extra = []) => extra.concat(list.map(c => [c, c])).map(([v, l]) => `<option value="${v}"${+v === +val ? ' selected' : ''}>${l}</option>`).join('');
+const esc = t => String(t).replace(/[<>&"]/g, '');
+const opts = (list, val, extra = []) => extra.concat(list).map(([v, l]) => `<option value="${v}"${+v === +val ? ' selected' : ''}>${esc(l)}</option>`).join('');
+// A channel dropdown: every channel on that side, plus the current one if the soundcard doesn't have it.
+const chOpts = (side, val, extra = []) => { const n = side === 'in' ? nIn() : nOut(), l = range(n).map(c => [c, label(side, c)]);
+  if (val > n) l.push([val, `${val} (not on this soundcard)`]); return opts(l, val, extra); };
 function renderPatch() {
   const { bad, msgs } = clashes(patch);
-  $('#count').innerHTML = opts(TALK, patch.talkers.length);
+  $('#count').innerHTML = opts(COUNTS.map(c => [c, c]), patch.talkers.length);
   $('#talkers').innerHTML = patch.talkers.map((t, k) => `<tr><td>${String(k + 1).padStart(2, '0')}</td>
     <td><input data-pk="t${k}.name" value="${(t.name || '').replace(/[<>&"]/g, '')}" placeholder="Talker ${k + 1}"></td>
-    <td><select data-pk="t${k}.in" class="${bad.has(`t${k}.in`) ? 'clash' : ''}">${opts(TALK, t.in)}</select></td>
-    <td><select data-pk="t${k}.out" class="${bad.has(`t${k}.out`) ? 'clash' : ''}">${opts(TALK, t.out)}</select></td></tr>`).join('');
-  $('#system').innerHTML = SYS.map(([k, l, optional]) => `<div><label>${l}</label><select data-pk="${k}" class="${bad.has(k) ? 'clash' : ''}">${opts(SYSCH, patch[k], optional ? [[0, 'Off']] : [])}</select></div>`).join('');
+    <td><select data-pk="t${k}.in" class="${bad.has(`t${k}.in`) ? 'clash' : ''}">${chOpts('in', t.in)}</select></td>
+    <td><select data-pk="t${k}.out" class="${bad.has(`t${k}.out`) ? 'clash' : ''}">${chOpts('out', t.out)}</select></td></tr>`).join('');
+  $('#system').innerHTML = SYS.map(([k, l, optional]) => `<div><label>${l}</label><select data-pk="${k}" class="${bad.has(k) ? 'clash' : ''}">${chOpts(/_in$/.test(k) ? 'in' : 'out', patch[k], optional ? [[0, 'Off']] : [])}</select></div>`).join('');
+  $('#chNote').textContent = dev ? `${dev.name}: inputs 1–${dev.inputs}, outputs 1–${dev.outputs}. New talkers take the next free channel.` : 'Choose a soundcard to see all its channels. New talkers take the next free channel.';
   $('#clash').textContent = msgs.join(' ');
   $('#devBtn').disabled = msgs.length > 0;
 }
@@ -139,7 +151,9 @@ function patchSet(key, value) {
     while (patch.talkers.length > n) patch.talkers.pop();
     while (patch.talkers.length < n) {
       const ui = new Set(patch.talkers.map(t => t.in)), uo = new Set(patch.talkers.map(t => t.out)), k = patch.talkers.length + 1;
-      patch.talkers.push({ in: TALK.find(c => !ui.has(c) && c >= k) || TALK.find(c => !ui.has(c)), out: TALK.find(c => !uo.has(c) && c >= k) || TALK.find(c => !uo.has(c)), name: '' });
+      const sysIn = new Set([patch.pgm_in, patch.probe_in, patch.listen_in]), sysOut = new Set([patch.probe_out, patch.heartbeat_out, patch.mon_l, patch.mon_r]);
+      const free = (n, used, sys) => range(n).find(c => !used.has(c) && !sys.has(c) && c >= k) || range(n).find(c => !used.has(c) && !sys.has(c)) || k;
+      patch.talkers.push({ in: free(nIn(), ui, sysIn), out: free(nOut(), uo, sysOut), name: '' });
     }
     return true;
   }
@@ -147,7 +161,8 @@ function patchSet(key, value) {
   if (m) { patch.talkers[+m[1]][m[2]] = m[2] === 'name' ? value : +value; return m[2] !== 'name'; }
   patch[key] = +value; return true;
 }
-document.addEventListener('change', e => { const t = e.target.closest('select[data-pk], select#count'); if (!t) return; patchSet(t.id === 'count' ? 'count' : t.dataset.pk, t.value); renderPatch(); });
+document.addEventListener('change', e => { if (e.target.id === 'device') { pickDevice(e.target.value); return; }
+  const t = e.target.closest('select[data-pk], select#count'); if (!t) return; patchSet(t.id === 'count' ? 'count' : t.dataset.pk, t.value); renderPatch(); });
 document.addEventListener('input', e => { const t = e.target.closest('input[data-pk]'); if (t) patchSet(t.dataset.pk, t.value); });
 let saved = {};
 async function init() {
@@ -189,12 +204,12 @@ async function loadDevices() {
     $('#devNote').textContent = d.ok ? 'Is Dante Virtual Soundcard or Merging VAD running? Start it, then press Look again.' : 'Could not list audio devices: ' + d.error;
     return;
   }
-  // Sotto Voce needs one device with as many inputs and outputs as the highest channel below (64 with
-  // the fixed system channels). Others are listed, greyed out, so you can see why.
-  const pv = patchTo(patch);
-  const need = Math.max(64, ...['talker_in', 'talker_out', 'pgm_in', 'probe_in', 'probe_out', 'heartbeat_out', 'monitor', 'listen_in'].flatMap(f => chansParse(pv[f])));
-  const esc = t => String(t).replace(/[<>&"]/g, '');
-  const why = x => x.inputs === 0 ? 'output only' : x.outputs === 0 ? 'input only' : (x.inputs < need || x.outputs < need) ? `needs ${need} in and out` : '';
+  // A soundcard needs enough channels for the talkers plus the system's (PGM and PROBE return in;
+  // PROBE, HEARTBEAT and headphones out). Others are listed, greyed out, so you can see why. Which
+  // channels do which job is then picked from that soundcard's own channels below.
+  devices = d.devices;
+  const nt = patch.talkers.length, needIn = nt + 2, needOut = nt + 4;
+  const why = x => x.inputs === 0 ? 'output only' : x.outputs === 0 ? 'input only' : (x.inputs < needIn || x.outputs < needOut) ? `too few channels for ${nt} talker${nt > 1 ? 's' : ''}` : '';
   const list = d.devices.slice().sort((a, b) => (why(a) ? 1 : 0) - (why(b) ? 1 : 0));
   sel.innerHTML = '<option value="">Pick the virtual soundcard…</option>' + list.map(x =>
     `<option value="${x.index}"${why(x) ? ' disabled' : ''}>${esc(x.name)} (${x.inputs} in / ${x.outputs} out, ${esc(x.api)}${why(x) ? ': ' + why(x) : ''})</option>`).join('');
@@ -203,8 +218,13 @@ async function loadDevices() {
                usable.find(x => /dante|merging|ravenna|virtual audio/i.test(x.name));
   if (prev) sel.value = prev.index;
   $('#devNote').textContent = usable.length
-    ? `${usable.length} of ${d.devices.length} devices can run Sotto Voce (one device with at least ${need} inputs and ${need} outputs). The others are greyed out.`
-    : `None of the ${d.devices.length} devices has ${need} inputs and ${need} outputs. Set Dante Virtual Soundcard to 64 × 64 in Dante Virtual Soundcard's settings, then press Look again.`;
+    ? `${usable.length} of ${d.devices.length} devices can run Sotto Voce. The others are greyed out.`
+    : `None of the ${d.devices.length} devices has enough channels (${needIn} in and ${needOut} out for ${nt} talker${nt > 1 ? 's' : ''}). Set Dante Virtual Soundcard to 64 × 64 in its settings, then press Look again.`;
+  pickDevice(sel.value);
+}
+function pickDevice(index) {
+  dev = devices.find(x => String(x.index) === String(index)) || null;
+  renderPatch();
 }
 async function start(simulate) {
   $('#err').textContent = '';

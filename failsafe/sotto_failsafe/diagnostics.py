@@ -511,7 +511,7 @@ def build_report(app=None, setup_config=None, run_speed_test=True):
         sec("Last crash", crash)
     if isinstance(state, dict):
         sec("Full state (JSON)", state)
-    head = (f"SOTTO BENCH DIAGNOSTICS\nCreated {datetime.now().isoformat(timespec='seconds')} in {time.time() - t0:.1f} s"
+    head = (f"SOTTO VOCE DIAGNOSTICS\nCreated {datetime.now().isoformat(timespec='seconds')} in {time.time() - t0:.1f} s"
             f" | build {build_info().get('commit', '?')} | {sysinfo.get('model', '') if isinstance(sysinfo, dict) else ''}\n"
             "Send this file to whoever is helping you troubleshoot. It contains no passwords; it does contain"
             " your device names, channel settings, operator names and file paths.\n")

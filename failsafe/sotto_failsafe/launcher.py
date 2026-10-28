@@ -15,7 +15,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import diagnostics
-from .app import BenchApp, channel_clashes, config_from_args, device_list, parse_args
+from .app import BenchApp, channel_clashes, config_from_args, device_list, parse_args, patch_fit
 LOG = diagnostics.LOG
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -168,6 +168,10 @@ def run_setup(open_browser=True, start_error=None):
                     clash = channel_clashes(config_from_args(parse_args(argv)))
                 except (SystemExit, ValueError) as e:
                     clash = f"Check the channel numbers ({e})"
+                if not clash and not simulate:
+                    d = next((x for x in device_list(names=False)["devices"] if str(x["index"]) == str(cfg["device"])), None)
+                    clash = ("That soundcard isn't there any more. Press Look again." if d is None
+                             else patch_fit(config_from_args(parse_args(argv)), d))
                 if clash:
                     LOG.warning("Setup refused: %s", clash)
                     return self._send(200, json.dumps({"ok": False, "error": clash}).encode())

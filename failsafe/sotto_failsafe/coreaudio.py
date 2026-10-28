@@ -11,6 +11,8 @@ those parts decide what Sotto Voce can do about it:
   running_elsewhere    whether another app has the device running (and so may set its buffer)
 
 devices() lists every device; find(name) returns one. Elsewhere both return [] / None.
+channel_names(name) gives each channel a label for the patch dropdowns: the channel's own name if the
+driver has one, and for an aggregate device which sub-device it belongs to ("MacBook Pro Speakers L").
 """
 import ctypes
 import ctypes.util
@@ -38,6 +40,8 @@ P = {
     "running_somewhere": _fourcc("gone"),
     "transport": _fourcc("tran"),
     "config": _fourcc("slay"),
+    "element_name": _fourcc("lchn"),
+    "sub_devices": _fourcc("agrp"),          # an aggregate device's active sub-devices, in channel order
 }
 
 
@@ -95,6 +99,21 @@ def _array(obj, sel, scope=GLOBAL):
     if ca.AudioObjectGetPropertyData(obj, ctypes.byref(a), 0, None, ctypes.byref(size), arr) != 0:
         return []
     return list(arr)
+
+
+def _cfstring(obj, sel, scope=GLOBAL, element=MAIN):
+    ca, cf = _libs()
+    a = _Addr(sel, scope, element)
+    if not ca.AudioObjectHasProperty(obj, ctypes.byref(a)):
+        return None
+    ref = ctypes.c_void_p()
+    size = ctypes.c_uint32(ctypes.sizeof(ref))
+    if ca.AudioObjectGetPropertyData(obj, ctypes.byref(a), 0, None, ctypes.byref(size), ctypes.byref(ref)) != 0 or not ref.value:
+        return None
+    buf = ctypes.create_string_buffer(512)
+    ok = cf.CFStringGetCString(ref.value, buf, 512, 0x08000100)       # UTF-8
+    cf.CFRelease(ref.value)
+    return buf.value.decode("utf-8", "replace").strip() if ok else None
 
 
 def _name(obj):
@@ -165,6 +184,43 @@ def devices():
         return [describe(d) for d in _array(SYSTEM_OBJECT, P["devices"])]
     except Exception as e:
         return [{"error": repr(e)}]
+
+
+def labels(sub_devices, own_names, n):
+    """Channel labels from an aggregate's sub-devices [(name, channels), ...] and the channels' own
+    names (None or "" where the driver gives none). The first sub-device's channels keep their own
+    numbers and need no label; the added ones say where they come from. A stereo pair is L and R."""
+    out = [""] * n
+    i = 0
+    for j, (sname, m) in enumerate(sub_devices):
+        for k in range(m):
+            if i < n and j > 0:
+                out[i] = f"{sname} {'LR'[k] if m == 2 else k + 1}"
+            i += 1
+    for c in range(n):
+        own = (own_names[c] if c < len(own_names) else None) or ""
+        if own and own.lower() not in out[c].lower():
+            out[c] = f"{out[c]} · {own}" if out[c] else own
+    return out
+
+
+def channel_names(name):
+    """{"in": [label per input], "out": [label per output]} for the device with this name, or None."""
+    if sys.platform != "darwin" or not name:
+        return None
+    try:
+        obj = next((d for d in _array(SYSTEM_OBJECT, P["devices"]) if _name(d) == name), None)
+        if obj is None:
+            return None
+        out = {}
+        for key, scope in (("in", INPUT), ("out", OUTPUT)):
+            n = _channels(obj, scope)
+            subs = [(_name(s) or "sub-device", _channels(s, scope)) for s in _array(obj, P["sub_devices"])]
+            own = [_cfstring(obj, P["element_name"], scope, c + 1) for c in range(n)]
+            out[key] = labels([x for x in subs if x[1]], own, n)
+        return out
+    except Exception:
+        return None
 
 
 def find(name):

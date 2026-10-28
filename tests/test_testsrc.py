@@ -124,6 +124,28 @@ class TestSourceTests(unittest.TestCase):
             self.ts.load("notes.txt", b"hello")
         self.assertIn("doesn't look like an audio file", str(cm.exception))
 
+    def test_a_long_recording_of_any_size_keeps_only_its_start(self):
+        import struct
+        rate, ch, secs = 48000, 2, T.MAX_FILE_S + 60                       # longer than Sotto Voce keeps
+        path = os.path.join(self.dir, "whole show.wav")
+        frame = (np.array([0.25, 0.15], "<f4")).tobytes()
+        n = rate * secs
+        with open(path, "wb") as f:                                         # written as an RF64-style WAV: data size 0xFFFFFFFF
+            fmt = struct.pack("<HHIIHH", 3, ch, rate, rate * 8, 8, 32)
+            f.write(b"RIFF" + struct.pack("<I", 0xFFFFFFFF) + b"WAVE" + b"fmt " + struct.pack("<I", 16) + fmt)
+            f.write(b"data" + struct.pack("<I", 0xFFFFFFFF))
+            block = frame * rate
+            for _ in range(secs):
+                f.write(block)
+        self.assertGreater(os.path.getsize(path), 60_000_000)
+        r = self.ts.load_path(path)
+        self.assertEqual(r["seconds"], float(T.MAX_FILE_S))
+        self.assertTrue(r["cut"])
+        kept = os.path.join(self.dir, "whole show.wav")
+        self.assertLess(os.path.getsize(kept), 4 * 48000 * T.MAX_FILE_S + 100)   # only what's used is kept
+        again = T.TestSources(self.dir, {0: "talker 1"})
+        self.assertEqual(len(again._file("whole show.wav")), 48000 * T.MAX_FILE_S)
+
     @unittest.skipUnless(sys.platform == "darwin" and shutil.which("afconvert"), "needs macOS afconvert")
     def test_aiff_through_macos_converter(self):
         import subprocess

@@ -977,10 +977,15 @@ class BenchApp:
             LOG.exception("Test source %s failed", b)
             return {"ok": False, "error": str(e)}
 
-    def test_upload(self, name, data):
-        LOG.info("Audio file received: %s, %d bytes", name, len(data or b""))
+    def test_upload(self, name, data=None, path=None):
+        """An uploaded audio file, as bytes or as a file on disk (any size: only the start is read)."""
+        size = os.path.getsize(path) if path else len(data or b"")
+        LOG.info("Audio file received: %s, %.1f MB", name, size / 1e6)
         try:
-            r = self.tests.load(name, data)
+            r = self.tests.load_path(path, name) if path else self.tests.load(name, data)
+            if r.get("cut"):
+                from .testsrc import MAX_FILE_S
+                LOG.info("%s is longer than %d minutes: using the first %d", name, MAX_FILE_S // 60, MAX_FILE_S // 60)
             self.log(Event(self.core.t, "test_file", f"{r['name']} ({r['seconds']} s)", "console"))
             return {"ok": True, **r, **self.tests.state()}
         except ValueError as e:
@@ -1003,18 +1008,15 @@ class BenchApp:
             return {"ok": False, "error": "The file dialog was left open too long. Try again."}
         if r.returncode != 0:
             if "-128" in r.stderr:
+                LOG.info("macOS file dialog: cancelled")
                 return {"ok": False, "cancelled": True, "error": "No file chosen"}
             LOG.warning("macOS file dialog failed: %s", r.stderr.strip())
             return {"ok": False, "error": f"macOS couldn't open the file dialog: {r.stderr.strip()[:200]}"}
         path = r.stdout.strip()
-        try:
-            if os.path.getsize(path) > 60_000_000:
-                return {"ok": False, "error": "That file is too big (60 MB at most)."}
-            with open(path, "rb") as f:
-                data = f.read()
-        except OSError as e:
-            return {"ok": False, "error": f"Couldn't open {os.path.basename(path)}: {e.strerror}"}
-        return self.test_upload(os.path.basename(path), data)
+        LOG.info("Chosen in the macOS file dialog: %s", path)
+        if not os.path.isfile(path):
+            return {"ok": False, "error": f"Couldn't open {os.path.basename(path)}."}
+        return self.test_upload(os.path.basename(path), path=path)
 
     def phones_local(self, device):
         try:
@@ -1127,12 +1129,32 @@ class BenchApp:
 
             def _post(self):
                 n = int(self.headers.get("Content-Length", 0))
-                if self.path.startswith("/api/testsrc/upload"):      # a WAV file, as the body
+                if self.path.startswith("/api/testsrc/upload"):      # an audio file of any size, as the body
                     from urllib.parse import parse_qs, urlparse
-                    if n > 60_000_000:
-                        return self._send(200, b'{"ok": false, "error": "That file is too big (60 MB at most)."}', "application/json")
                     name = parse_qs(urlparse(self.path).query).get("name", ["recording.wav"])[0]
-                    return self._send(200, _json(app.test_upload(name, self.rfile.read(n))).encode(), "application/json")
+                    LOG.info("Audio file arriving from the console: %s, %.1f MB", name, n / 1e6)
+                    # Straight to a temporary file in 1 MB pieces, so a whole-show recording never
+                    # sits in memory; only its start is read afterwards.
+                    import tempfile
+                    fd, tmp = tempfile.mkstemp(prefix="sotto-upload-", suffix=os.path.splitext(name)[1])
+                    try:
+                        with os.fdopen(fd, "wb") as f:
+                            left = n
+                            while left > 0:
+                                chunk = self.rfile.read(min(left, 1 << 20))
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+                                left -= len(chunk)
+                        if left > 0:
+                            LOG.warning("Upload of %s stopped after %.1f of %.1f MB", name, (n - left) / 1e6, n / 1e6)
+                            return self._send(200, _json({"ok": False, "error": f"The upload of {name} stopped part-way. Try again."}).encode(), "application/json")
+                        return self._send(200, _json(app.test_upload(name, path=tmp)).encode(), "application/json")
+                    finally:
+                        try:
+                            os.remove(tmp)
+                        except OSError:
+                            pass
                 try:
                     body = json.loads(self.rfile.read(n) or b"{}")
                 except ValueError:

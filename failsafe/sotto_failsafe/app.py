@@ -769,16 +769,15 @@ class BenchApp:
             return {"ok": False, "error": "The simulated frame has no soundcard. Quit and choose a soundcard on the setup page."}
         changes, saved_changes, what = {}, {}, []
         if device is not None and str(device) != str(self.a.device):
-            devs = device_list()
+            devs = device_list(names=False)
             if not devs["ok"]:
                 return {"ok": False, "error": "Could not list audio devices: " + devs["error"]}
             d = next((x for x in devs["devices"] if str(x["index"]) == str(device)), None)
             if d is None:
                 return {"ok": False, "error": "That device is no longer there."}
-            need_in, need_out = self.engine_info["n_in"], self.engine_info["n_out"]
-            if d["inputs"] < need_in or d["outputs"] < need_out:
-                return {"ok": False, "error": f"{d['name']} has {d['inputs']} inputs and {d['outputs']} outputs. "
-                                              f"These channel settings need {need_in} in and {need_out} out."}
+            fit = patch_fit(self.cfg, d)
+            if fit:
+                return {"ok": False, "error": fit + " Change the I/O patch first, or choose another soundcard."}
             changes["--device"] = saved_changes["device"] = str(d["index"])
             what.append(d["name"])
         if io_buffer is not None:
@@ -820,9 +819,20 @@ class BenchApp:
         from . import launcher as L
         saved = L.load_config()
         return {"saved": saved, "defaults": {k: L.DEFAULTS[k] for k in self.PATCH_KEYS + self.ENGINE_KEYS if k in L.DEFAULTS},
+                "channels": self.channels_available(),
                 "running": {"device": self.a.device, "io_buffer": self.a.io_buffer or 0, "simulate": self.a.simulate,
                             **{k: getattr(self.a, k) for k in self.PATCH_KEYS}},
                 "io_buffers": list(self.IO_BUFFERS)}
+
+    def channels_available(self):
+        """The running soundcard's channels, for the patch dropdowns: {"device", "inputs", "outputs", "names"?}.
+        The simulated frame has no soundcard: 64 each way, Sotto Voce's usual layout."""
+        if self.a.simulate:
+            return {"device": "simulated frame", "inputs": 64, "outputs": 64}
+        d = next((x for x in device_list().get("devices", []) if str(x["index"]) == str(self.a.device)), None)
+        if d is None:
+            return {"device": str(self.a.device), "inputs": 64, "outputs": 64}
+        return {"device": d["name"], "inputs": d["inputs"], "outputs": d["outputs"], **({"names": d["names"]} if "names" in d else {})}
 
     def reconfigure(self, changes):
         """Checks a change to the I/O patch or the engine settings, saves it and restarts the engine
@@ -866,16 +876,14 @@ class BenchApp:
         clash = channel_clashes(c2)
         if clash:
             return {"ok": False, "error": clash}
-        n_in = max(c2.talker_in + c2.probe_in + [c for c in (c2.listen_in, c2.pgm_in) if c is not None]) + 1
-        n_out = max(c2.talker_out + [c2.probe_out, c2.heartbeat_out] + c2.monitor_out) + 1
         if not a2.simulate:
-            devs = device_list()
+            devs = device_list(names=False)
             d = next((x for x in devs.get("devices", []) if str(x["index"]) == str(a2.device)), None)
             if d is None:
                 return {"ok": False, "error": "That soundcard isn't there. Press Look again."}
-            if d["inputs"] < n_in or d["outputs"] < n_out:
-                return {"ok": False, "error": f"{d['name']} has {d['inputs']} inputs and {d['outputs']} outputs; "
-                                              f"this patch needs {n_in} in and {n_out} out."}
+            fit = patch_fit(c2, d)
+            if fit:
+                return {"ok": False, "error": fit}
         L.save_config(cfg)
         self.log(Event(self.core.t, "engine_change", "restarting with new settings: " +
                        ", ".join(f"{k}={v}" for k, v in changes.items()), "console"))
@@ -1201,16 +1209,42 @@ def channel_clashes(cfg):
     return None
 
 
-def device_list():
-    """Every audio device, for the setup page and the console."""
+def device_list(names=True):
+    """Every audio device, for the setup page and the console. With names, each channel's label from
+    Core Audio where there is one ("names": {"in": [...], "out": [...]}, macOS)."""
     try:
         import sounddevice as sd
         apis = sd.query_hostapis()
-        return {"ok": True, "error": None, "devices": [
-            {"index": i, "name": d["name"], "inputs": d["max_input_channels"], "outputs": d["max_output_channels"],
-             "api": apis[d["hostapi"]]["name"]} for i, d in enumerate(sd.query_devices())]}
+        devs = [{"index": i, "name": d["name"], "inputs": d["max_input_channels"], "outputs": d["max_output_channels"],
+                 "api": apis[d["hostapi"]]["name"]} for i, d in enumerate(sd.query_devices())]
     except Exception as e:                       # no PortAudio, no permission, ...
         return {"ok": False, "error": repr(e), "devices": []}
+    if names:
+        from . import coreaudio
+        for d in devs:
+            n = coreaudio.channel_names(d["name"]) if d["inputs"] or d["outputs"] else None
+            if n and len(n["in"]) == d["inputs"] and len(n["out"]) == d["outputs"] and any(n["in"] + n["out"]):
+                d["names"] = n
+    return {"ok": True, "error": None, "devices": devs}
+
+
+def patch_fit(cfg, dev):
+    """Plain-English message if the patch uses a channel the device doesn't have, else None.
+    dev: {"name", "inputs", "outputs"} from device_list()."""
+    ins = [(c, f"talker {i + 1} input") for i, c in enumerate(cfg.talker_in)]
+    ins += [(c, "PROBE return") for c in cfg.probe_in]
+    ins += [(c, n) for c, n in ((cfg.pgm_in, "PGM"), (cfg.listen_in, "listener feed")) if c is not None]
+    outs = [(c, f"talker {i + 1} return") for i, c in enumerate(cfg.talker_out)]
+    outs += [(cfg.probe_out, "PROBE"), (cfg.heartbeat_out, "HEARTBEAT")]
+    outs += [(c, "headphones") for c in cfg.monitor_out]
+    for side, items, have in (("Input", ins, dev["inputs"]), ("Output", outs, dev["outputs"])):
+        over = [(c, what) for c, what in items if c >= have]
+        if over:
+            c, what = max(over)
+            if have == 0:
+                return f"{dev['name']} has no {side.lower()}s."
+            return f"{side} {c + 1} ({what}) isn't on {dev['name']}, which has {have} {side.lower()}{'s' if have != 1 else ''}."
+    return None
 
 
 def list_devices():

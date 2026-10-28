@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -216,7 +217,7 @@ class SwitchDeviceTests(unittest.TestCase):
             try:
                 r = app.switch_device("1")
                 self.assertFalse(r["ok"])
-                self.assertIn("1 inputs and 0 outputs", r["error"])
+                self.assertIn("isn't on MacBook Pro Microphone", r["error"])
                 r = app.switch_device("2")
             finally:
                 app.events_f.close()                       # Windows can't delete open files
@@ -225,6 +226,52 @@ class SwitchDeviceTests(unittest.TestCase):
             self.assertTrue(app.quit_ev.is_set())
             with open(os.path.join(d, "config.json")) as f:
                 self.assertEqual(json.load(f)["device"], "2")
+
+
+class DeviceChannelsTests(unittest.TestCase):
+    """Every channel the soundcard has can be patched: an aggregate device's 129/130 for headphones."""
+    AGG = {"index": 8, "name": "Aggregate Device", "inputs": 129, "outputs": 130, "api": "Core Audio"}
+    DVS = {"index": 0, "name": "Dante Virtual Soundcard", "inputs": 64, "outputs": 64, "api": "Core Audio"}
+
+    def cfg(self, *extra):
+        from sotto_failsafe.app import config_from_args
+        return config_from_args(parse_args(["--simulate", *extra]))
+
+    def test_headphones_on_an_aggregates_extra_outputs(self):
+        from sotto_failsafe.app import patch_fit
+        c = self.cfg("--monitor", "129,130")
+        self.assertIsNone(patch_fit(c, self.AGG))
+        msg = patch_fit(c, self.DVS)
+        self.assertEqual(msg, "Output 130 (headphones) isn't on Dante Virtual Soundcard, which has 64 outputs.")
+        self.assertIn("Input 129 (PGM)", patch_fit(self.cfg("--pgm-in", "129"), self.DVS))
+        self.assertEqual(patch_fit(c, {"name": "Mic", "inputs": 200, "outputs": 0}), "Mic has no outputs.")
+
+    def test_console_patch_change_checks_the_running_soundcard(self):
+        from sotto_failsafe import app as appmod
+        devs = {"ok": True, "error": None, "devices": [self.DVS, self.AGG]}
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(appmod, "device_list", return_value=devs), \
+                mock.patch.object(appmod, "config_dir", return_value=d), mock.patch.object(launcher, "config_dir", return_value=d):
+            with open(os.path.join(d, "config.json"), "w") as f:
+                json.dump({"device": "8", "layout": 2}, f)
+            app = BenchApp(parse_args(["--device", "8", "--port", "8803", "--out-dir", d]))
+            try:
+                ch = app.config()["channels"]
+                self.assertEqual((ch["device"], ch["inputs"], ch["outputs"]), ("Aggregate Device", 129, 130))
+                bad = app.reconfigure({"monitor": "130,131"})
+                self.assertFalse(bad["ok"])
+                self.assertIn("Output 131 (headphones) isn't on Aggregate Device", bad["error"])
+                self.assertTrue(app.reconfigure({"monitor": "129,130"})["ok"])
+            finally:
+                app.events_f.close()
+            with open(os.path.join(d, "config.json")) as f:
+                self.assertEqual(json.load(f)["monitor"], "129,130")
+
+    def test_channel_labels_for_an_aggregate(self):
+        from sotto_failsafe.coreaudio import labels
+        out = labels([("Dante Virtual Soundcard", 128), ("MacBook Pro Speakers", 2)], [None] * 130, 130)
+        self.assertEqual(out[0], "")                                # the main device's channels: just numbers
+        self.assertEqual(out[128:], ["MacBook Pro Speakers L", "MacBook Pro Speakers R"])
+        self.assertEqual(labels([], ["DVS Receive 1", None], 2), ["DVS Receive 1", ""])
 
 
 class SoundcardBufferTests(unittest.TestCase):

@@ -113,7 +113,7 @@ textarea{width:100%;resize:vertical;min-height:70px}
 .tsrc:last-child{border-bottom:0}
 .tsrc .now{grid-column:1/-1;font-size:12px;color:var(--muted)}
 .ptab select{min-width:72px}.ptab input{min-width:160px}select.clash{border-color:var(--led-red,#d33);box-shadow:0 0 0 2px rgba(220,50,50,.25)}.subh{margin:14px 0 8px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
-.pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}.pgrid label{display:flex;flex-direction:column;gap:4px;font-size:13px}
+.pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}.pgrid label{display:flex;flex-direction:column;gap:4px;font-size:13px}
 .tsrc label{display:flex;gap:8px;align-items:center;margin:0}.tsrc label input{flex:1;min-width:80px}.tsrc label select{flex:1}
 .upl{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:8px;border:1px dashed var(--line);border-radius:8px}
 .upl.drag,.drop.drag{border-color:var(--accent,#4c8dff);background:rgba(76,141,255,.08)}
@@ -1382,8 +1382,12 @@ table.t tr.unused td{color:var(--muted)}
       `<span class="fixed">${rate / 1000} kHz</span>${ok ? '<span class="pill ok">48 kHz</span>' : '<span class="pill err">set 48 kHz in Dante Controller</span>'}`);
   }
   // ---------------------------------------------------------------- I/O patch (app)
-  // Every choice is a dropdown. Talkers use channels 1-60; 61-64 are kept for the system.
-  const TALK_CH = Array.from({ length: 60 }, (_, k) => k + 1), SYS_CH = [61, 62, 63, 64];
+  // Every choice is a dropdown listing every channel the running soundcard has (an aggregate
+  // device's extra channels too, named where macOS gives a name). Up to 60 talkers.
+  const COUNT_CH = Array.from({ length: 60 }, (_, k) => k + 1);
+  const devCh = () => (UI.cfg && UI.cfg.channels) || { device: 'this soundcard', inputs: 64, outputs: 64 };
+  const chRange = n => Array.from({ length: n }, (_, k) => k + 1);
+  const chLabel = (side, c) => { const n = devCh().names && devCh().names[side] && devCh().names[side][c - 1]; return n ? `${c} · ${n}` : String(c); };
   const SYS = [
     ['pgm_in', 'PGM input (echo reference)', 'in'], ['probe_in', 'PROBE return input', 'in'], ['listen_in', 'Listener feed input (optional, for timing)', 'in', true],
     ['probe_out', 'PROBE output', 'out'], ['heartbeat_out', 'HEARTBEAT output (to the VOX)', 'out'], ['mon_l', 'Headphones left (phones bus)', 'out'], ['mon_r', 'Headphones right', 'out'],
@@ -1430,6 +1434,10 @@ table.t tr.unused td{color:var(--muted)}
     };
     check('Input', [...pt.talkers.map((t, k) => [`t${k}.in`, t.in, `talker ${k + 1}`]), ['pgm_in', pt.pgm_in, 'PGM'], ['probe_in', pt.probe_in, 'PROBE return'], ['listen_in', pt.listen_in, 'listener feed']]);
     check('Output', [...pt.talkers.map((t, k) => [`t${k}.out`, t.out, `talker ${k + 1}`]), ['probe_out', pt.probe_out, 'PROBE'], ['heartbeat_out', pt.heartbeat_out, 'HEARTBEAT'], ['mon_l', pt.mon_l, 'headphones'], ['mon_r', pt.mon_r, 'headphones']]);
+    const d = devCh();
+    const over = (side, have, items) => items.forEach(([key, ch, what]) => { if (ch > have) { bad.add(key); msgs.push(`${side} ${ch} (${what}) isn't on ${d.device}, which has ${have} ${side.toLowerCase()}s.`); } });
+    over('Input', d.inputs, [...pt.talkers.map((t, k) => [`t${k}.in`, t.in, `talker ${k + 1}`]), ['pgm_in', pt.pgm_in, 'PGM'], ['probe_in', pt.probe_in, 'PROBE return'], ['listen_in', pt.listen_in, 'listener feed']]);
+    over('Output', d.outputs, [...pt.talkers.map((t, k) => [`t${k}.out`, t.out, `talker ${k + 1}`]), ['probe_out', pt.probe_out, 'PROBE'], ['heartbeat_out', pt.heartbeat_out, 'HEARTBEAT'], ['mon_l', pt.mon_l, 'headphones'], ['mon_r', pt.mon_r, 'headphones']]);
     return { bad, msgs };
   }
   function loadConfig() {
@@ -1439,8 +1447,10 @@ table.t tr.unused td{color:var(--muted)}
       .catch(() => { UI.cfg = { error: 'Sotto Voce did not answer' }; })
       .finally(() => { UI.cfgLoading = false; if (UI.sec === 'channels' && !$('#pSet').hidden) renderSet(); });
   }
-  function chSel(key, val, list, bad, extra = []) {
-    return `<select data-pk="${key}" class="${bad.has(key) ? 'clash' : ''}">${extra.concat(list.map(c => [c, String(c)])).map(([v, l]) => `<option value="${v}"${+v === +val ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
+  function chSel(key, val, side, bad, extra = []) {
+    const n = side === 'in' ? devCh().inputs : devCh().outputs, list = chRange(n).map(c => [c, chLabel(side, c)]);
+    if (val > n) list.push([val, `${val} (not on this soundcard)`]);
+    return `<select data-pk="${key}" class="${bad.has(key) ? 'clash' : ''}">${extra.concat(list).map(([v, l]) => `<option value="${v}"${+v === +val ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
   }
   function secPatchApp() {
     if (!UI.cfg) { loadConfig(); return box('I/O patch', 'Reading the patch…', ''); }
@@ -1450,10 +1460,11 @@ table.t tr.unused td{color:var(--muted)}
     const n = pt.talkers.length;
     const trows = pt.talkers.map((t, k) => `<tr><td class="n">${pad(k + 1)}</td>
       <td><input type="text" data-pk="t${k}.name" value="${esc(t.name)}" placeholder="Talker ${k + 1}" aria-label="Name of talker ${k + 1}"></td>
-      <td>${chSel(`t${k}.in`, t.in, TALK_CH, bad)}</td><td>${chSel(`t${k}.out`, t.out, TALK_CH, bad)}</td></tr>`).join('');
-    const srows = SYS.map(([key, label, side, optional]) => `<label>${label}${chSel(key, pt[key], SYS_CH, bad, optional ? [[0, 'Off']] : [])}<small class="muted">default ${key === 'mon_l' ? 63 : key === 'mon_r' ? 64 : (chansParse(UI.cfg.defaults[key])[0] || 'off')}</small></label>`).join('');
-    return box('I/O patch', 'Which soundcard channel does each job, numbered as in Dante Controller. Talkers use channels 1–60; 61–64 are kept for the system. Applying checks the soundcard has the channels, then restarts the engine: HEARTBEAT stops, the frame puts listeners on dry, and Sotto Voce starts again disarmed.',
-      row('Talkers', 'How many people Sotto Voce cleans up. New talkers take the next free input and return.', `<select data-pk="count">${TALK_CH.map(c => `<option value="${c}"${c === n ? ' selected' : ''}>${c}</option>`).join('')}</select>`) +
+      <td>${chSel(`t${k}.in`, t.in, 'in', bad)}</td><td>${chSel(`t${k}.out`, t.out, 'out', bad)}</td></tr>`).join('');
+    const srows = SYS.map(([key, label, side, optional]) => `<label>${label}${chSel(key, pt[key], side, bad, optional ? [[0, 'Off']] : [])}<small class="muted">default ${key === 'mon_l' ? 63 : key === 'mon_r' ? 64 : (chansParse(UI.cfg.defaults[key])[0] || 'off')}</small></label>`).join('');
+    const dc = devCh();
+    return box('I/O patch', `Which soundcard channel does each job, numbered as in Dante Controller. Every dropdown lists ${esc(dc.device)}'s channels: inputs 1–${dc.inputs}, outputs 1–${dc.outputs}. The defaults put the system on 61–64. Applying checks the soundcard has the channels, then restarts the engine: HEARTBEAT stops, the frame puts listeners on dry, and Sotto Voce starts again disarmed.`,
+      row('Talkers', 'How many people Sotto Voce cleans up. New talkers take the next free input and return.', `<select data-pk="count">${COUNT_CH.map(c => `<option value="${c}"${c === n ? ' selected' : ''}>${c}</option>`).join('')}</select>`) +
       `<div class="scroll"><table class="t ptab"><thead><tr><th>#</th><th>Name</th><th>Input</th><th>Return (clean)</th></tr></thead><tbody>${trows}</tbody></table></div>` +
       `<h4 class="subh">System channels</h4><div class="pgrid">${srows}</div>` +
       (msgs.length ? `<p class="note warn">${msgs.map(esc).join('<br>')}</p>` : '') +
@@ -1468,8 +1479,9 @@ table.t tr.unused td{color:var(--muted)}
       while (pt.talkers.length < n) {
         const usedIn = new Set(pt.talkers.map(t => t.in)), usedOut = new Set(pt.talkers.map(t => t.out));
         const k = pt.talkers.length + 1;
-        const nin = TALK_CH.find(c => !usedIn.has(c) && c >= k) || TALK_CH.find(c => !usedIn.has(c));
-        const nout = TALK_CH.find(c => !usedOut.has(c) && c >= k) || TALK_CH.find(c => !usedOut.has(c));
+        const sysIn = new Set([pt.pgm_in, pt.probe_in, pt.listen_in]), sysOut = new Set([pt.probe_out, pt.heartbeat_out, pt.mon_l, pt.mon_r]);
+        const free = (n, used, sys) => chRange(n).find(c => !used.has(c) && !sys.has(c) && c >= k) || chRange(n).find(c => !used.has(c) && !sys.has(c)) || k;
+        const nin = free(devCh().inputs, usedIn, sysIn), nout = free(devCh().outputs, usedOut, sysOut);
         pt.talkers.push({ in: nin, out: nout, name: '' });
       }
       return true;

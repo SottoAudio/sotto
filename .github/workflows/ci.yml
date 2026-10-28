@@ -42,6 +42,15 @@ jobs:
       - name: Download and convert the speech model
         run: python prototype/tools/get_models.py
 
+      - name: Build the native audio library
+        shell: bash
+        run: |
+          command -v cmake || pip install cmake
+          cmake -S engine/audio-io -B build/audio-io -DCMAKE_BUILD_TYPE=Release > audio-io.log 2>&1 \
+            && cmake --build build/audio-io --config Release >> audio-io.log 2>&1 \
+            || { echo "::error title=Native audio library (${{ matrix.os }})::$(grep -iE 'error|warning' audio-io.log | head -c 3000 | tr '\n' ' ')"; exit 1; }
+          echo "SOTTO_AUDIO_IO_DIR=$(dirname "$(find build/audio-io -type f \( -name 'sotto_audio_io.*' \) ! -name '*.lib' ! -name '*.exp' | head -1)")" >> $GITHUB_ENV
+
       - name: Run tests
         shell: bash
         run: |

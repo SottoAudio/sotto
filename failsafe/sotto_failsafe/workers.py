@@ -37,6 +37,7 @@ import numpy as np
 from .diagnostics import LOG
 
 HOP = 480
+RAMP = 120                                  # 2.5 ms: the fade when a talker switches source
 SLOTS = 4
 HEADER = 16                                     # int64 latest tag, int64 headroom (blocks)
 MAX_HEADROOM = 3
@@ -298,6 +299,10 @@ class Pool:
         self.grace_until = 0                             # no misses counted while headroom changes
         self.out_buf = np.zeros((self.n, HOP), np.float32)
         self.dry_buf = np.zeros((self.n, HOP), np.float32)
+        self._missed_rows = np.zeros(self.n, bool)
+        self._was_missed = np.zeros(self.n, bool)
+        self._last_out = np.zeros(self.n, np.float32)
+        self._fade = np.linspace(1.0, 0.0, RAMP, endpoint=False).astype(np.float32)
         self.blocks = 0
         self.misses = 0
         self.last_missed = 0
@@ -342,6 +347,8 @@ class Pool:
         self.history[k % nh][:] = mics
         missed = False
         n_missed = 0
+        missed_rows = self._missed_rows
+        missed_rows[:] = False
         for w in self.workers:
             tg, mv, rv = w.ins[k % SLOTS]
             mv[:] = mics[w.rows[0]:w.rows[-1] + 1]
@@ -360,6 +367,7 @@ class Pool:
             if not got:
                 missed = True
                 n_missed += 1
+                missed_rows[w.rows[0]:w.rows[-1] + 1] = True
                 # dry at the same delay as the processed path: the chain's own 10 ms + headroom
                 rows = slice(w.rows[0], w.rows[-1] + 1)
                 if k - h - 1 >= 0:
@@ -370,6 +378,7 @@ class Pool:
                     self.out_buf[rows] = 0
                     self.dry_buf[rows] = 0
         self.last_missed = n_missed                      # for the diagnostics' timing record
+        self._declick(missed_rows)
         if not missed:
             self.miss_run = 0
             self.good_run += 1
@@ -386,6 +395,19 @@ class Pool:
         if not self.live and all(w.ready for w in self.workers):
             self.live = True
         return self.out_buf, self.dry_buf
+
+    def _declick(self, missed_rows):
+        """A talker switching between processed and unprocessed audio (a late result, or the next
+        one on time again) would step from one signal to the other: a click. Instead the step is
+        faded out over 2.5 ms, so the switch is continuous."""
+        out = self.out_buf
+        changed = missed_rows != self._was_missed
+        if changed.any():
+            n = min(RAMP, out.shape[1])
+            for r in np.nonzero(changed)[0]:
+                out[r, :n] += (self._last_out[r] - out[r, 0]) * self._fade[:n]
+        self._was_missed[:] = missed_rows
+        self._last_out[:] = out[:, -1]
 
     def set_headroom(self, blocks):
         """How many blocks the workers get for each block (1 = 10 ms: 20 ms through Sotto Voce; 2 =

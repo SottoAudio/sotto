@@ -14,4 +14,7 @@
   - sidetone never passes through the app.
 - Audio-thread code must not block, allocate large buffers, or touch the network. RRCS and HTTP
   run on their own threads.
+- The soundcard's real-time callback is native C (`engine/audio-io`): it only copies audio through
+  lock-free rings, plays the talkers dry and latches HEARTBEAT off if the engine is late. Python
+  never runs on it; the engine runs on its own thread a fixed safety margin behind.
 - Write user-facing text plainly, for comms engineers.

@@ -42,11 +42,25 @@ jobs:
       - name: Download and convert the speech model
         run: python prototype/tools/get_models.py
 
+      - name: Pick a macOS SDK the linker can use
+        if: runner.os == 'macOS'
+        run: |
+          # Some Command Line Tools releases ship an SDK their own linker can't read yet (macOS 27's
+          # lists an arm64e.x1 architecture). Use the newest installed SDK that actually links.
+          printf 'int main() { return 0; }\n' > "$RUNNER_TEMP/sdkprobe.c"
+          for sdk in $( (ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX*.sdk 2>/dev/null; xcrun --show-sdk-path 2>/dev/null) | sort -ru); do
+            if clang -isysroot "$sdk" -arch arm64 "$RUNNER_TEMP/sdkprobe.c" -o "$RUNNER_TEMP/sdkprobe" 2> "$RUNNER_TEMP/sdkprobe.log"; then
+              echo "Using $sdk"; echo "SDKROOT=$sdk" >> "$GITHUB_ENV"; exit 0
+            fi
+            echo "The linker can't use $sdk: $(head -c 300 "$RUNNER_TEMP/sdkprobe.log")"
+          done
+          echo "::error title=No usable macOS SDK::None of the installed SDKs link. Update the Command Line Tools: softwareupdate --list"; exit 1
+
       - name: Build the native audio library
         shell: bash
         run: |
           command -v cmake || pip install cmake
-          cmake -S engine/audio-io -B build/audio-io -DCMAKE_BUILD_TYPE=Release > audio-io.log 2>&1 \
+          cmake -S engine/audio-io -B build/audio-io -DCMAKE_BUILD_TYPE=Release ${SDKROOT:+-DCMAKE_OSX_SYSROOT=$SDKROOT} > audio-io.log 2>&1 \
             && cmake --build build/audio-io --config Release >> audio-io.log 2>&1 \
             || { echo "::error title=Native audio library (${{ matrix.os }})::$(grep -iE 'error|warning' audio-io.log | head -c 3000 | tr '\n' ' ')"; exit 1; }
           echo "SOTTO_AUDIO_IO_DIR=$(dirname "$(find build/audio-io -type f \( -name 'sotto_audio_io.*' \) ! -name '*.lib' ! -name '*.exp' | head -1)")" >> $GITHUB_ENV

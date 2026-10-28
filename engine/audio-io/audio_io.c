@@ -24,6 +24,7 @@
 
 #ifdef _WIN32
 #  include <windows.h>
+#  include <timeapi.h>              /* timeBeginPeriod: 1 ms sleeps instead of Windows' default ~15 ms */
 #  define SIO_API __declspec(dllexport)
 #else
 #  include <dlfcn.h>
@@ -138,6 +139,9 @@ SIO_API sio_t *sio_create(int n_in, int n_out, int block, int fs, int prefill, i
     s->held = (float *)calloc((size_t)n_out, sizeof(float));
     if (!s->in_ring || !s->out_ring || !s->held) { free(s->in_ring); free(s->out_ring); free(s->held); free(s); return NULL; }
     s->out_w = prefill;           /* the margin starts as silence the engine is "ahead" by */
+#ifdef _WIN32
+    timeBeginPeriod(1);
+#endif
     s->g = 1.0f;
     s->hb_ch = -1;
     return s;
@@ -337,6 +341,9 @@ SIO_API void sio_close(sio_t *s) {
 SIO_API void sio_destroy(sio_t *s) {
     if (!s) return;
     sio_close(s);
+#ifdef _WIN32
+    timeEndPeriod(1);
+#endif
     free(s->in_ring); free(s->out_ring); free(s->held); free(s->map_in); free(s->map_out);
     free(s);
 }

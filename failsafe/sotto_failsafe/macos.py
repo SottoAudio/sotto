@@ -83,6 +83,43 @@ def set_thread_qos(name):
         return False, f"couldn't set thread priority: {e!r}"
 
 
+THREAD_TIME_CONSTRAINT_POLICY = 2
+
+
+class _TimeConstraint(ctypes.Structure):
+    _fields_ = [("period", ctypes.c_uint32), ("computation", ctypes.c_uint32),
+                ("constraint", ctypes.c_uint32), ("preemptible", ctypes.c_int)]
+
+
+def realtime_thread(period_ms=10.0, computation_ms=4.0, constraint_ms=10.0):
+    """Makes the calling thread a real-time thread, the way DAWs schedule their audio helper
+    threads: every period_ms it needs about computation_ms of CPU, finished within constraint_ms.
+    macOS then runs it ahead of ordinary work (the screen, browsers, other apps). Returns (ok,
+    message). Elsewhere, or if macOS refuses, falls back to the highest everyday priority."""
+    if sys.platform != "darwin":
+        return True, "not needed on this system"
+    try:
+        libc = ctypes.CDLL(ctypes.util.find_library("c") or "/usr/lib/libSystem.B.dylib")
+
+        class _TB(ctypes.Structure):
+            _fields_ = [("numer", ctypes.c_uint32), ("denom", ctypes.c_uint32)]
+        tb = _TB()
+        libc.mach_timebase_info(ctypes.byref(tb))
+        to_abs = lambda ms: int(ms * 1e6 * tb.denom / tb.numer)       # noqa: E731
+        libc.mach_thread_self.restype = ctypes.c_uint32
+        libc.thread_policy_set.restype = ctypes.c_int
+        libc.thread_policy_set.argtypes = [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32]
+        pol = _TimeConstraint(to_abs(period_ms), to_abs(computation_ms), to_abs(constraint_ms), 1)
+        rc = libc.thread_policy_set(libc.mach_thread_self(), THREAD_TIME_CONSTRAINT_POLICY, ctypes.byref(pol), 4)
+        if rc == 0:
+            return True, f"real-time ({computation_ms:g} ms every {period_ms:g} ms)"
+        ok, msg = fast_thread()
+        return ok, f"real-time refused (error {rc}); {msg}"
+    except Exception as e:
+        ok, msg = fast_thread()
+        return ok, f"real-time not available ({e!r}); {msg}"
+
+
 THERMAL = ("normal", "warm", "hot (slowing down)", "critical (slowing down)")
 
 

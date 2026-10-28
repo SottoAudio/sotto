@@ -143,7 +143,7 @@ def _worker_main(wid, names, settings, model, shm_name, g, in_sem, out_sem, ctrl
     def audio():
         """The processing, on its own thread at the highest everyday priority. Plugins are only
         run here (process); they're created, changed and destroyed on the main thread."""
-        _, work.thread_note = macos.fast_thread()
+        _, work.thread_note = macos.realtime_thread(10.0, 6.0, 10.0)
         next_state = 0.0
         next_tag = 0
         while not stop.is_set():

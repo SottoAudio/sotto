@@ -29,7 +29,7 @@ import numpy as np
 
 FS = 48000
 KINDS = ("tone", "pink", "speech", "bleed", "programme", "file")
-MAX_FILE_S = 120
+MAX_FILE_S = 300                     # longest test audio kept (the start of the file); any file size is fine
 SPEECH_TEXT = ("Stand by lighting cue forty two. Lighting forty two, go. Stand by video seven and pyro one. "
                "Video seven, go. Pyro one, go. Follow spots, pick up the artist downstage centre. "
                "Sound, stand by for the band intro. Band intro, go. Thank you, nice work everyone.")
@@ -118,30 +118,43 @@ def room(prog, delay_ms=40.0, seconds_rt=0.4, seed=11):
 AUDIO_EXTS = (".wav", ".wave", ".bwf", ".aif", ".aiff", ".aifc", ".caf", ".mp3", ".m4a", ".aac", ".flac", ".mp4")
 
 
-def parse_wav(data):
-    """Any WAV a DAW writes: PCM 8/16/24/32-bit, 32/64-bit float, plain or WAVE_FORMAT_EXTENSIBLE,
-    with any extra chunks (bext, iXML, ...). Returns (samples (frames, channels) float32, rate)."""
+def read_wav(f):
+    """Any WAV a DAW writes, from an open binary file: PCM 8/16/24/32-bit, 32/64-bit float, plain or
+    WAVE_FORMAT_EXTENSIBLE, with any extra chunks (bext, iXML, ...), any size (RF64-style 0 or
+    0xFFFFFFFF data sizes too). Reads only the first MAX_FILE_S seconds.
+    Returns (samples (frames, channels) float32, rate)."""
     import struct
-    if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+    head = f.read(12)
+    if len(head) < 12 or head[:4] not in (b"RIFF", b"RF64") or head[8:12] != b"WAVE":
         raise ValueError("not a WAV file")
-    pos, fmt, raw = 12, None, None
-    while pos + 8 <= len(data):
-        cid, size = data[pos:pos + 4], struct.unpack_from("<I", data, pos + 4)[0]
-        body = data[pos + 8:pos + 8 + size]
+    fmt, pos = None, 12
+    while True:
+        f.seek(pos)
+        h = f.read(8)
+        if len(h) < 8:
+            break
+        cid, size = h[:4], struct.unpack("<I", h[4:])[0]
         if cid == b"fmt ":
+            body = f.read(min(size, 64))
             tag, ch, rate, _, align, bits = struct.unpack_from("<HHIIHH", body, 0)
             if tag == 0xFFFE and len(body) >= 26:            # extensible: the real format is in the GUID
                 tag = struct.unpack_from("<H", body, 24)[0]
             fmt = (tag, ch, rate, align, bits)
         elif cid == b"data":
-            raw = data[pos + 8:] if size in (0, 0xFFFFFFFF) or pos + 8 + size > len(data) else body
+            if fmt is None:
+                raise ValueError("the WAV file's format comes after its audio, which Sotto Voce can't read")
+            tag, ch, rate, align, bits = fmt
+            want = rate * MAX_FILE_S * align if align else 0
+            raw = f.read(want if size in (0, 0xFFFFFFFF) else min(size, want))
+            return _decode(raw, fmt), rate
         pos += 8 + size + (size & 1)
-    if fmt is None or raw is None:
-        raise ValueError("the WAV file has no audio in it")
+    raise ValueError("the WAV file has no audio in it" if fmt else "the WAV file has no format chunk")
+
+
+def _decode(raw, fmt):
     tag, ch, rate, align, bits = fmt
     width = align // ch if ch else 0
-    n = min(len(raw) // align, rate * MAX_FILE_S) if align else 0
-    raw = raw[:n * align]
+    raw = raw[:(len(raw) // align) * align] if align else b""
     if tag == 1 and width == 2:
         x = np.frombuffer(raw, "<i2").astype(np.float32) / 32768.0
     elif tag == 1 and width == 3:
@@ -159,34 +172,45 @@ def parse_wav(data):
     else:
         raise ValueError(f"this WAV's format ({'float' if tag == 3 else 'PCM' if tag == 1 else f'type {tag}'}, "
                          f"{bits}-bit) isn't one Sotto Voce reads")
-    return np.nan_to_num(x.reshape(-1, ch)), rate
+    return np.nan_to_num(x.reshape(-1, ch))
 
 
-def to_wav(data, name="audio"):
-    """Other audio formats (AIFF, MP3, M4A, CAF, FLAC...) converted with macOS's own afconvert."""
+def parse_wav(data):
+    """read_wav() for WAV bytes."""
+    import io
+    return read_wav(io.BytesIO(data))
+
+
+def write_wav(path, x):
+    """Mono float32 WAV at 48 kHz (how Sotto Voce keeps test audio)."""
+    import struct
+    x = np.ascontiguousarray(x, "<f4")
+    fmt = struct.pack("<HHIIHH", 3, 1, FS, FS * 4, 4, 32)
+    with open(path, "wb") as f:
+        f.write(b"RIFF" + struct.pack("<I", 4 + 8 + len(fmt) + 8 + x.nbytes) + b"WAVE")
+        f.write(b"fmt " + struct.pack("<I", len(fmt)) + fmt)
+        f.write(b"data" + struct.pack("<I", x.nbytes) + x.tobytes())
+
+
+def _afconvert(src, name):
+    """Other audio formats (AIFF, MP3, M4A, CAF, FLAC...) converted with macOS's own afconvert;
+    returns the path of a WAV in a temporary folder the caller removes."""
     if sys.platform != "darwin":
         raise ValueError("Sotto Voce reads WAV files on this computer. Save the audio as a WAV and upload that.")
-    ext = os.path.splitext(name)[1] or ".audio"
-    with tempfile.TemporaryDirectory() as d:
-        src, dst = os.path.join(d, "in" + ext), os.path.join(d, "out.wav")
-        with open(src, "wb") as f:
-            f.write(data)
-        r = subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEF32@48000", src, dst], capture_output=True, text=True,
-                           timeout=120)
-        if r.returncode != 0 or not os.path.isfile(dst):
-            raise ValueError(f"macOS couldn't read {os.path.basename(name)} as audio: "
-                             f"{(r.stderr or r.stdout).strip()[:200] or 'unknown format'}")
-        with open(dst, "rb") as f:
-            return f.read()
+    d = tempfile.mkdtemp(prefix="sotto-convert-")
+    dst = os.path.join(d, "out.wav")
+    r = subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEF32@48000", src, dst], capture_output=True, text=True,
+                       timeout=600)
+    if r.returncode != 0 or not os.path.isfile(dst):
+        import shutil
+        shutil.rmtree(d, ignore_errors=True)
+        raise ValueError(f"macOS couldn't read {os.path.basename(name)} as audio: "
+                         f"{(r.stderr or r.stdout).strip()[:200] or 'unknown format'}")
+    return dst
 
 
-def load_audio(data, name="audio.wav"):
-    """Audio file bytes to mono float32 at 48 kHz, at most MAX_FILE_S seconds."""
-    if not data:
-        raise ValueError("the file is empty")
-    if not (data[:4] == b"RIFF" and data[8:12] == b"WAVE"):
-        data = to_wav(data, name)
-    x, rate = parse_wav(data)
+def _finish(x, rate):
+    """(frames, channels) at any rate to mono float32 at 48 kHz, checked."""
     x = x.mean(axis=1)
     if rate != FS:
         from math import gcd
@@ -195,17 +219,52 @@ def load_audio(data, name="audio.wav"):
         x = resample_poly(x, FS // g, int(rate) // g).astype(np.float32)
     if len(x) < FS // 10:
         raise ValueError("the file is too short (under 0.1 s)")
-    peak = float(np.max(np.abs(x)))
-    if peak < 1e-6:
-        raise ValueError("the file is silent")
+    if float(np.max(np.abs(x))) < 1e-6:
+        raise ValueError(f"the first {MAX_FILE_S // 60} minutes of the file are silent" if len(x) >= FS * MAX_FILE_S
+                         else "the file is silent")
     return np.ascontiguousarray(x, np.float32)
+
+
+def load_audio_path(path, name=None):
+    """An audio file of any size on disk to mono float32 at 48 kHz: its first MAX_FILE_S seconds."""
+    name = name or os.path.basename(path)
+    if os.path.getsize(path) == 0:
+        raise ValueError("the file is empty")
+    with open(path, "rb") as f:
+        head = f.read(12)
+    if head[:4] in (b"RIFF", b"RF64") and head[8:12] == b"WAVE":
+        with open(path, "rb") as f:
+            return _finish(*read_wav(f))
+    wav = _afconvert(path, name)
+    try:
+        with open(wav, "rb") as f:
+            return _finish(*read_wav(f))
+    finally:
+        import shutil
+        shutil.rmtree(os.path.dirname(wav), ignore_errors=True)
+
+
+def load_audio(data, name="audio.wav"):
+    """Audio file bytes to mono float32 at 48 kHz, at most MAX_FILE_S seconds."""
+    if not data:
+        raise ValueError("the file is empty")
+    if data[:4] in (b"RIFF", b"RF64") and data[8:12] == b"WAVE":
+        return _finish(*parse_wav(data))
+    d = tempfile.mkdtemp(prefix="sotto-in-")
+    try:
+        src = os.path.join(d, "in" + (os.path.splitext(name)[1] or ".audio"))
+        with open(src, "wb") as f:
+            f.write(data)
+        return load_audio_path(src, name)
+    finally:
+        import shutil
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def load_wav(data_or_path):
     """Kept for callers that pass a path or WAV bytes."""
     if not isinstance(data_or_path, (bytes, bytearray)):
-        with open(data_or_path, "rb") as f:
-            data_or_path = f.read()
+        return load_audio_path(data_or_path)
     return load_audio(bytes(data_or_path))
 
 
@@ -291,8 +350,7 @@ class TestSources:
             path = os.path.join(self.folder, os.path.basename(name))
             if not os.path.isfile(path):
                 raise ValueError("load the file first")
-            with open(path, "rb") as f:
-                self.files[name] = load_audio(f.read(), name)
+            self.files[name] = load_audio_path(path, name)
         return self.files[name]
 
     def saved_files(self):
@@ -388,17 +446,31 @@ class TestSources:
         return {"removed": name, "stopped": [c + 1 for c in used]}
 
     def load(self, name, data):
+        """Audio file bytes (small files; tests)."""
+        name = self._check_name(name)
+        return self._keep(name, load_audio(data, name))
+
+    def load_path(self, path, name=None):
+        """An audio file of any size on disk: only its first MAX_FILE_S seconds are read and kept."""
+        name = self._check_name(name or os.path.basename(path))
+        return self._keep(name, load_audio_path(path, name))
+
+    @staticmethod
+    def _check_name(name):
         name = os.path.basename(name or "recording.wav")
         if not name.lower().endswith(AUDIO_EXTS):
             raise ValueError(f"{name} doesn't look like an audio file (WAV, AIFF, MP3, M4A, CAF or FLAC)")
-        x = load_audio(data, name)
+        return name
+
+    def _keep(self, name, x):
+        """Keeps the audio Sotto Voce uses (mono, 48 kHz, at most MAX_FILE_S) in the test audio
+        folder under the file's own name, not the original file, so a 2 GB recording stays small."""
         os.makedirs(self.folder, exist_ok=True)
-        with open(os.path.join(self.folder, name), "wb") as f:
-            f.write(data)
+        write_wav(os.path.join(self.folder, name), x)
         self.files[name] = x
         for k in [k for k in self._rooms if k[1] == name]:     # a new file under an old name
             self._rooms.pop(k, None)
-        return {"name": name, "seconds": round(len(x) / FS, 1)}
+        return {"name": name, "seconds": round(len(x) / FS, 1), "cut": len(x) >= FS * MAX_FILE_S - FS // 10}
 
     def state(self):
         return {"playing": {str(c + 1): d for c, d in self.desc.items()},

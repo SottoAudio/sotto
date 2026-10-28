@@ -1313,7 +1313,7 @@ table.t tr.unused td{color:var(--muted)}
       `<div class="drop" style="margin-top:8px">${uploadStrip(T, '')}</div>`;
     return box('Test sources', 'Play test audio into a channel inside Sotto Voce, so you can hear the processing without a mic, a PGM feed or any Dante routing. Solo the channel and listen in Split (dry left, clean right). <b>Speech with PA bleed</b> puts a programme on PGM and the same programme, delayed 40 ms with room reverb, into the mic under the speech: the echo canceller should remove it. Use your own WAVs for both: speech recorded on a comms mic, and a recording of the show as the programme. Test sources only play while Sotto Voce is disarmed; arming switches them all off. The test audio also goes out on that talker\'s return.',
       (armed ? '<p class="note warn">Sotto Voce is armed: test sources are off. Disarm to use them.</p>' : '') + rows +
-      row('Uploaded audio files', 'Kept on this computer for next time. WAV at any sample rate, 16, 24 or 32-bit, or 32-bit float. On a Mac also AIFF, MP3, M4A, CAF and FLAC. Up to 2 minutes; longer files are cut.', list) +
+      row('Uploaded audio files', 'Kept on this computer for next time. WAV at any sample rate, 16, 24 or 32-bit, or 32-bit float. On a Mac also AIFF, MP3, M4A, CAF and FLAC. Any file size: Sotto Voce uses the first 5 minutes of a longer recording.', list) +
       row('', '', `<button class="btn sm" data-act="talloff"${armed ? ' disabled' : ''}>Stop every test source</button>`));
   }
   const AUDIO_ACCEPT = 'audio/*,.wav,.wave,.bwf,.aif,.aiff,.aifc,.caf,.mp3,.m4a,.aac,.flac';
@@ -1345,7 +1345,7 @@ table.t tr.unused td{color:var(--muted)}
     if (r.ok) {
       APP.tests = r; UI.pick = null;
       if (pk && UI.tf[pk.ch]) UI.tf[pk.ch][pk.field] = r.name;
-      toast(`Uploaded ${r.name} (${r.seconds} s)`);
+      toast(r.cut ? `Uploaded ${r.name}: using its first ${Math.round(r.seconds / 60)} minutes` : `Uploaded ${r.name} (${r.seconds} s)`);
     } else if (!r.cancelled) toast(r.error || 'Could not upload that file');
     renderSet();
   }

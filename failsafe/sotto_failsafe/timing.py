@@ -10,6 +10,7 @@ handful of numbers into them. Reading (summary(), csv()) happens on other thread
 written at that moment can be half old, half new, which is fine for a report.
 """
 import gc
+import itertools
 import threading
 import time
 
@@ -18,6 +19,22 @@ import numpy as np
 # PortAudio callback status bits
 IN_UNDERFLOW, IN_OVERFLOW, OUT_UNDERFLOW, OUT_OVERFLOW, PRIMING = 1, 2, 4, 8, 16
 STAGES = ("tests", "exchange", "core", "phones", "record")
+STALL_MS = 8.0                 # an engine block taking longer than this is a stall worth explaining
+
+
+class _Span:
+    __slots__ = ("tr", "name", "t0")
+
+    def __init__(self, tr, name):
+        self.tr, self.name = tr, name
+
+    def __enter__(self):
+        self.t0 = time.perf_counter()
+        return self
+
+    def __exit__(self, *exc):
+        self.tr.span_done(self.name, self.t0, time.perf_counter())
+        return False
 
 
 class TimingTrace:
@@ -33,6 +50,16 @@ class TimingTrace:
         # one row per block: wall time, engine ms, per-stage ms, workers late, queue level
         self.blk = np.full((n_blk, 4 + len(STAGES)), np.nan)
         self.blk_i = 0
+        self.blk_cpu = np.full(n_blk, np.nan)              # engine thread CPU ms per block (same index as blk)
+        # what else Sotto Voce was doing, for explaining stalls: (start, end, name id, thread id)
+        self.spans = np.full((16384, 4), np.nan)
+        self._span_n = itertools.count()
+        self.span_names, self._span_ids = [], {}
+        self.thread_names, self._thread_ids = [], {}
+        # every engine block over STALL_MS since start (the last 512): start, wall ms, CPU ms, stage ms
+        self.stalls = np.full((512, 3 + len(STAGES)), np.nan)
+        self.stall_i = 0
+        self.stall_total = 0
         self.gc_rows = np.full((512, 3), np.nan)            # wall time, generation, pause ms
         self.gc_i = 0
         self._gc_t0 = None
@@ -61,12 +88,94 @@ class TimingTrace:
         r[0], r[1], r[2], r[3], r[4], r[5] = t, adc, frames, cb_ms, status_bits, margin
         self.dev_i += 1
 
-    def block_done(self, t, engine_ms, stages, late_workers, queue):
-        r = self.blk[self.blk_i % len(self.blk)]
+    def block_done(self, t, engine_ms, stages, late_workers, queue, cpu_ms=float("nan")):
+        i = self.blk_i % len(self.blk)
+        r = self.blk[i]
         r[0], r[1], r[2], r[3] = t, engine_ms, late_workers, queue
         for k, v in enumerate(stages):
             r[4 + k] = v
+        self.blk_cpu[i] = cpu_ms
         self.blk_i += 1
+        if engine_ms > STALL_MS:
+            s = self.stalls[self.stall_i % len(self.stalls)]
+            s[0], s[1], s[2] = t, engine_ms, cpu_ms
+            for k, v in enumerate(stages):
+                s[3 + k] = v
+            self.stall_i += 1
+            self.stall_total += 1
+
+    # ------------------------------------------------------------ other threads' work
+    def span(self, name):
+        """with trace.span("http /api/state"): ... records when other work ran, to line up with stalls."""
+        return _Span(self, name)
+
+    def span_done(self, name, t0, t1):
+        nid = self._span_ids.get(name)
+        if nid is None:
+            nid = self._span_ids[name] = len(self.span_names)
+            self.span_names.append(name)
+        th = threading.current_thread().name
+        tid = self._thread_ids.get(th)
+        if tid is None:
+            tid = self._thread_ids[th] = len(self.thread_names)
+            self.thread_names.append(th)
+        r = self.spans[next(self._span_n) % len(self.spans)]
+        r[0], r[1], r[2], r[3] = t0, t1, nid, tid
+
+    def stall_report(self, max_lines=12):
+        """Each engine stall since start (the last 512), split into working vs waiting, with what else
+        in Sotto Voce was running at that moment."""
+        with self.lock:
+            n = self.stall_i
+            st = self._rows(self.stalls, n)
+            sp = self.spans[~np.isnan(self.spans[:, 0])].copy()
+            gcr = self.gc_rows[~np.isnan(self.gc_rows[:, 0])].copy()
+        if not len(st):
+            return f"No engine block took longer than {STALL_MS:.0f} ms since the engine started."
+        out = []
+        wall, cpu = st[:, 1], st[:, 2]
+        has_cpu = ~np.isnan(cpu)
+        working = int(np.sum(has_cpu & (cpu >= 0.7 * wall)))
+        waiting = int(np.sum(has_cpu & (cpu < 0.3 * wall)))
+        out.append(f"Engine blocks over {STALL_MS:.0f} ms since start: {self.stall_total} (details for the last {len(st)}). "
+                   f"Working (the engine thread used the CPU for most of it): {working}. Waiting (it wasn't running "
+                   f"for most of it: held up by another Python thread, or macOS ran something else): {waiting}. "
+                   f"In between: {len(st) - working - waiting}.")
+        by_stage = {name: int(np.sum(np.nanargmax(np.nan_to_num(st[:, 3:], nan=-1), axis=1) == k))
+                    for k, name in enumerate(STAGES)}
+        out.append("Where in the block the time went (the biggest stage each time): "
+                   + ", ".join(f"{k} {v}" for k, v in by_stage.items() if v) + ".")
+        counts, none = {}, 0
+        details = []
+        order = np.argsort(wall)[::-1]
+        for j, i in enumerate(order):
+            t0, t1 = st[i, 0], st[i, 0] + st[i, 1] / 1000.0
+            ov = sp[(sp[:, 0] < t1) & (sp[:, 1] > t0)] if len(sp) else sp
+            names = sorted({self.span_names[int(r[2])] for r in ov})
+            g = gcr[(gcr[:, 0] < t1) & (gcr[:, 0] + gcr[:, 2] / 1000.0 > t0)] if len(gcr) else gcr
+            if len(g):
+                names.append(f"garbage collection {np.max(g[:, 2]):.1f} ms")
+            for nm in names:
+                counts[nm] = counts.get(nm, 0) + 1
+            if not names:
+                none += 1
+            if j < max_lines:
+                stg = ", ".join(f"{STAGES[k]} {st[i, 3 + k]:.1f}" for k in range(len(STAGES)) if st[i, 3 + k] >= 1.0)
+                what = "; ".join(
+                    f"{self.span_names[int(r[2])]} ({1000 * (r[1] - r[0]):.1f} ms, {self.thread_names[int(r[3])]})"
+                    for r in ov[:6]) or "nothing else recorded"
+                details.append(f"  at +{t0 - self.t_start:8.2f} s: {st[i, 1]:.1f} ms, engine CPU "
+                               f"{'?' if np.isnan(st[i, 2]) else f'{st[i, 2]:.1f}'} ms [{stg}] | at the same time: {what}"
+                               + (f"; garbage collection {np.max(g[:, 2]):.1f} ms" if len(g) else ""))
+        if counts:
+            out.append("Other work running during these stalls (how many stalls each overlapped): "
+                       + ", ".join(f"{k} {v}" for k, v in sorted(counts.items(), key=lambda x: -x[1])[:10])
+                       + f"; nothing else recorded during {none}.")
+        else:
+            out.append("Nothing else recorded in Sotto Voce during any of them: macOS was running something else, "
+                       "or the engine thread was held up outside Python.")
+        out.append("Longest stalls:\n" + "\n".join(details))
+        return "\n".join(out)
 
     # ------------------------------------------------------------ garbage collection
     def watch_gc(self):
@@ -174,6 +283,9 @@ class TimingTrace:
                        f"{ns['resyncs']} resyncs.")
         if len(blk):
             out.append(f"Engine time per 10 ms block: {self._pct(blk[:, 1])}.")
+            cpu = self.blk_cpu[~np.isnan(self.blk_cpu)]
+            if len(cpu):
+                out.append(f"  of which the engine thread was actually running: {self._pct(cpu)}")
             for k, name in enumerate(STAGES):
                 col = blk[:, 4 + k]
                 if np.nanmax(col) > 0:

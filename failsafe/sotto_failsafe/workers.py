@@ -22,6 +22,7 @@ A worker that dies is logged, its talkers are faulted (tripped to dry), and it i
 re-arming stays manual.
 """
 import atexit
+import contextlib
 import itertools
 import logging
 import logging.handlers
@@ -439,27 +440,36 @@ class Pool:
                 wid, kind, payload = self.up.get(timeout=0.5)
             except Exception:
                 continue
+            sp = getattr(self, "span", None)            # the app's timing record, to explain engine stalls
             try:
-                w = self.workers[wid] if wid < len(getattr(self, "workers", [])) else None
-                if kind == "log":
-                    LOG.handle(payload)
-                elif kind == "ready" and w:
-                    w.ready, w.pid, w.ever_ready = True, payload.get("pid"), True
-                elif kind == "failed" and w:
-                    w.failed = payload
-                elif kind == "state" and w:
-                    w.state = payload
-                elif kind == "faults" and w:
-                    self.faults.extend((w.rows[i], why) for i, why in payload)
-                elif kind == "reply":
-                    rid, ok, res = payload
-                    with self._wait_lock:
-                        slot = self._waiting.get(rid)
-                    if slot:
-                        slot["res"], slot["ok"] = res, ok
-                        slot["ev"].set()
+                ctx = sp(f"processing: {kind} message") if sp is not None else contextlib.nullcontext()
             except Exception:
-                LOG.exception("Could not handle a message from processing worker %s", wid)
+                ctx = contextlib.nullcontext()
+            with ctx:
+                self._handle(wid, kind, payload)
+
+    def _handle(self, wid, kind, payload):
+        try:
+            w = self.workers[wid] if wid < len(getattr(self, "workers", [])) else None
+            if kind == "log":
+                LOG.handle(payload)
+            elif kind == "ready" and w:
+                w.ready, w.pid, w.ever_ready = True, payload.get("pid"), True
+            elif kind == "failed" and w:
+                w.failed = payload
+            elif kind == "state" and w:
+                w.state = payload
+            elif kind == "faults" and w:
+                self.faults.extend((w.rows[i], why) for i, why in payload)
+            elif kind == "reply":
+                rid, ok, res = payload
+                with self._wait_lock:
+                    slot = self._waiting.get(rid)
+                if slot:
+                    slot["res"], slot["ok"] = res, ok
+                    slot["ev"].set()
+        except Exception:
+            LOG.exception("Could not handle a message from processing worker %s", wid)
 
     def _watch(self):
         """Notices a worker that died, faults its talkers and starts it again. A worker that keeps

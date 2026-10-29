@@ -57,6 +57,31 @@ class TimingTraceTests(unittest.TestCase):
         self.assertIn("The soundcard stopped 1 time(s)", s)
         self.assertIn("Skipped cycles (capture time jumped): 2 cycles in 1 places", s)
 
+    def test_stalls_are_explained(self):
+        tr = TimingTrace(48000, 480, 480, seconds=5)
+        t = 10.0
+        for i in range(300):
+            t += 0.01
+            if i == 100:                       # held up: 25 ms, but the engine only ran for 1 ms
+                with_span = (t + 0.002, t + 0.020)
+                tr.span_done("web GET /api/state", *with_span)
+                tr.block_done(t, 25.0, [0.1, 0.2, 24.5, 0.0, 0.2], 0, 0, cpu_ms=1.0)
+            elif i == 200:                     # working: 12 ms of its own CPU, nothing else running
+                tr.block_done(t, 12.0, [0.1, 11.0, 0.7, 0.0, 0.2], 0, 0, cpu_ms=11.5)
+            else:
+                tr.block_done(t, 1.0, [0.1, 0.2, 0.5, 0.0, 0.2], 0, 0, cpu_ms=0.9)
+        r = tr.stall_report()
+        self.assertIn("Engine blocks over 8 ms since start: 2", r)
+        self.assertIn("Working (the engine thread used the CPU for most of it): 1", r)
+        self.assertIn("Waiting (it wasn't running for most of it", r)
+        self.assertIn("web GET /api/state 1", r)
+        self.assertIn("nothing else recorded during 1", r)
+        self.assertIn("core 2", "".join(r.split("biggest stage each time): ")[1:]) or r)
+        with tr.span("main: stats line"):
+            pass
+        self.assertIn("main: stats line", tr.span_names)
+        self.assertIn("No engine block took longer", TimingTrace(48000, 480, 480, seconds=1).stall_report())
+
     def test_the_ring_wraps_without_growing(self):
         tr = TimingTrace(48000, 480, 480, seconds=1)
         n = len(tr.dev)

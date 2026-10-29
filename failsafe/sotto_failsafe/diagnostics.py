@@ -514,6 +514,7 @@ def build_report(app=None, setup_config=None, run_speed_test=True):
             tr = getattr(app, "trace", None)
             if tr is not None:
                 sec("Audio timing in detail (every soundcard cycle and block, last ~40 s)", safe(tr.summary))
+                sec("Engine stalls (blocks over 8 ms since start, and what else was running)", safe(tr.stall_report))
                 sec("Audio timing, last 10 s (CSV: one row per soundcard cycle and per block; times in seconds)",
                     safe(lambda: tr.csv(10)))
     if speed is not None:

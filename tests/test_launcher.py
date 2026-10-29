@@ -389,3 +389,69 @@ class RescanTests(unittest.TestCase):
         self.assertIn("Dante Virtual Soundcard", [d["name"] for d in after["devices"]])
         self.assertEqual(after["missing"], [])
         self.assertIs(launcher.list_devices.__module__, launcher.__name__)
+
+
+class SoundcardWatchdogTests(unittest.TestCase):
+    """The soundcard going away (Dante Virtual Soundcard restarted): a latched fault, then a
+    reconnection by name, disarmed."""
+
+    def test_stopped_soundcard_is_a_fault_and_comes_back_by_name_disarmed(self):
+        from sotto_failsafe import app as appmod
+
+        class FakeNative:
+            def __init__(self):
+                self.cycles, self.opened, self.closed = 100, [], 0
+
+            def stats(self):
+                return {"cycles": self.cycles}
+
+            def close(self):
+                self.closed += 1
+
+            def open(self, device, latency):
+                self.opened.append(device)
+                return 0.01, 0.01
+
+        dvs_gone = {"ok": True, "error": None, "devices": [
+            {"index": 0, "name": "MacBook Pro Speakers", "inputs": 0, "outputs": 2, "api": "Core Audio"}]}
+        dvs_back = {"ok": True, "error": None, "devices": dvs_gone["devices"] + [
+            {"index": 3, "name": "Dante Virtual Soundcard", "inputs": 64, "outputs": 64, "api": "Core Audio"}]}
+        cards = [dvs_gone]
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(appmod, "device_list", side_effect=lambda **k: cards[0]), \
+                mock.patch.object(appmod, "rescan_devices", return_value=True), \
+                mock.patch.object(appmod, "config_dir", return_value=d), mock.patch.object(launcher, "config_dir", return_value=d):
+            with open(os.path.join(d, "config.json"), "w") as f:
+                json.dump({"device": "1", "layout": 2}, f)
+            app = BenchApp(parse_args(["--device", "1", "--port", "8805", "--out-dir", d]))
+            try:
+                nat = FakeNative()
+                app.native = nat
+                app._nstream = appmod._NativeStream(nat, 1, 0.01)
+                app.engine_info = {"device_name": "Dante Virtual Soundcard", "device": "1"}
+                app.core.arm.green_since = -10.0
+                self.assertTrue(app.core.arm.request_arm(0.0, "test")[0])
+                app._watch_soundcard(now=0.0)                     # audio flowing
+                app._watch_soundcard(now=0.5)
+                self.assertTrue(app.core.arm.armed)
+                app._watch_soundcard(now=1.2)                     # 1.2 s without audio: a fault
+                self.assertFalse(app.core.arm.armed)
+                self.assertFalse(app.core.arm.can_arm(app.core.t))
+                self.assertIn("stopped delivering audio", app.core.health_why)
+                self.assertEqual(nat.opened, [])                   # not back yet
+                cards[0] = dvs_back                               # DVS restarted, now device 3
+                app._watch_soundcard(now=2.0)                     # waits for the next retry
+                self.assertEqual(nat.opened, [])
+                app._watch_soundcard(now=3.3)
+                self.assertEqual(nat.opened, [3])
+                self.assertEqual(app.a.device, "3")
+                nat.cycles += 50                                  # audio again
+                app._watch_soundcard(now=3.5)
+                self.assertFalse(app.core.arm.armed)              # back disarmed: re-arming is manual
+                kinds = [e.kind for e in app.core.log]
+                self.assertIn("soundcard_stopped", kinds)
+                self.assertIn("soundcard_back", kinds)
+            finally:
+                app.events_f.close()
+            with open(os.path.join(d, "config.json")) as f:
+                self.assertEqual(json.load(f)["device"], "3")       # remembered for the next start

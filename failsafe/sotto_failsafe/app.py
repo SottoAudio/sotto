@@ -638,6 +638,93 @@ class BenchApp:
             self._dev_last = r[0]
         self.trace.native_stats = self.native.stats()
 
+    # ------------------------------------------------------------ the soundcard going away
+    STALL_S = 1.0                                    # no audio from the soundcard for this long = it has stopped
+    RETRY_S = 2.0
+
+    def _watch_soundcard(self, now=None):
+        """If the soundcard stops delivering audio (Dante Virtual Soundcard restarted, a cable or the
+        computer's sleep), that's a fault: disarm, keep HEARTBEAT off, say so plainly, and try to
+        reopen the same soundcard by name every couple of seconds. It comes back disarmed: going
+        back to clean is never automatic."""
+        nat = getattr(self, "_nstream", None)
+        if nat is None or self.native is None:
+            return
+        now = time.monotonic() if now is None else now
+        cycles = self.native.stats()["cycles"]
+        if cycles != getattr(self, "_sc_cycles", None):
+            self._sc_cycles, self._sc_moved = cycles, now
+            if getattr(self, "_sc_down", False):         # audio again after a reconnect
+                self._sc_down = False
+                self._native_bad_until = self.core.t + 5.0
+                self._native_why = "the soundcard has just come back"
+                self.core.log.append(Event(self.core.t, "soundcard_back", f"{self.engine_info.get('device_name')}: "
+                                           "audio again; Sotto Voce is disarmed until you re-arm", "auto"))
+            return
+        if cycles == 0 or now - getattr(self, "_sc_moved", now) < self.STALL_S:
+            return
+        name = self.engine_info.get("device_name") or str(self.a.device)
+        t = self.core.t
+        if not getattr(self, "_sc_down", False):
+            self._sc_down, self._sc_retry = True, now
+            why = (f"The soundcard stopped delivering audio ({name}). If Dante Virtual Soundcard was restarted "
+                   f"or changed, Sotto Voce reconnects to it when it's back, disarmed.")
+            self._native_why = why
+            self._native_bad_until = float("inf")
+            if self.core.arm.armed:
+                self.core.arm.request_disarm(t, "auto", why)
+            self.core.arm.update_health(t, False, why)      # the engine isn't running to do it
+            self.core.health_why = why
+            self.core.log.append(Event(t, "soundcard_stopped", why, "auto"))
+            LOG.warning("Soundcard %s stopped delivering audio for %.1f s", name, now - self._sc_moved)
+            for e in self.core.arm.drain_events():
+                self.core.log.append(e)
+        if now < self._sc_retry:
+            return
+        self._sc_retry = now + self.RETRY_S
+        self._reconnect_soundcard(name)
+
+    def _reconnect_soundcard(self, name):
+        """Close, read the list of soundcards afresh, and reopen the one with the same name (its
+        number can change when it restarts)."""
+        try:
+            self.native.close()
+            self.local_phones.close()
+            rescan_devices()
+            devs = device_list(names=False)
+            d = next((x for x in devs.get("devices", []) if x["name"] == name), None)
+            if d is None:
+                if not getattr(self, "_sc_waiting_logged", False):
+                    LOG.info("Waiting for %s to come back (macOS has: %s)", name,
+                             ", ".join(x["name"] for x in devs.get("devices", [])) or "no soundcards")
+                    self._sc_waiting_logged = True
+                return False
+            fit = patch_fit(self.cfg, d)
+            if fit:
+                LOG.warning("%s is back but can't carry this patch: %s", name, fit)
+                self.core.health_why = self._native_why = fit
+                return False
+            il, ol = self.native.open(d["index"], self._nstream.latency_s)
+            self._nstream.device = d["index"]
+            self._sc_waiting_logged = False
+            LOG.info("Soundcard reopened: %s (device %s, interface in %.1f ms + out %.1f ms)", name, d["index"],
+                     1000 * il, 1000 * ol)
+            if str(d["index"]) != str(self.a.device):           # remembered for the next start
+                self.a.device = str(d["index"])
+                self.engine_info["device"] = str(d["index"])
+                try:
+                    from . import launcher as L
+                    saved = L.load_config()
+                    saved["device"] = str(d["index"])
+                    L.save_config(saved)
+                except Exception:
+                    LOG.exception("Could not save the soundcard's new number")
+            self._reopen_local_phones()
+            return True
+        except Exception as e:
+            LOG.warning("Reconnecting to %s failed: %r", name, e)
+            return False
+
     def _settle_memory(self):
         """Everything loaded at start-up is moved out of the garbage collector's way, and it runs
         far less often: fewer pauses that hold up the engine."""
@@ -828,7 +915,7 @@ class BenchApp:
                 except Exception:
                     LOG.exception("Could not read the soundcard's details before opening it")
                 if self.native:
-                    stream = _NativeStream(self.native, dev, lat if isinstance(lat, float) else io / cfg.fs)
+                    stream = self._nstream = _NativeStream(self.native, dev, lat if isinstance(lat, float) else io / cfg.fs)
                 else:
                     stream = sd.Stream(device=dev, samplerate=cfg.fs, blocksize=io, channels=(n_in, n_out),
                                        dtype="float32", latency=lat, callback=cb)
@@ -867,6 +954,7 @@ class BenchApp:
                     while not self.quit_ev.is_set():
                         time.sleep(0.05)
                         self._pull_native()
+                        self._watch_soundcard()
                         self._drain()
                         self._save_plugin_states()
                         now = time.monotonic()

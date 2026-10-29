@@ -223,6 +223,18 @@ def channel_names(name):
         return None
 
 
+def io_workgroup(device_id):
+    """The os_workgroup_t of the device's I/O thread (kAudioDevicePropertyIOThreadOSWorkgroup), or
+    None. The caller owns it (os_release)."""
+    if sys.platform != "darwin" or device_id is None:
+        return None
+    try:
+        v = _get(int(device_id), _fourcc("oswg"), GLOBAL, ctypes.c_void_p)
+        return v.value if v is not None and v.value else None
+    except Exception:
+        return None
+
+
 def sub_device_names(name):
     """The names of an aggregate device's sub-devices ([] for an ordinary device)."""
     if sys.platform != "darwin" or not name:

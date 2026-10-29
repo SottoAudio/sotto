@@ -40,3 +40,16 @@ class ElsewhereTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WorkgroupTests(unittest.TestCase):
+    def test_elsewhere_it_says_so_and_does_nothing(self):
+        import sys as _sys
+        from sotto_failsafe import macos, coreaudio
+        if _sys.platform == "darwin":
+            self.skipTest("macOS joins for real")
+        wg = macos.Workgroup()
+        self.assertFalse(wg.join(130, "Dante Virtual Soundcard"))
+        self.assertEqual(wg.note, "not on this system")
+        wg.leave()
+        self.assertIsNone(coreaudio.io_workgroup(130))

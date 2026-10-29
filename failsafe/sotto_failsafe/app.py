@@ -197,6 +197,7 @@ class BenchApp:
         self.syswatch = None
         self._finder_t = 0.0
         self._is_dante = False
+        self._wg_gen = 0                                 # bumped when the soundcard (re)opens: rejoin its workgroup
         from .phones import LocalPhones
         from .testsrc import TestSources
         allowed = {c: f"talker {i + 1}" for i, c in enumerate(cfg.talker_in)}
@@ -595,6 +596,7 @@ class BenchApp:
         block out. The soundcard's real-time thread never waits for it."""
         ok, msg = macos.realtime_thread(10.0, 4.0, 10.0)
         self.engine_thread_note = msg
+        wg, wg_seen = macos.Workgroup(), 0
         LOG.info("Engine thread started: %s", msg)
         if isinstance(getattr(self, "engine_info", None), dict):
             self.engine_info["engine_thread"] = msg
@@ -604,6 +606,14 @@ class BenchApp:
         nat = self.native
         while not self._eng_stop.is_set():
             try:
+                if self._wg_gen != wg_seen:              # the soundcard (re)opened: join its workgroup
+                    wg_seen = self._wg_gen
+                    ca = self.coreaudio or {}
+                    wg.join(ca.get("id"), ca.get("name") or "the soundcard")
+                    self.engine_thread_note = f"{msg}, {wg.note}"
+                    LOG.info("Engine thread: %s", wg.note)
+                    if isinstance(getattr(self, "engine_info", None), dict):
+                        self.engine_info["engine_thread"] = self.engine_thread_note
                 if nat.read(inb, 100) != 1:
                     continue
                 outb.fill(0.0)
@@ -614,6 +624,7 @@ class BenchApp:
                 self.callback_errors += 1
                 if self._cb_exc is None:
                     self._cb_exc = e
+        wg.leave()
 
     def _native_check(self, nat):
         """Engine late (the native side played dry and latched HEARTBEAT off) = a fault: disarm, and
@@ -793,6 +804,8 @@ class BenchApp:
                     L.save_config(saved)
                 except Exception:
                     LOG.exception("Could not save the soundcard's new number")
+            self._read_coreaudio(name)                   # its Core Audio id can change too
+            self._wg_gen += 1
             self._reopen_local_phones()
             return True
         except Exception as e:
@@ -1017,7 +1030,8 @@ class BenchApp:
                                     "engine_thread": getattr(self, "engine_thread_note", "") if self.native else None,
                                     "margin_ms": round(a.margin_ms, 1) if self.native else None,
                                     "added_ms": round(self.native.added_ms, 2) if self.native else None,
-                                    "app_nap": self.app_nap, "simulate": bool(a.simulate),
+                                    "app_nap": self.app_nap, "display_awake": macos.DISPLAY_AWAKE,
+                                    "simulate": bool(a.simulate),
                                     "fs": cfg.fs, "block": a.block, "n_in": n_in, "n_out": n_out,
                                     "latency_note": self.latency_note,
                                     "io_buffer": io, "regroup_ms": round(self.regroup.added_ms, 2) if self.regroup else
@@ -1025,6 +1039,7 @@ class BenchApp:
                                     "pa_latency_ms": {"in": round(1000 * il, 2), "out": round(1000 * ol, 2)}}
                 if not a.simulate:
                     self._read_coreaudio(name)
+                    self._wg_gen += 1
                     self._reopen_local_phones()
                     self._is_dante = self._dante_in(name)
                     from .faultfinder import SystemWatch

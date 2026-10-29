@@ -1235,7 +1235,8 @@ table.t tr.unused td{color:var(--muted)}
     const confirm = UI.devConfirm && pick
       ? `<div class="note warn" style="margin-top:8px">Switching to <b>${esc(pick.name)}</b> restarts the audio engine. HEARTBEAT stops, so the frame puts every listener on dry, and Sotto Voce starts again disarmed. Re-arm when the checks are green.
            <div class="row" style="margin-top:8px"><button class="btn sm" data-act="devgo">Restart on ${esc(pick.name)}</button><button class="btn sm" data-act="devno">Cancel</button></div></div>` : '';
-    return row('Switch to', `Every device the Mac can see. Greyed-out devices have fewer than the ${e.n_in} inputs and ${e.n_out} outputs these channel settings need.`,
+    const miss = (UI.devs.missing || []).length ? ` macOS also has <b>${UI.devs.missing.map(esc).join(', ')}</b>, which started after Sotto Voce read its list of soundcards: go Back to setup and press Look again to use it.` : '';
+    return row('Switch to', `Every device the Mac can see. Greyed-out devices have fewer than the ${e.n_in} inputs and ${e.n_out} outputs these channel settings need.${miss}`,
       `<select id="f-appdev">${opts}</select><button class="btn sm" data-act="devswitch">Switch</button><button class="btn sm" data-act="devrefresh">Look again</button>${confirm}`);
   }
   const IO_CHOICES = [[0, 'Sotto Voce\'s 10 ms blocks (480), as before'], [512, '512 samples'], [256, '256 samples'], [240, '240 samples'], [160, '160 samples'], [128, '128 samples'], [96, '96 samples'], [64, '64 samples']];

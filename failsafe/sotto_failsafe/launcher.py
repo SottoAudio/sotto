@@ -61,7 +61,7 @@ def save_config(cfg):
 
 
 def list_devices():
-    return device_list()
+    return device_list(rescan=True)                # the setup page: no audio running, so read them afresh
 
 
 def argv_from(cfg, simulate):
@@ -131,8 +131,9 @@ def run_setup(open_browser=True, start_error=None):
                 self._send(200, page, "text/html; charset=utf-8")
             elif self.path == "/setup/devices":
                 d = list_devices()
-                LOG.info("Devices listed for the setup page: %s", d if not d.get("ok") else
-                         "; ".join(f"{x['index']}: {x['name']} ({x['inputs']}/{x['outputs']})" for x in d["devices"]))
+                LOG.info("Devices listed for the setup page: %s%s", d if not d.get("ok") else
+                         "; ".join(f"{x['index']}: {x['name']} ({x['inputs']}/{x['outputs']})" for x in d["devices"]),
+                         f" | macOS also has, but PortAudio can't see: {', '.join(d['missing'])}" if d.get("missing") else "")
                 self._send(200, json.dumps(d).encode())
             elif self.path == "/setup/config":
                 self._send(200, json.dumps({"config": load_config(), "defaults": DEFAULTS, "runs_dir": runs_dir(), "start_error": start_error,

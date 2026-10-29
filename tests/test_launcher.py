@@ -360,3 +360,32 @@ class ConsoleConfigTests(unittest.TestCase):
         for _ in range(3):
             core.process(x, out)
         self.assertLessEqual(float(np.max(np.abs(out[:, 62]))), 10 ** (-10 / 20) + 1e-6)
+
+
+class RescanTests(unittest.TestCase):
+    """A soundcard started after Sotto Voce (Dante Virtual Soundcard after a restart) must show up."""
+
+    def test_look_again_rereads_portaudio_and_names_what_it_still_cant_see(self):
+        import types
+        from sotto_failsafe import app as appmod, coreaudio
+        calls = []
+        cards = [{"name": "MacBook Pro Speakers", "max_input_channels": 0, "max_output_channels": 2, "hostapi": 0}]
+        sd = types.SimpleNamespace(
+            _terminate=lambda: calls.append("terminate"),
+            _initialize=lambda: (calls.append("initialize"),
+                                 cards.append({"name": "Dante Virtual Soundcard", "max_input_channels": 64,
+                                               "max_output_channels": 64, "hostapi": 0})),
+            query_hostapis=lambda: [{"name": "Core Audio"}],
+            query_devices=lambda: list(cards))
+        ca = [{"name": "Dante Virtual Soundcard", "inputs": 64, "outputs": 64},
+              {"name": "MacBook Pro Speakers", "inputs": 0, "outputs": 2}]
+        with mock.patch.dict(sys.modules, {"sounddevice": sd}), mock.patch.object(coreaudio, "devices", return_value=ca), \
+                mock.patch.object(coreaudio, "channel_names", return_value=None):
+            before = appmod.device_list(names=False)
+            self.assertEqual([d["name"] for d in before["devices"]], ["MacBook Pro Speakers"])
+            self.assertEqual(before["missing"], ["Dante Virtual Soundcard"])
+            after = appmod.device_list(names=False, rescan=True)
+        self.assertEqual(calls, ["terminate", "initialize"])
+        self.assertIn("Dante Virtual Soundcard", [d["name"] for d in after["devices"]])
+        self.assertEqual(after["missing"], [])
+        self.assertIs(launcher.list_devices.__module__, launcher.__name__)

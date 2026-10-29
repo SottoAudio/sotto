@@ -40,9 +40,10 @@ LINKS = (
     ("rrcs", "RRCS"),
 )
 LABEL = dict(LINKS)
-WINDOW_S = 5.0                 # symptoms (skipped cycles, late blocks) count for this long
+WINDOW_S = 10.0                # symptoms (skipped cycles, late blocks) count for this long
 NOT_WIRED = ("wi-fi", "airport", "bluetooth", "iphone", "ipad", "modem")
 OWN_NAMES = ("Sotto Voce", "sotto-voce", "Python")
+DVS_PROCS = ("dvsd", "dvs_ape", "conmon_cmm")      # Dante Virtual Soundcard and its helpers: the DVS link
 
 
 # ---------------------------------------------------------------- reading what macOS says
@@ -166,8 +167,12 @@ def choose_port(ports, wanted="auto", locked=None):
         return None, ""
     plain = [p for p in live if not p["bridge"]] or live
     if len(plain) > 1:
-        return plain[0], (f"Several wired ports are up ({', '.join(p['dev'] for p in plain)}); watching "
-                          f"{plain[0]['dev']}. Pick the one Dante Virtual Soundcard uses in Settings.")
+        nets = [".".join(p["ipv4"][0].split(".")[:3]) for p in plain]
+        same = len(set(nets)) < len(nets)
+        return plain[0], (f"Several wired ports are up ({', '.join(p['dev'] for p in plain)}"
+                          + (f", two of them on {nets[0]}.x: macOS can then send Dante traffic out of the wrong one"
+                             if same else "") +
+                          f"); watching {plain[0]['dev']}. Pick the one Dante Virtual Soundcard uses in Settings.")
     return plain[0], ""
 
 
@@ -249,8 +254,9 @@ class SystemWatch:
                 upd["dvsd"] = "dvsd" in names
                 if self._ps_prev is not None:
                     top = cpu_by_program(self._ps_prev, procs, now - self._ps_t, self.own_pid)
-                    upd["dvsd_cpu"] = round(dict(top).get("dvsd", 0.0), 1)
-                    others = [(n, c) for n, c in top if not any(o.lower() in n.lower() for o in OWN_NAMES)]
+                    upd["dvsd_cpu"] = round(sum(c for n, c in top if n in DVS_PROCS), 1)
+                    others = [(n, c) for n, c in top if n not in DVS_PROCS
+                              and not any(o.lower() in n.lower() for o in OWN_NAMES)]
                     upd["top"] = [(n, round(c)) for n, c in others[:5]]
                     upd["others_cpu"] = round(sum(c for _, c in others))
                 self._ps_prev, self._ps_t = procs, now
@@ -272,6 +278,7 @@ class FaultFinder:
         self.history = deque(maxlen=200)         # (wall clock, key, state, what) for the diagnostics file
         self.ports = []
         self._names = {}                         # port names seen, for a port that has since gone
+        self._busy_until, self._busy_txt = -1.0, ""
 
     def set_port(self, wanted):
         self.port_setting = wanted or "auto"
@@ -370,9 +377,10 @@ class FaultFinder:
             new["dvs"] = (FAULT if no_dvsd_2 else WARN, "Dante Virtual Soundcard isn't running (no dvsd).",
                           "Open Dante Virtual Soundcard and press Start. Check its licence and its network port.")
         elif dante and (sysnap.get("dvsd_cpu") or 0) >= 70:
-            new["dvs"] = (WARN, f"Dante Virtual Soundcard is working very hard (dvsd {sysnap['dvsd_cpu']:.0f} % CPU).",
-                          "Check no other app is using the Dante Virtual Soundcard, and its latency setting (10 ms or "
-                          "more at 64 channels). Restart it when it's safe to.")
+            new["dvs"] = (WARN, f"Dante Virtual Soundcard is working very hard ({sysnap['dvsd_cpu']:.0f} % CPU).",
+                          "It does this after losing its network: check the Dante network port. Otherwise check no "
+                          "other app is using the Dante Virtual Soundcard, and its latency setting (10 ms or more at "
+                          "64 channels). Restart it when it's safe to.")
         else:
             new["dvs"] = (OK, f"{name}: running." if dante else f"Soundcard: {name}, running.", "")
 
@@ -387,8 +395,10 @@ class FaultFinder:
         elif pw.get("thermal") and not str(pw["thermal"]).startswith("normal"):
             new["mac"] = (WARN, f"The Mac is {pw['thermal']}: macOS is slowing it down.",
                           "Give it air; take it off soft surfaces and out of the sun.")
-        elif symptoms and busy:
-            new["mac"] = (WARN, f"The Mac was busy when audio was lost: {busy_txt}.",
+        elif (symptoms and busy) or t < self._busy_until:
+            if symptoms and busy:
+                self._busy_until, self._busy_txt = t + WINDOW_S, busy_txt
+            new["mac"] = (WARN, f"The Mac was busy when audio was lost: {self._busy_txt}.",
                           "Quit or pause those programs for the show (software updates, backups, builds, Photos, "
                           "Spotlight indexing, browser tabs playing video).")
         elif pw.get("power") == "battery":
@@ -488,17 +498,24 @@ class FaultFinder:
             L.update(state=st, what=what, look=look)
             if changed:
                 L["since"] = wall
+                if st in (WARN, FAULT) and not L.get("_bad"):
+                    L["_bad_t"] = t
                 self.history.append((wall, k, st, what))
                 if st in (WARN, FAULT):
                     events.append(("link_" + st, f"{L['label']}: {what}" + (f" Look at: {look}" if look else "")))
                 elif st == OK and self._was_bad(k):
                     events.append(("link_ok", f"{L['label']}: back to normal. {what}"))
             L["_bad"] = st in (WARN, FAULT)
-        root = next((k for k, _ in LINKS if self.links[k]["state"] in (WARN, FAULT)), None)
+        # where to start: the most upstream fault, else the most upstream warning
+        root = next((k for k, _ in LINKS if self.links[k]["state"] == FAULT), None) or \
+            next((k for k, _ in LINKS if self.links[k]["state"] == WARN), None)
+        order = [x for x, _ in LINKS]
+        rt = self.links[root].get("_bad_t", t) if root else t
         for k, _ in LINKS:
             L = self.links[k]
-            L["because"] = root if root and k != root and L["state"] in (WARN, FAULT) and \
-                [x for x, _ in LINKS].index(k) > [x for x, _ in LINKS].index(root) else None
+            L["because"] = root if (root and k != root and L["state"] in (WARN, FAULT)
+                                    and order.index(k) > order.index(root)
+                                    and L.get("_bad_t", t) >= rt - 2.0) else None
         if root != self.root and root is not None:
             R = self.links[root]
             events.append(("start_here", f"Start at {R['label']}: {R['what']}" + (f" Look at: {R['look']}" if R["look"] else "")))

@@ -211,9 +211,46 @@ class ChainTests(unittest.TestCase):
 
     def test_symptoms_clear_after_the_window(self):
         ff = F.FaultFinder()
-        steps = [(snap(), app())] + [(snap(), app(skipped=3))] * 8
+        steps = [(snap(), app())] + [(snap(), app(skipped=3))] * 14
         run(ff, steps)
         self.assertIsNone(ff.state()["root"])
+
+    def test_a_standing_fault_is_not_blamed_on_a_later_warning(self):
+        ff = F.FaultFinder()
+        lost = dict(probe_ok=False, probe_missing_ms=99000)
+        run(ff, [(snap(), app(**lost)), (snap(), app(**lost)), (snap(), app(skipped=1, **lost))])
+        st = ff.state()
+        self.assertEqual(st["root"], "loop")                       # faults come first
+        audio = next(L for L in st["links"] if L["key"] == "audio")
+        self.assertEqual(audio["state"], F.WARN)
+        loop = next(L for L in st["links"] if L["key"] == "loop")
+        self.assertIsNone(loop["because"])
+
+    def test_busy_stays_shown_through_the_window(self):
+        ff = F.FaultFinder()
+        busy = snap()
+        busy.update(others_cpu=500, top=[("Google Chrome Helper", 300)])
+        quiet = snap()
+        quiet.update(others_cpu=50, top=[("WindowServer", 20)])
+        run(ff, [(snap(), app()), (busy, app(late_cycles=2)), (quiet, app(late_cycles=2)), (quiet, app(late_cycles=2))])
+        self.assertIn("Google Chrome Helper", ff.state()["headline"])
+
+    def test_dvs_helpers_count_as_dvs_not_the_mac(self):
+        outputs = {"/sbin/ifconfig": ifconfig(), "/usr/sbin/networksetup": HW,
+                   "/bin/ps": " 50 0:10.00 dvsd\n 51 0:01.00 dvs_ape\n 52 0:01.00 conmon_cmm\n"}
+        w = F.SystemWatch(run=lambda argv: outputs[argv[0]])
+        w.poll(now=0.0)
+        outputs["/bin/ps"] = " 50 0:11.80 dvsd\n 51 0:02.00 dvs_ape\n 52 0:01.20 conmon_cmm\n"
+        w.poll(now=2.0)
+        s = w.get()
+        self.assertEqual(s["dvsd_cpu"], 150.0)
+        self.assertEqual(s["others_cpu"], 0)
+
+    def test_two_ports_on_one_subnet(self):
+        s = snap()
+        s["ifs"]["en1"].update(active=True, ipv4=["169.254.10.21"])
+        port, note = F.choose_port(F.wired_ports(s["hw"], s["ifs"]))
+        self.assertIn("169.254.10.x", note)
 
     def test_digital_silence(self):
         ff = F.FaultFinder()

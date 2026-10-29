@@ -18,6 +18,8 @@ _activity = None                    # the token must be kept, or the activity en
 
 NS_ACTIVITY_USER_INITIATED = 0x00FFFFFF
 NS_ACTIVITY_LATENCY_CRITICAL = 0xFF00000000
+NS_ACTIVITY_IDLE_DISPLAY_SLEEP_DISABLED = 1 << 40   # no display sleep or screensaver while it runs
+DISPLAY_AWAKE = False
 QOS_CLASS_USER_INTERACTIVE = 0x21
 QOS = {"user_interactive": 0x21, "user_initiated": 0x19, "default": 0x15, "utility": 0x11, "background": 0x09}
 
@@ -39,7 +41,9 @@ def _send(objc, restype, argtypes):
 
 
 def keep_responsive(reason="Sotto Voce is processing live comms audio"):
-    global _activity
+    """Also keeps the display awake: the screensaver starting stalled DVS and Sotto Voce for about
+    3 s on 29 Oct."""
+    global _activity, DISPLAY_AWAKE
     if sys.platform != "darwin":
         return True, "not needed on this system"
     if _activity:
@@ -52,11 +56,12 @@ def keep_responsive(reason="Sotto Voce is processing live comms audio"):
                                                                sel(b"stringWithUTF8String:"), reason.encode())
         token = _send(objc, ctypes.c_void_p, [ctypes.c_uint64, ctypes.c_void_p])(
             info, sel(b"beginActivityWithOptions:reason:"),
-            NS_ACTIVITY_USER_INITIATED | NS_ACTIVITY_LATENCY_CRITICAL, text)
+            NS_ACTIVITY_USER_INITIATED | NS_ACTIVITY_LATENCY_CRITICAL | NS_ACTIVITY_IDLE_DISPLAY_SLEEP_DISABLED, text)
         if not token:
             return False, "macOS refused to turn App Nap off"
         _send(objc, ctypes.c_void_p, [])(token, sel(b"retain"))
         _activity = token
+        DISPLAY_AWAKE = True
         return True, "App Nap off"
     except Exception as e:                               # never stop the app over this
         return False, f"couldn't turn App Nap off: {e!r}"
@@ -118,6 +123,60 @@ def realtime_thread(period_ms=10.0, computation_ms=4.0, constraint_ms=10.0):
     except Exception as e:
         ok, msg = fast_thread()
         return ok, f"real-time not available ({e!r}); {msg}"
+
+
+class Workgroup:
+    """The calling thread joins a Core Audio device's I/O workgroup: Apple's way for an app's own
+    audio threads to be scheduled as part of the soundcard's real-time work, to its deadline and on
+    the performance cores (macOS 11+). Join and leave from the same thread; the thread must already
+    be real-time (realtime_thread)."""
+
+    def __init__(self):
+        self.wg = None
+        self.token = None
+        self.note = "not joined"
+
+    def join(self, device_id, name="the soundcard"):
+        self.leave()
+        if sys.platform != "darwin":
+            self.note = "not on this system"
+            return False
+        try:
+            from . import coreaudio
+            wg = coreaudio.io_workgroup(device_id)
+            if not wg:
+                self.note = f"{name} has no audio workgroup"
+                return False
+            libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+            libc.os_workgroup_join.restype = ctypes.c_int
+            libc.os_workgroup_join.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            token = ctypes.create_string_buffer(64)           # os_workgroup_join_token_s (40 bytes)
+            rc = libc.os_workgroup_join(wg, token)
+            if rc != 0:
+                libc.os_release.argtypes = [ctypes.c_void_p]
+                libc.os_release(wg)
+                self.note = f"couldn't join {name}'s audio workgroup (error {rc})"
+                return False
+            self.wg, self.token = wg, token
+            self.note = f"in {name}'s audio workgroup"
+            return True
+        except Exception as e:
+            self.note = f"audio workgroup not available ({e!r})"
+            return False
+
+    def leave(self):
+        if self.wg is None:
+            return
+        try:
+            libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+            libc.os_workgroup_leave.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            libc.os_workgroup_leave(self.wg, self.token)
+            libc.os_release.argtypes = [ctypes.c_void_p]
+            libc.os_release(self.wg)
+        except Exception:
+            pass
+        self.wg = self.token = None
+        self.note = "not joined"
 
 
 THERMAL = ("normal", "warm", "hot (slowing down)", "critical (slowing down)")

@@ -24,7 +24,7 @@ PORT = 8766
 DEFAULTS = {
     "device": "", "talker_in": "1-4", "talker_out": "1-4", "names": "Show caller,Creative director,Technical manager,Stage manager",
     "probe_in": "61", "probe_out": "62", "heartbeat_out": "61", "pgm_in": "62", "listen_in": "", "monitor": "63,64",
-    "rrcs_host": "", "rrcs_port": "8193", "record": True, "layout": 2, "io_buffer": "0", "margin_ms": "10",
+    "rrcs_host": "", "rrcs_port": "8193", "record": True, "layout": 2, "io_buffer": "0", "margin_ms": "10", "dante_port": "auto",
 }
 # Channels with a fixed job since layout 2 (IN 61 PROBE return, IN 62 PGM, OUT 61 HEARTBEAT,
 # OUT 62 PROBE, OUT 63/64 headphones). Settings saved by older versions are moved onto them.
@@ -77,6 +77,8 @@ def argv_from(cfg, simulate):
             argv += ["--io-buffer", str(cfg["io_buffer"])]
     if str(cfg.get("margin_ms") or "") not in ("", "10"):
         argv += ["--margin-ms", str(cfg["margin_ms"])]
+    if str(cfg.get("dante_port") or "auto") != "auto":
+        argv += ["--dante-port", str(cfg["dante_port"])]
     # The I/O patch (the simulated frame follows it too)
     argv += ["--talker-in", cfg["talker_in"], "--talker-out", cfg["talker_out"],
              "--probe-in", cfg["probe_in"], "--probe-out", cfg["probe_out"], "--heartbeat-out", cfg["heartbeat_out"],

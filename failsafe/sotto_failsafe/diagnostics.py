@@ -477,7 +477,13 @@ def build_report(app=None, setup_config=None, run_speed_test=True):
         found.insert(0, f"Core Audio skipped {tr.skipped} soundcard cycles in {tr.skip_events} places since the engine "
                         f"started ({1000 * tr.skipped * tr.io / tr.fs:.0f} ms of audio lost): heard as clicks and "
                         f"dropouts. See 'Audio timing in detail'.")
+    ff = getattr(app, "finder", None) if app is not None else None
+    if ff is not None and ff.root:
+        st = ff.state()
+        found.insert(0, st["headline"] + (f" Look at: {st['look']}" if st["look"] else ""))
     sec("What looks wrong", "\n".join(f"- {x}" for x in found))
+    if ff is not None:
+        sec("Where the problem is (each link in the chain, upstream first)", safe(ff.report))
     sec("Build", {**build_info(), "packages": safe(package_versions)})
     sec("Computer", sysinfo)
     sec("Audio devices (PortAudio, what Sotto Voce can open)", devs)
@@ -513,6 +519,7 @@ def build_report(app=None, setup_config=None, run_speed_test=True):
         sec("Fail-safe", {k: state.get(k) for k in ("armed", "heartbeat_on", "reason", "health", "green_for_s",
                                                     "can_arm", "probes", "faults", "talkers", "channels", "rrcs", "frame", "solo")})
         sec("Recent events", "\n".join("  ".join(str(c) for c in r) for r in state.get("events", [])) or "(none)")
+        sec("Network ports (ifconfig -a)", _run(["/sbin/ifconfig", "-a"]) if sys.platform == "darwin" else "(macOS only)")
     sec("Busy threads and programs", safe(busy_snapshot))
     sec("Python threads", safe(thread_cpu))
     sec("Threads right now (innermost call last)", safe(thread_stacks))

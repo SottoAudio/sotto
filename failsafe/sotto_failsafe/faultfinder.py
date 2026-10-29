@@ -213,10 +213,20 @@ class SystemWatch:
 
     def stop(self):
         self._stop.set()
+        self._kill_helper()
 
     def get(self):
         with self.lock:
             return dict(self.snap)
+
+    # One helper shell, started once, runs ifconfig every second, ps every two and networksetup
+    # every thirty, and streams the output back. Starting a program from Python holds up every
+    # Python thread (the engine's too) while the process is copied, so Sotto Voce does it once
+    # here rather than several times a second.
+    HELPER = ('n=0; while :; do echo "@@IF"; /sbin/ifconfig -a; '
+              'if [ $((n % 2)) -eq 0 ]; then echo "@@PS"; /bin/ps -axc -o pid=,time=,comm=; fi; '
+              'if [ $((n % 30)) -eq 0 ]; then echo "@@HW"; /usr/sbin/networksetup -listallhardwareports; fi; '
+              'echo "@@END"; n=$((n + 1)); sleep 1; done')
 
     def _loop(self):
         from . import macos
@@ -226,40 +236,76 @@ class SystemWatch:
             pass
         while not self._stop.is_set():
             try:
-                self.poll()
+                self._helper = subprocess.Popen(["/bin/sh", "-c", self.HELPER], stdout=subprocess.PIPE,
+                                                stderr=subprocess.DEVNULL, text=True, bufsize=1)
+                sec, buf = None, {}
+                for line in self._helper.stdout:
+                    if self._stop.is_set():
+                        break
+                    if line.startswith("@@"):
+                        tag = line.strip()[2:]
+                        if tag == "END":
+                            self._ingest(buf.get("IF"), buf.get("HW"), buf.get("PS"))
+                            sec, buf = None, {}
+                        else:
+                            sec = tag
+                            buf[sec] = []
+                    elif sec:
+                        buf[sec].append(line)
             except Exception:
                 pass
-            self._stop.wait(self.interval)
+            finally:
+                self._kill_helper()
+            self._stop.wait(5.0)                       # the helper ended: start it again shortly
+
+    def _kill_helper(self):
+        h = getattr(self, "_helper", None)
+        if h is not None and h.poll() is None:
+            try:
+                h.kill()
+            except Exception:
+                pass
 
     def poll(self, now=None):
+        """One reading by running each command (tests, and the diagnostics file)."""
         now = time.monotonic() if now is None else now
         ift = self._run(["/sbin/ifconfig", "-a"])
+        hwt = None
         ifs = parse_ifconfig(ift) if ift is not None else None
-        hw = None
         if ifs is not None and (now - self._hw_t > 30 or set(ifs) != set(self.snap.get("ifs") or {})):
             hwt = self._run(["/usr/sbin/networksetup", "-listallhardwareports"])
-            if hwt is not None:
-                hw, self._hw_t = parse_hardware_ports(hwt), now
-        upd = {"t": now}
-        if ifs is not None:
-            upd["ifs"] = ifs
-        if hw is not None:
-            upd["hw"] = hw
+        pst = None
         if now >= self._ps_due:
             self._ps_due = now + 2.0
             pst = self._run(["/bin/ps", "-axc", "-o", "pid=,time=,comm="])
-            if pst is not None:
-                procs = parse_ps(pst)
-                names = {n for _, n in procs.values()}
-                upd["dvsd"] = "dvsd" in names
-                if self._ps_prev is not None:
-                    top = cpu_by_program(self._ps_prev, procs, now - self._ps_t, self.own_pid)
-                    upd["dvsd_cpu"] = round(sum(c for n, c in top if n in DVS_PROCS), 1)
-                    others = [(n, c) for n, c in top if n not in DVS_PROCS
-                              and not any(o.lower() in n.lower() for o in OWN_NAMES)]
-                    upd["top"] = [(n, round(c)) for n, c in others[:5]]
-                    upd["others_cpu"] = round(sum(c for _, c in others))
-                self._ps_prev, self._ps_t = procs, now
+        self._ingest(ift, hwt, pst, now)
+
+    def _ingest(self, ift, hwt, pst, now=None):
+        now = time.monotonic() if now is None else now
+        if isinstance(ift, list):
+            ift = "".join(ift)
+        if isinstance(hwt, list):
+            hwt = "".join(hwt)
+        if isinstance(pst, list):
+            pst = "".join(pst)
+        ifs = parse_ifconfig(ift) if ift is not None else None
+        upd = {"t": now}
+        if ifs is not None:
+            upd["ifs"] = ifs
+        if hwt is not None:
+            upd["hw"], self._hw_t = parse_hardware_ports(hwt), now
+        if pst is not None:
+            procs = parse_ps(pst)
+            names = {n for _, n in procs.values()}
+            upd["dvsd"] = "dvsd" in names
+            if self._ps_prev is not None:
+                top = cpu_by_program(self._ps_prev, procs, now - self._ps_t, self.own_pid)
+                upd["dvsd_cpu"] = round(sum(c for n, c in top if n in DVS_PROCS), 1)
+                others = [(n, c) for n, c in top if n not in DVS_PROCS
+                          and not any(o.lower() in n.lower() for o in OWN_NAMES)]
+                upd["top"] = [(n, round(c)) for n, c in others[:5]]
+                upd["others_cpu"] = round(sum(c for _, c in others))
+            self._ps_prev, self._ps_t = procs, now
         with self.lock:
             self.snap.update(upd)
 

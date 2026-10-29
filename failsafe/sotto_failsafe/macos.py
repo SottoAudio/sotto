@@ -137,13 +137,43 @@ def power_state():
         out["thermal"] = THERMAL[t] if 0 <= t < len(THERMAL) else str(t)
     except Exception as e:
         out["error"] = repr(e)
-    try:
-        import subprocess
-        r = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True, timeout=3)
-        out["power"] = "battery" if "Battery Power" in r.stdout else "mains" if "AC Power" in r.stdout else "unknown"
-    except Exception:
-        pass
+    out["power"] = power_source()
     return out
+
+
+_iokit = None
+
+
+def power_source():
+    """'mains', 'battery' or 'unknown', asked of macOS directly. (Running pmset instead started a
+    new process every 10 s, and starting a process holds up every Python thread, the engine's too.)"""
+    global _iokit
+    try:
+        if _iokit is None:
+            io = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/IOKit.framework/IOKit")
+            cf = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+            io.IOPSCopyPowerSourcesInfo.restype = ctypes.c_void_p
+            io.IOPSGetProvidingPowerSourceType.restype = ctypes.c_void_p
+            io.IOPSGetProvidingPowerSourceType.argtypes = [ctypes.c_void_p]
+            cf.CFStringGetCString.restype = ctypes.c_bool
+            cf.CFStringGetCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
+            cf.CFRelease.argtypes = [ctypes.c_void_p]
+            _iokit = (io, cf)
+        io, cf = _iokit
+        blob = io.IOPSCopyPowerSourcesInfo()
+        if not blob:
+            return "unknown"
+        try:
+            typ = io.IOPSGetProvidingPowerSourceType(blob)       # not ours to release
+            buf = ctypes.create_string_buffer(64)
+            if not typ or not cf.CFStringGetCString(typ, buf, 64, 0x08000100):
+                return "unknown"
+            v = buf.value.decode(errors="replace")
+        finally:
+            cf.CFRelease(blob)
+        return "battery" if v == "Battery Power" else "mains" if v in ("AC Power", "UPS Power") else "unknown"
+    except Exception:
+        return "unknown"
 
 
 def mic_permission():

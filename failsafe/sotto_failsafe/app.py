@@ -838,6 +838,7 @@ class BenchApp:
     def callback(self, indata, outdata, frames, tinfo, status):
         """Sotto Voce's engine for one block (10 ms): straight from the soundcard, or regrouped."""
         t0 = time.perf_counter()
+        c0 = time.thread_time()                      # CPU this thread uses: wall time minus this = held up
         if self.regroup is None and self.native is None:   # this callback is the soundcard's own cycle
             self._device_timing(tinfo, t0)
         if self._cb_last is not None:                # time since the last block (should be 10 ms)
@@ -909,7 +910,8 @@ class BenchApp:
         self.cb_ms = 0.98 * self.cb_ms + 0.02 * dt
         self.cb_ms_max = max(self.cb_ms_max * 0.999, dt)
         if self.trace is not None:
-            self.trace.block_done(t0, dt, st, late, self.regroup.count if self.regroup is not None else 0)
+            self.trace.block_done(t0, dt, st, late, self.regroup.count if self.regroup is not None else 0,
+                                  1000 * (time.thread_time() - c0))
             if self.regroup is None and self.native is None:   # this callback is the soundcard's own cycle
                 self._trace_cycle(t0, tinfo, frames, status)
 
@@ -975,6 +977,8 @@ class BenchApp:
             from .timing import TimingTrace
             self.trace = TimingTrace(48000, io, a.block)
             self.trace.watch_gc()
+            if self.proc is not None:
+                self.proc.span = self.trace.span          # worker messages show up next to engine stalls
             if self.native:
                 cb = self._native_sim_cycle
             else:
@@ -1031,26 +1035,32 @@ class BenchApp:
                 print(f"Events and recordings: {self.dir}")
                 try:
                     next_power = next_stats = 0.0
+                    span = self.trace.span
                     while not self.quit_ev.is_set():
                         time.sleep(0.05)
-                        self._pull_native()
-                        self._watch_soundcard()
+                        with span("main: native timing"):
+                            self._pull_native()
+                            self._watch_soundcard()
                         now = time.monotonic()
                         self._log_late(now)
                         if now >= self._finder_t:
                             self._finder_t = now + 1.0
                             try:
-                                self._find_faults()
+                                with span("main: fault finder"):
+                                    self._find_faults()
                             except Exception:
                                 LOG.exception("The fault finder failed")
-                        self._drain()
-                        self._save_plugin_states()
+                        with span("main: events"):
+                            self._drain()
+                            self._save_plugin_states()
                         now = time.monotonic()
                         if now >= next_power:              # Low Power Mode, heat, battery
-                            self.power = macos.power_state()
+                            with span("main: power state"):
+                                self.power = macos.power_state()
                             next_power = now + 10
                         if now >= next_stats:
-                            self._log_stats()
+                            with span("main: stats line"):
+                                self._log_stats()
                             next_stats = now + 10
                 except KeyboardInterrupt:
                     print("\nStopping ...")
@@ -1446,15 +1456,22 @@ class BenchApp:
                 self.end_headers()
                 self.wfile.write(body)
 
+            def _timed(self, fn, kind):
+                tr = app.trace
+                if tr is None:
+                    return fn()
+                with tr.span(f"web {kind} {self.path.split('?')[0]}"):
+                    return fn()
+
             def do_GET(self):
                 try:
-                    self._get()
+                    self._timed(self._get, "GET")
                 except Exception as e:
                     self._fail(e)
 
             def do_POST(self):
                 try:
-                    self._post()
+                    self._timed(self._post, "POST")
                 except Exception as e:
                     self._fail(e)
 

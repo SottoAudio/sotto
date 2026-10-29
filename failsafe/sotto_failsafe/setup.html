@@ -217,9 +217,10 @@ async function loadDevices() {
   const prev = usable.find(x => String(x.index) === String(saved.device)) ||
                usable.find(x => /dante|merging|ravenna|virtual audio/i.test(x.name));
   if (prev) sel.value = prev.index;
-  $('#devNote').textContent = usable.length
+  const miss = (d.missing || []).length ? ` macOS also has ${d.missing.join(', ')}, which Sotto Voce can't open: if it's a soundcard that has only just started (Dante Virtual Soundcard after a restart, say), press Look again; if it still isn't listed, check it's running and has its network port.` : '';
+  $('#devNote').textContent = (usable.length
     ? `${usable.length} of ${d.devices.length} devices can run Sotto Voce. The others are greyed out.`
-    : `None of the ${d.devices.length} devices has enough channels (${needIn} in and ${needOut} out for ${nt} talker${nt > 1 ? 's' : ''}). Set Dante Virtual Soundcard to 64 × 64 in its settings, then press Look again.`;
+    : `None of the ${d.devices.length} devices has enough channels (${needIn} in and ${needOut} out for ${nt} talker${nt > 1 ? 's' : ''}). Set Dante Virtual Soundcard to 64 × 64 in its settings, then press Look again.`) + miss;
   pickDevice(sel.value);
 }
 function pickDevice(index) {

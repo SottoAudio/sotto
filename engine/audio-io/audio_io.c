@@ -120,6 +120,8 @@ typedef struct {
     volatile int64_t trace_n;
     /* PortAudio */
     void *pa, *stream;
+    int pa_inited;                /* our own Pa_Initialize, undone in sio_close (so a later rescan sees new devices) */
+    fn_init pa_term;
     fn_stream pa_start, pa_stop, pa_close;
     fn_err pa_err;
     fn_info pa_info;
@@ -310,6 +312,7 @@ SIO_API int sio_open(sio_t *s, const char *pa_path, int device, int io, double l
 #endif
     if (!s->pa) { snprintf(s->err, sizeof s->err, "couldn't load PortAudio from %s", pa_path); return -1; }
     fn_init pa_init = (fn_init)sym(s->pa, "Pa_Initialize");
+    s->pa_term = (fn_init)sym(s->pa, "Pa_Terminate");
     fn_open pa_open = (fn_open)sym(s->pa, "Pa_OpenStream");
     s->pa_start = (fn_stream)sym(s->pa, "Pa_StartStream");
     s->pa_stop = (fn_stream)sym(s->pa, "Pa_StopStream");
@@ -321,6 +324,7 @@ SIO_API int sio_open(sio_t *s, const char *pa_path, int device, int io, double l
     }
     int e = pa_init();
     if (e) { snprintf(s->err, sizeof s->err, "Pa_Initialize: %s", s->pa_err(e)); return -3; }
+    s->pa_inited = 1;
     PaStreamParameters ip = {device, s->n_in, paFloat32, latency, NULL};
     PaStreamParameters op = {device, s->n_out, paFloat32, latency, NULL};
     e = pa_open(&s->stream, &ip, &op, (double)s->fs, (unsigned long)io, 0, pa_callback, s);
@@ -336,6 +340,9 @@ SIO_API int sio_open(sio_t *s, const char *pa_path, int device, int io, double l
 
 SIO_API void sio_close(sio_t *s) {
     if (s->stream) { s->pa_stop(s->stream); s->pa_close(s->stream); s->stream = NULL; }
+    /* PortAudio reads the list of soundcards when it's first initialised, and only again once
+     * every user has terminated it: let go of ours, or a soundcard started later stays invisible. */
+    if (s->pa_inited && s->pa_term) { s->pa_term(); s->pa_inited = 0; }
 }
 
 SIO_API void sio_destroy(sio_t *s) {

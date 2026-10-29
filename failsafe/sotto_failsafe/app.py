@@ -1437,9 +1437,27 @@ def channel_clashes(cfg):
     return None
 
 
-def device_list(names=True):
+def rescan_devices():
+    """PortAudio reads the list of soundcards once, when it starts: a soundcard started later (Dante
+    Virtual Soundcard after a restart, say) stays invisible until PortAudio starts again. Only safe
+    with no audio running (the setup page)."""
+    try:
+        import sounddevice as sd
+        sd._terminate()
+        sd._initialize()
+        return True
+    except Exception:
+        LOG.exception("Could not rescan the audio devices")
+        return False
+
+
+def device_list(names=True, rescan=False):
     """Every audio device, for the setup page and the console. With names, each channel's label from
-    Core Audio where there is one ("names": {"in": [...], "out": [...]}, macOS)."""
+    Core Audio where there is one ("names": {"in": [...], "out": [...]}, macOS). rescan: read the
+    soundcards afresh (setup page only: never with audio running). "missing" lists soundcards macOS
+    has that this list doesn't (they appeared after the list was read)."""
+    if rescan:
+        rescan_devices()
     try:
         import sounddevice as sd
         apis = sd.query_hostapis()
@@ -1447,13 +1465,21 @@ def device_list(names=True):
                  "api": apis[d["hostapi"]]["name"]} for i, d in enumerate(sd.query_devices())]
     except Exception as e:                       # no PortAudio, no permission, ...
         return {"ok": False, "error": repr(e), "devices": []}
+    missing = []
+    try:
+        from . import coreaudio
+        seen = {d["name"] for d in devs}
+        missing = sorted({c["name"] for c in coreaudio.devices() if c.get("name") and c["name"] not in seen
+                          and (c.get("inputs") or c.get("outputs"))})
+    except Exception:
+        pass
     if names:
         from . import coreaudio
         for d in devs:
             n = coreaudio.channel_names(d["name"]) if d["inputs"] or d["outputs"] else None
             if n and len(n["in"]) == d["inputs"] and len(n["out"]) == d["outputs"] and any(n["in"] + n["out"]):
                 d["names"] = n
-    return {"ok": True, "error": None, "devices": devs}
+    return {"ok": True, "error": None, "devices": devs, "missing": missing}
 
 
 def patch_fit(cfg, dev):

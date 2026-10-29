@@ -492,7 +492,7 @@ def build_report(app=None, setup_config=None, run_speed_test=True):
     if ff is not None:
         sec("Where the problem is (each link in the chain, upstream first)", safe(ff.report))
     ce = getattr(app, "cengine", None) if app is not None else None
-    if ce is not None:
+    if ce is not None and ce.h:
         sec("Engine in C (stage 3): the 10 ms engine on its own real-time thread",
             safe(lambda: {"thread": ce.thread_note(), **ce.stats()}))
     if sh is not None:

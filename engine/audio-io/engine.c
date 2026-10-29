@@ -65,14 +65,15 @@ void sc_set_solo(SC *c, int nl, const int *lk, const int *lc, int nr, const int 
 int sc_process(SC *c, const float *in, float *out, int frames, int status, const double *returns,
                const double *dry, int ext_ok);
 int sc_armed(SC *c);
+void sc_not_green(SC *c);
 
 /* ------------------------------------------------------------------ atomics and clocks */
 #if defined(_MSC_VER)
 #  include <intrin.h>
-static int64_t ld64(volatile int64_t *p) { int64_t v = *p; _ReadWriteBarrier(); return v; }
-static void st64(volatile int64_t *p, int64_t v) { _ReadWriteBarrier(); *p = v; }
-static int32_t ld32(volatile int32_t *p) { int32_t v = *p; _ReadWriteBarrier(); return v; }
-static void st32(volatile int32_t *p, int32_t v) { _ReadWriteBarrier(); *p = v; }
+static int64_t ld64(volatile int64_t *p) { return InterlockedCompareExchange64((volatile LONG64 *)p, 0, 0); }
+static void st64(volatile int64_t *p, int64_t v) { InterlockedExchange64((volatile LONG64 *)p, v); }
+static int32_t ld32(volatile int32_t *p) { return InterlockedCompareExchange((volatile LONG *)p, 0, 0); }
+static void st32(volatile int32_t *p, int32_t v) { InterlockedExchange((volatile LONG *)p, v); }
 static void fence(void) { MemoryBarrier(); }
 #else
 static int64_t ld64(volatile int64_t *p) { return __atomic_load_n(p, __ATOMIC_ACQUIRE); }
@@ -154,15 +155,19 @@ static void sem_take_nowait(void *h) {           /* a barrier, as Python's acqui
 #define NCMD 256
 #define TIMING_COLS 10
 #define TIMING_ROWS 8192
-#define NREC 128
+#define NREC 512                   /* 5 s of recording: rides out a stalled main thread */
 #define NPHONES 128
 #define NTEST 32
 #define STAGES 5
 
-enum { CMD_ARM = 1, CMD_DISARM, CMD_TRIP, CMD_INJECT, CMD_CLEAR, CMD_SOLO, CMD_HEADROOM, CMD_WORKER };
+enum { CMD_ARM = 1, CMD_DISARM, CMD_TRIP, CMD_INJECT, CMD_CLEAR, CMD_SOLO, CMD_HEADROOM, CMD_WORKER, CMD_FREEZE };
+/* an arm request's answer: 1 armed; 0 not green long enough (or everyone not armed yet); -1 no such
+ * talker; -2 too old (asked more than ARM_MAX_AGE ago); -3 a check outside the core is red (the
+ * network, the soundcard, processing, the engine just late); -4 no audio arriving */
+#define ARM_MAX_AGE 0.2
 enum { WHY_LATE = 5, WHY_PROC = 6 };
 
-typedef struct { int32_t op, a, b; double x; } Cmd;
+typedef struct { int32_t op, a, b; double x; void *p0, *p1, *p2; } Cmd;
 typedef struct {
     int row0, g;
     uint8_t *base;                 /* the worker's shared memory */
@@ -176,7 +181,10 @@ typedef struct SE {
     /* thread */
     volatile int32_t run, running;
     double period_ms, comp_ms, cons_ms;
-    volatile int32_t wg_dev, wg_seen;
+    void *volatile wg_new;         /* an os_workgroup_t from Python (owned from here on) */
+    volatile int32_t wg_gen;
+    int32_t wg_seen;
+    double last_block;             /* wall clock of the last block run */
     char wg_note[160], rt_note[160];
 #ifdef _WIN32
     HANDLE th;
@@ -220,6 +228,7 @@ typedef struct SE {
 } SE;
 
 static void apply_cmd(SE *e, Cmd *c, double *res);
+static void workgroup_symbols(void);
 static void run_block(SE *e);
 
 SE_API SE *se_create(sio_t *io, SC *core, int n_in, int n_out, int block, int fs, int nt, const int *tin, int pgm,
@@ -258,6 +267,7 @@ SE_API SE *se_create(sio_t *io, SC *core, int n_in, int n_out, int block, int fs
     e->late_until = -1.0;
     strcpy(e->wg_note, "not joined");
     strcpy(e->rt_note, "not started");
+    workgroup_symbols();
     return e;
 }
 
@@ -295,18 +305,27 @@ SE_API void se_stage_solo(SE *e, int nl, const int *lk, const int *lc, int nr, c
 
 SE_API void se_set_ext(SE *e, int ok) { st32(&e->ext_ok, ok ? 1 : 0); }
 SE_API void se_set_ready(SE *e, int wid, int ready) { if (wid >= 0 && wid < MAXW) st32(&e->ready[wid], ready ? 1 : 0); }
-SE_API void se_set_workgroup_device(SE *e, int device) { st32(&e->wg_dev, device); }
+/* The soundcard's I/O workgroup (an os_workgroup_t Python read from Core Audio; this side owns it
+ * from here on), joined by the engine thread at its next turn. NULL leaves the current one. */
+SE_API void se_set_workgroup(SE *e, void *wg) {
+    e->wg_new = wg;
+    st32(&e->wg_gen, ld32(&e->wg_gen) + 1);
+}
 SE_API void se_set_timing(SE *e, double comp_ms) { e->comp_ms = comp_ms; }
 
 /* Returns the command's number (wait on it with se_result), or -1 when the ring is full. */
-SE_API int64_t se_command(SE *e, int op, int a, int b, double x) {
+SE_API int64_t se_command_p(SE *e, int op, int a, int b, double x, void *p0, void *p1, void *p2) {
     int64_t w = e->cmd_w;
     if (w - ld64(&e->cmd_r) >= NCMD) return -1;
     Cmd *c = &e->cmd[w % NCMD];
-    c->op = op; c->a = a; c->b = b; c->x = x;
+    c->op = op; c->a = a; c->b = b; c->x = x; c->p0 = p0; c->p1 = p1; c->p2 = p2;
     st64(&e->cmd_w, w + 1);
     return w;
 }
+
+SE_API int64_t se_command(SE *e, int op, int a, int b, double x) { return se_command_p(e, op, a, b, x, NULL, NULL, NULL); }
+
+SE_API double se_clock(void) { return wall_s(); }
 
 /* 1 when command n has been applied (its result in *res), else 0. */
 SE_API int se_result(SE *e, int64_t n, double *res) {
@@ -315,7 +334,19 @@ SE_API int se_result(SE *e, int64_t n, double *res) {
     return 1;
 }
 
+/* Every check outside the core, as one: the ones Python makes (network, soundcard), processing,
+ * the engine having been late, and audio arriving at all. */
+static int outside_ok(SE *e) {
+    if (!ld32(&e->ext_ok)) return -3;
+    double t = sc_time(e->core);
+    if (e->late_until >= 0 && t < e->late_until) return -3;
+    if (e->proc_on && !e->proc_ok) return -3;
+    if (wall_s() - e->last_block > 0.05) return -4;
+    return 1;
+}
+
 static void drain_commands(SE *e) {
+    if (outside_ok(e) != 1) sc_not_green(e->core);   /* a red check restarts the 5 s, as in Python */
     int64_t r = e->cmd_r, w = ld64(&e->cmd_w);
     while (r < w) {
         double res = 0;
@@ -329,6 +360,9 @@ static void drain_commands(SE *e) {
 static void apply_cmd(SE *e, Cmd *c, double *res) {
     switch (c->op) {
     case CMD_ARM: {
+        if (wall_s() - c->x > ARM_MAX_AGE) { *res = -2; break; }     /* nobody is waiting for this answer */
+        int why = outside_ok(e);
+        if (why != 1) { sc_not_green(e->core); *res = why; break; }
         int ok = sc_request_arm(e->core, c->a);
         if (ok == 1 && sio_heartbeat_blocked(e->io)) sio_clear_heartbeat(e->io);   /* a manual re-arm */
         *res = ok;
@@ -349,9 +383,22 @@ static void apply_cmd(SE *e, Cmd *c, double *res) {
         e->headroom = h;
         break;
     }
-    case CMD_WORKER:
-        if (e->st_wid >= 0 && e->st_wid < MAXW) e->w[e->st_wid] = e->st_worker;
+    case CMD_WORKER:                    /* by value: wid, row0 | g << 16, shared memory, semaphores */
+        if (c->a >= 0 && c->a < MAXW) {
+            Worker w = {c->b & 0xFFFF, c->b >> 16, (uint8_t *)c->p0, c->p1, c->p2};
+            e->w[c->a] = w;
+        }
         break;
+    case CMD_FREEZE: {                  /* the console's "freeze" test: deliberately miss deadlines */
+        int ms = c->a < 0 ? 0 : c->a > 2000 ? 2000 : c->a;
+#ifdef _WIN32
+        Sleep(ms);
+#else
+        struct timespec ts = {ms / 1000, (long)(ms % 1000) * 1000000L};
+        nanosleep(&ts, NULL);
+#endif
+        break;
+    }
     }
 }
 
@@ -445,6 +492,7 @@ static void run_block(SE *e) {
     int B = e->block, ni = e->n_in, no = e->n_out;
     double t0 = wall_s(), c0 = thread_cpu_s(), p0 = process_cpu_s(), st[STAGES] = {0};
     double ta = t0;
+    e->last_block = t0;
     drain_commands(e);
     int armed = sc_armed(e->core);
     /* test sources: never while armed */
@@ -541,30 +589,23 @@ static void make_realtime(SE *e) {
 }
 
 #define FOURCC(a, b, c, d) (((uint32_t)(a) << 24) | ((uint32_t)(b) << 16) | ((uint32_t)(c) << 8) | (uint32_t)(d))
-typedef int32_t (*fn_getprop)(uint32_t, const void *, uint32_t, const void *, uint32_t *, void *);
 typedef int (*fn_wg_join)(void *, void *);
 typedef void (*fn_wg_leave)(void *, void *);
 typedef void (*fn_release)(void *);
 static void *wg_obj; static char wg_token[64];
 
-static void workgroup(SE *e, int dev) {
-    static fn_getprop getprop; static fn_wg_join join; static fn_wg_leave leave; static fn_release release;
-    if (!getprop) {
-        void *ca = dlopen("/System/Library/Frameworks/CoreAudio.framework/CoreAudio", RTLD_LAZY);
-        if (ca) getprop = (fn_getprop)dlsym(ca, "AudioObjectGetPropertyData");
-        join = (fn_wg_join)dlsym(RTLD_DEFAULT, "os_workgroup_join");
-        leave = (fn_wg_leave)dlsym(RTLD_DEFAULT, "os_workgroup_leave");
-        release = (fn_release)dlsym(RTLD_DEFAULT, "os_release");
-    }
+static fn_wg_join wg_join; static fn_wg_leave wg_leave; static fn_release wg_release;
+
+static void workgroup_symbols(void) {                 /* once, at create time, off the real-time thread */
+    wg_join = (fn_wg_join)dlsym(RTLD_DEFAULT, "os_workgroup_join");
+    wg_leave = (fn_wg_leave)dlsym(RTLD_DEFAULT, "os_workgroup_leave");
+    wg_release = (fn_release)dlsym(RTLD_DEFAULT, "os_release");
+}
+
+static void workgroup(SE *e, void *wg) {
+    fn_wg_join join = wg_join; fn_wg_leave leave = wg_leave; fn_release release = wg_release;
     if (wg_obj && leave) { leave(wg_obj, wg_token); if (release) release(wg_obj); wg_obj = NULL; }
-    if (dev <= 0 || !getprop || !join) { snprintf(e->wg_note, sizeof e->wg_note, "no audio workgroup"); return; }
-    uint32_t addr[3] = {FOURCC('o', 's', 'w', 'g'), FOURCC('g', 'l', 'o', 'b'), 0};
-    void *wg = NULL;
-    uint32_t size = sizeof wg;
-    if (getprop((uint32_t)dev, addr, 0, NULL, &size, &wg) != 0 || !wg) {
-        snprintf(e->wg_note, sizeof e->wg_note, "the soundcard has no audio workgroup");
-        return;
-    }
+    if (!wg || !join) { snprintf(e->wg_note, sizeof e->wg_note, wg ? "audio workgroups not available" : "no audio workgroup"); return; }
     memset(wg_token, 0, sizeof wg_token);
     int rc = join(wg, wg_token);
     if (rc) { if (release) release(wg); snprintf(e->wg_note, sizeof e->wg_note, "couldn't join the soundcard's audio workgroup (error %d)", rc); return; }
@@ -580,20 +621,21 @@ static void make_realtime(SE *e) {
     snprintf(e->rt_note, sizeof e->rt_note, "normal priority, in C");
 #endif
 }
-static void workgroup(SE *e, int dev) { snprintf(e->wg_note, sizeof e->wg_note, "not on this system"); }
+static void workgroup_symbols(void) {}
+static void workgroup(SE *e, void *wg) { snprintf(e->wg_note, sizeof e->wg_note, "not on this system"); }
 #endif
 
 static void engine_main(SE *e) {
     make_realtime(e);
     st32(&e->running, 1);
     while (ld32(&e->run)) {
-        int dev = ld32(&e->wg_dev);
-        if (dev != e->wg_seen) { e->wg_seen = dev; workgroup(e, dev); }
+        int32_t gen = ld32(&e->wg_gen);
+        if (gen != e->wg_seen) { e->wg_seen = gen; workgroup(e, e->wg_new); }
         if (sio_read(e->io, e->inb, e->block, 20) == 1) run_block(e);
         else drain_commands(e);              /* no audio arriving: still answer Python */
     }
 #ifdef __APPLE__
-    workgroup(e, 0);
+    workgroup(e, NULL);
 #endif
     st32(&e->running, 0);
 }
@@ -619,7 +661,7 @@ SE_API void se_stop(SE *e) {
     if (!ld32(&e->run)) return;
     st32(&e->run, 0);
 #ifdef _WIN32
-    WaitForSingleObject(e->th, 3000);
+    WaitForSingleObject(e->th, INFINITE);             /* never free what the thread may still use */
     CloseHandle(e->th);
 #else
     pthread_join(e->th, NULL);

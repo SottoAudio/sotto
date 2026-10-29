@@ -589,6 +589,9 @@ class BenchApp:
         self._eng_thread.start()
 
     def _stop_engine_thread(self):
+        if getattr(self, "_ctl", None) is not None:
+            self._ctl_stop.set()
+            self._ctl.join(2.0)
         if self.cengine is not None:
             self.cengine.stop()                          # before the rings it reads go away
         if getattr(self, "_eng_thread", None) is not None:
@@ -599,7 +602,8 @@ class BenchApp:
             self.native.close()
             self.native.destroy()
         if self.cengine is not None:
-            self.cengine.destroy()
+            ce, self.cengine = self.cengine, None
+            ce.destroy()
 
     def _engine_loop(self, n_in, n_out):
         """Sotto Voce's engine on its own thread: a 10 ms block in, the same engine as before, a
@@ -710,6 +714,26 @@ class BenchApp:
             return False, self._native_why
         return True, ""
 
+    def _control_loop(self):
+        """The control room's own thread, every 20 ms: the C engine's checks, trips, events,
+        recording, phones and test sources never wait for the main loop (which can be held up
+        by a slow plugin save or a diagnostics file)."""
+        from . import macos
+        macos.set_thread_qos("user_initiated")
+        span = self.trace.span if self.trace is not None else None
+        while not self._ctl_stop.wait(0.02):
+            if self.cengine is None:
+                return
+            try:
+                if span is not None:
+                    with span("control: C engine"):
+                        self._pull_cengine()
+                else:
+                    self._pull_cengine()
+            except Exception:
+                LOG.exception("The C engine's control loop failed")
+                time.sleep(0.5)
+
     def _pull_cengine(self):
         """The control room's side of the C engine, every 50 ms: checks in; events, state, timing,
         recording, phones and test sources out."""
@@ -750,7 +774,11 @@ class BenchApp:
                 self.trace.block_done(t0, ms, r[2:7], int(r[7]), 0, float(r[8]), float(r[9]))
         for blk in ce.recording():
             if self.rec.on:
-                self.rec.push(blk.copy())
+                self.rec.push(blk)
+        if st["rec_dropped"] > getattr(self, "_c_rec_dropped", 0):
+            self.log(Event(core.t, "recording_gap", f"{int(st['rec_dropped'] - getattr(self, '_c_rec_dropped', 0))} "
+                           "blocks missing from the recording (Sotto Voce was held up)", "auto"))
+            self._c_rec_dropped = st["rec_dropped"]
         if self.local_phones.stream is not None:
             for blk in ce.phones():
                 self.local_phones.push(blk[:, 0].copy(), blk[:, 1].copy())
@@ -1174,6 +1202,9 @@ class BenchApp:
             if self.cengine is not None:
                 self.cengine.start()
                 LOG.info("C engine started: %s", self.cengine.thread_note())
+                self._ctl_stop = threading.Event()
+                self._ctl = threading.Thread(target=self._control_loop, name="c-engine-control", daemon=True)
+                self._ctl.start()
             elif self.native:
                 self._start_engine_thread(n_in, n_out)
             self._settle_memory()
@@ -1220,9 +1251,6 @@ class BenchApp:
                         with span("main: native timing"):
                             self._pull_native()
                             self._watch_soundcard()
-                        if self.cengine is not None:
-                            with span("main: C engine"):
-                                self._pull_cengine()
                         now = time.monotonic()
                         self._log_late(now)
                         if now >= self._finder_t:
@@ -1303,23 +1331,27 @@ class BenchApp:
             self.log(Event(self.core.t, "stopped", "", "auto"))
         except Exception:
             LOG.exception("Could not write the last events")
-        for what, fn in (("recorder", self.rec.stop),
+        def web():
+            if self.srv:                             # first: no console or Companion request mid-shutdown
+                self.srv.shutdown()
+                self.srv.server_close()
+                self.srv = None
+        # The engine thread stops before anything it uses goes: the processing workers' shared memory,
+        # the recorder, the phones.
+        for what, fn in (("web server", web),
+                         ("engine thread", self._stop_engine_thread),
+                         ("recorder", self.rec.stop),
                          ("plugin settings", lambda: self.proc is not None and self._save_plugin_states(force=True)),
                          ("processing", lambda: self.proc is not None and self.proc.stop()),
                          ("RRCS", lambda: self.rrcs and (self.rrcs.set_armed_safe(False), self.rrcs.stop())),
                          ("phones on this computer", self.local_phones.close),
                          ("timing record", lambda: self.trace is not None and self.trace.stop()),
                          ("system watch", lambda: self.syswatch is not None and self.syswatch.stop()),
-                         ("engine thread", self._stop_engine_thread),
                          ("event log", self.events_f.close)):
             try:
                 fn()
             except Exception:
                 LOG.exception("Could not stop the %s cleanly", what)
-        if self.srv:
-            self.srv.shutdown()
-            self.srv.server_close()
-            self.srv = None
         LOG.info("Engine stopped")
 
     IO_BUFFERS = (0, 64, 96, 128, 160, 192, 240, 256, 320, 480, 512)

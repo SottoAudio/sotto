@@ -41,10 +41,10 @@
 /* ------------------------------------------------------------------ atomics */
 #if defined(_MSC_VER)
 #  include <intrin.h>
-static int64_t ld64(volatile int64_t *p) { int64_t v = *p; _ReadWriteBarrier(); return v; }
-static void st64(volatile int64_t *p, int64_t v) { _ReadWriteBarrier(); *p = v; }
-static int32_t ld32(volatile int32_t *p) { int32_t v = *p; _ReadWriteBarrier(); return v; }
-static void st32(volatile int32_t *p, int32_t v) { _ReadWriteBarrier(); *p = v; }
+static int64_t ld64(volatile int64_t *p) { return InterlockedCompareExchange64((volatile LONG64 *)p, 0, 0); }
+static void st64(volatile int64_t *p, int64_t v) { InterlockedExchange64((volatile LONG64 *)p, v); }
+static int32_t ld32(volatile int32_t *p) { return InterlockedCompareExchange((volatile LONG *)p, 0, 0); }
+static void st32(volatile int32_t *p, int32_t v) { InterlockedExchange((volatile LONG *)p, v); }
 #else
 static int64_t ld64(volatile int64_t *p) { return __atomic_load_n(p, __ATOMIC_ACQUIRE); }
 static void st64(volatile int64_t *p, int64_t v) { __atomic_store_n(p, v, __ATOMIC_RELEASE); }

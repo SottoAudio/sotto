@@ -20,6 +20,7 @@
 #include <math.h>
 
 #ifdef _WIN32
+#  include <windows.h>
 #  define SC_API __declspec(dllexport)
 #else
 #  define SC_API __attribute__((visibility("default")))
@@ -109,16 +110,28 @@ static double missing_s(const Watch *w, double t) {
     return m > 0 ? m : 0.0;
 }
 
+static int64_t ev_load(volatile int64_t *p) {
+#if defined(_MSC_VER)
+    return InterlockedCompareExchange64((volatile LONG64 *)p, 0, 0);
+#else
+    return __atomic_load_n(p, __ATOMIC_ACQUIRE);
+#endif
+}
+
+static void ev_store(volatile int64_t *p, int64_t v) {
+#if defined(_MSC_VER)
+    InterlockedExchange64((volatile LONG64 *)p, v);
+#else
+    __atomic_store_n(p, v, __ATOMIC_RELEASE);
+#endif
+}
+
 static void event(SC *c, double t, int kind, int talker, int why, int arg) {
     int64_t w = c->ev_w;
-    if (w - c->ev_r >= SC_EVENTS) return;            /* the app stopped reading: drop, never block */
+    if (w - ev_load(&c->ev_r) >= SC_EVENTS) return;  /* the app stopped reading: drop, never block */
     Event *e = &c->ev[w % SC_EVENTS];
     e->t = t; e->kind = kind; e->talker = talker; e->why = why; e->arg = arg;
-#if defined(_MSC_VER)
-    c->ev_w = w + 1;
-#else
-    __atomic_store_n(&c->ev_w, w + 1, __ATOMIC_RELEASE);
-#endif
+    ev_store(&c->ev_w, w + 1);
 }
 
 static void disarm(SC *c, double t, int why, int arg) {
@@ -203,6 +216,13 @@ SC_API void sc_request_disarm(SC *c) { disarm(c, sc_time(c), WHY_REQUEST, 0); }
 SC_API void sc_disarm_why(SC *c, int why, int arg) { disarm(c, sc_time(c), why ? why : WHY_REQUEST, arg); }
 
 SC_API int sc_armed(SC *c) { return c->armed; }
+
+/* A check outside the core is red: not green, so re-arming needs 5 s of green again (Python's
+ * ArmState.update_health(False)); disarms if armed. */
+SC_API void sc_not_green(SC *c) {
+    c->green_since = SC_NEVER;
+    if (c->armed) disarm(c, sc_time(c), WHY_EXTERNAL, 0);
+}
 
 SC_API void sc_trip_talker(SC *c, int talker) {
     if (talker < 0 || talker >= c->nt || !c->tarmed[talker]) return;
@@ -361,18 +381,15 @@ SC_API void sc_levels(SC *c, double *lv_in, double *lv_out, double *talker_db) {
 
 /* Events since the last call: up to max rows of (t, kind, talker, why, arg). */
 SC_API int sc_events(SC *c, double *rows, int max) {
-#if defined(_MSC_VER)
-    int64_t w = c->ev_w;
-#else
-    int64_t w = __atomic_load_n(&c->ev_w, __ATOMIC_ACQUIRE);
-#endif
+    int64_t w = ev_load(&c->ev_w), r = c->ev_r;
     int n = 0;
-    while (c->ev_r < w && n < max) {
-        Event *e = &c->ev[c->ev_r % SC_EVENTS];
+    while (r < w && n < max) {
+        Event *e = &c->ev[r % SC_EVENTS];
         rows[n * 5] = e->t; rows[n * 5 + 1] = e->kind; rows[n * 5 + 2] = e->talker;
         rows[n * 5 + 3] = e->why; rows[n * 5 + 4] = e->arg;
         n++;
-        c->ev_r++;
+        r++;
     }
+    ev_store(&c->ev_r, r);                           /* the slots are free only after they're copied */
     return n;
 }

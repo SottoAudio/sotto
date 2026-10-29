@@ -18,7 +18,7 @@ from . import ccore
 from .arming import Event
 from .diagnostics import LOG
 
-CMD_ARM, CMD_DISARM, CMD_TRIP, CMD_INJECT, CMD_CLEAR, CMD_SOLO, CMD_HEADROOM, CMD_WORKER = range(1, 9)
+CMD_ARM, CMD_DISARM, CMD_TRIP, CMD_INJECT, CMD_CLEAR, CMD_SOLO, CMD_HEADROOM, CMD_WORKER, CMD_FREEZE = range(1, 10)
 WHY_PROBE, WHY_STARTING, WHY_EXTERNAL, WHY_REQUEST, WHY_LATE, WHY_PROC = 1, 2, 3, 4, 5, 6
 TIMING_COLS = 10
 STATS = ("running", "blocks", "proc_blocks", "misses", "miss_run", "max_miss_run", "proc_ok", "last_missed",
@@ -43,7 +43,12 @@ def library():
         lib.se_stage_solo.argtypes = [P, I, IP, IP, I, IP, IP, D, I, D, D]
         lib.se_set_ext.argtypes = [P, I]
         lib.se_set_ready.argtypes = [P, I, I]
-        lib.se_set_workgroup_device.argtypes = [P, I]
+        lib.se_set_workgroup.argtypes = [P, P]
+        lib.se_command_p.restype = I64
+        lib.se_command_p.argtypes = [P, I, I, I, D, P, P, P]
+        lib.se_clock.restype = D
+        lib.se_clock.argtypes = []
+        lib.sc_not_green.argtypes = [P]
         lib.se_set_timing.argtypes = [P, D]
         lib.se_command.restype = I64
         lib.se_command.argtypes = [P, I, I, I, D]
@@ -110,13 +115,20 @@ class CEngine:
         self.pool = None
         self.started = False
         self.ext_why = ""
+        self._solo_seq = None
+        self.test_short = 0
 
     # ------------------------------------------------------------ commands
-    def cmd(self, op, a=0, b=0, x=0.0, wait=0.25):
+    def cmd(self, op, a=0, b=0, x=0.0, wait=0.25, p=(None, None, None)):
         """Sends a command and waits (up to `wait` s) for the engine to apply it. Returns its result,
-        or None when the engine didn't answer in time (it still applies it when it can)."""
+        or None when the engine didn't answer in time (it still applies it when it can, except an
+        arm request: the engine refuses one older than 0.2 s)."""
         with self.lock:
-            n = self.lib.se_command(self.h, op, int(a), int(b), float(x))
+            if not self.h:
+                return None
+            if op == CMD_ARM:
+                x = self.lib.se_clock()          # when it was asked, on the engine's own clock
+            n = self.lib.se_command_p(self.h, op, int(a), int(b), float(x), *p)
             if n < 0:
                 LOG.warning("C engine command ring full: command %d dropped", op)
                 return None
@@ -132,12 +144,12 @@ class CEngine:
     def attach_pool(self, pool):
         """The processing workers' shared memory and semaphores, as workers.Pool.exchange uses them."""
         self.pool = pool
+        pool.on_worker_start = self._worker_started      # first: a restart from now on is handed over
         for w in pool.workers:
             self._stage_worker(w)
         self.lib.se_set_proc(self.h, 1, len(pool.workers), pool.headroom, int(bool(pool.ok)))
         for w in pool.workers:
             self.lib.se_set_ready(self.h, w.wid, int(bool(w.ready)))
-        pool.on_worker_start = self._worker_started
         set_headroom = pool.set_headroom
 
         def headroom(blocks):
@@ -152,11 +164,16 @@ class CEngine:
                                  w.out_sem._semlock.handle)
 
     def _worker_started(self, w):
-        """A worker restarted with new semaphores: hand them to the engine."""
-        with self.lock:                          # nobody else stages before the engine has taken it
-            self._stage_worker(w)
-            if self.started:
-                self.cmd(CMD_WORKER, wait=1.0)
+        """A worker restarted with new semaphores: hand them to the engine, by value in the command."""
+        if not self.h:
+            return
+        with self.lock:
+            self._keep += [w.in_sem, w.out_sem]
+            if not self.started:
+                self._stage_worker(w)
+                return
+        self.cmd(CMD_WORKER, w.wid, w.rows[0] | (w.g << 16), wait=1.0,
+                 p=(w.latest.ctypes.data, w.in_sem._semlock.handle, w.out_sem._semlock.handle))
         LOG.info("C engine: processing worker %d's new semaphores handed over", w.wid + 1)
 
     # ------------------------------------------------------------ running
@@ -172,19 +189,27 @@ class CEngine:
 
     def destroy(self):
         self.stop()
-        if self.h:
-            self.lib.se_destroy(self.h)
-            self.h = None
-        self.cc.destroy()
+        with self.lock:
+            if self.h:
+                self.lib.se_destroy(self.h)
+                self.h = None
+            self.cc.destroy()
 
     def set_workgroup_device(self, dev):
-        self.lib.se_set_workgroup_device(self.h, int(dev or 0))
+        """The soundcard's I/O workgroup, read here from Core Audio (off the real-time thread) and
+        handed to the engine thread to join."""
+        from . import coreaudio
+        wg = coreaudio.io_workgroup(dev) if dev else None
+        if wg:
+            self.lib.se_set_workgroup(self.h, wg)
 
     def thread_note(self):
         return (f"{(self.lib.se_thread_note(self.h) or b'').decode()}, "
                 f"{(self.lib.se_workgroup_note(self.h) or b'').decode()}")
 
     def stats(self):
+        if not self.h:
+            return {k: 0 for k in STATS}
         self.lib.se_stats(self.h, self._stats)
         return dict(zip(STATS, list(self._stats)))
 
@@ -209,10 +234,14 @@ class CEngine:
                 arm.events.append(Event(core.t, "armed" if talker is None else "talker_armed",
                                         "everyone" if talker is None else f"talker {talker + 1}", source))
                 return True, "armed" if talker is None else f"talker {talker + 1} armed"
-            if res is None:
-                msg = "Sotto Voce's engine didn't answer"
-            elif res < 0:
+            if res is None or res == -2:
+                msg = "Sotto Voce's engine didn't answer in time; ask again"
+            elif res == -1:
                 return False, "no such talker"
+            elif res == -3:
+                msg = f"checks not green: {core.health_why or me.ext_why or 'a check outside the core is red'}"
+            elif res == -4:
+                msg = "no audio is arriving from the soundcard"
             elif talker is not None and arm.can_arm(core.t) and not arm.armed:
                 msg = "arm everyone first: the Riedel is holding all talkers on dry"
             elif arm.green_since is None:
@@ -240,7 +269,10 @@ class CEngine:
 
         def inject(name, seconds=None, ms=None):
             inj(name, seconds=seconds, ms=ms)
-            if name in ccore.FAULTS:
+            if name == "freeze":                 # the engine thread itself misses its deadlines
+                core.pending_freeze_ms = 0
+                me.cmd(CMD_FREEZE, int(ms or 300), wait=0.0)
+            elif name in ccore.FAULTS:
                 me.cmd(CMD_INJECT, ccore.FAULTS[name], 0, -1.0 if seconds is None else float(seconds))
 
         def clear_faults():
@@ -252,12 +284,30 @@ class CEngine:
             left, right = core._solo_plan
             s = core.solo
             with me.lock:
+                if not me.h:                      # stopped: the model only
+                    return plan
+                if me._solo_seq is not None:      # the last plan must be taken before staging the next
+                    res = ctypes.c_double(0)
+                    end = time.monotonic() + 1.0
+                    while not me.lib.se_result(me.h, me._solo_seq, ctypes.byref(res)):
+                        if time.monotonic() > end:
+                            LOG.warning("C engine: the last phones plan hasn't been taken; this one is skipped")
+                            return plan
+                        time.sleep(0.001)
+                    me._solo_seq = None
                 me.lib.se_stage_solo(me.h, len(left), _ints([0 if q == "i" else 1 for q, _ in left]),
                                      _ints([n for _, n in left]), len(right),
                                      _ints([0 if q == "i" else 1 for q, _ in right]), _ints([n for _, n in right]),
                                      float(s.get("level_db", 0.0)), int(bool(s.get("dim"))),
                                      float(s.get("dim_db", -20.0)), float(s.get("limit_db", -3.0)))
-                me.cmd(CMD_SOLO)
+                n = me.lib.se_command(me.h, CMD_SOLO, 0, 0, 0.0)
+                res = ctypes.c_double(0)
+                end = time.monotonic() + 0.25
+                while n >= 0 and not me.lib.se_result(me.h, n, ctypes.byref(res)):
+                    if time.monotonic() > end:
+                        me._solo_seq = n                 # still queued: don't overwrite its staging
+                        break
+                    time.sleep(0.0005)
             return plan
         arm.request_arm, arm.request_disarm, arm.trip_talker, arm.update_health = \
             request_arm, request_disarm, trip_talker, update_health
@@ -288,6 +338,8 @@ class CEngine:
     def sync(self):
         """The C core's state into the Python model (main loop, ~20 times a second, and after commands)."""
         core, cc = self.core, self.cc
+        if not self.h or not cc.h:                 # stopped: the model keeps its last state
+            return None
         st = cc.state()
         t = cc.t
         core.samples = int(round(t * self.cfg.fs))
@@ -314,6 +366,8 @@ class CEngine:
     def events(self):
         """The C core's own events (automatic disarms, faults ending) as the app's Events."""
         out = []
+        if not self.h:
+            return out
         for t, kind, talker, why, arg in self.cc.events():
             if kind == "disarmed" and why != WHY_REQUEST:
                 text = self.why_text(why, arg)
@@ -332,8 +386,13 @@ class CEngine:
         return self._tim[:n]
 
     def recording(self):
-        n = self.lib.se_record(self.h, self._rec.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), len(self._rec))
-        return self._rec[:n]
+        """Every block waiting (the ring holds 5 s)."""
+        out = []
+        while True:
+            n = self.lib.se_record(self.h, self._rec.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), len(self._rec))
+            out += [b.copy() for b in self._rec[:n]]
+            if n < len(self._rec):
+                return out
 
     def phones(self):
         n = self.lib.se_phones(self.h, self._ph.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), len(self._ph))
@@ -342,8 +401,12 @@ class CEngine:
     def feed_tests(self, tests):
         """Test sources rendered ahead for the engine to mix in (never while armed: the engine checks)."""
         if not tests.plan:
+            self._tests_fed = False
             return
         mask = np.zeros(self.n_in, np.uint8)
+        if self.lib.se_test_queued(self.h) == 0 and getattr(self, "_tests_fed", False):
+            self.test_short += 1                 # the engine ran out: real input played for a moment
+        self._tests_fed = True
         while self.lib.se_test_queued(self.h) < self.TEST_AHEAD:
             plan = tests.plan
             if not plan:

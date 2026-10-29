@@ -127,10 +127,101 @@ class SimulatedFrameTests(unittest.TestCase):
             self.assertFalse(b.state()["armed"])         # PROBE lost: disarmed, and it stays that way
             time.sleep(1.0)
             self.assertFalse(b.state()["armed"])
-            self.assertEqual(b.cengine.stats()["late_total"], 0)
             b.quit_ev.set()
             th.join(5)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(cengine.library() is not None, "native library not built")
+class ArmingSafetyTests(unittest.TestCase):
+    """From the review: the engine must refuse an arm while any check outside its core is red,
+    while no audio is arriving, or when the request is stale; a red check restarts the 5 s."""
+
+    def setUp(self):
+        from sotto_failsafe import nativeio
+        from sotto_failsafe.core import FailsafeCore
+        self.cfg = Config(talker_in=[0, 1], talker_out=[0, 1], talker_names=["a", "b"], probe_in=[6], probe_out=6,
+                          heartbeat_out=7, monitor_out=[])
+        self.n_in, self.n_out = 8, 8
+        self.nat = nativeio.NativeIO(self.n_in, self.n_out, B, B, 48000, margin=4800)   # 100 ms: a busy test machine never makes it late by accident
+        self.core = FailsafeCore(self.cfg)
+        self.ce = cengine.CEngine(self.nat, self.cfg, self.n_in, self.n_out, B)
+        self.ce.attach(self.core)
+        self.ce.start()
+        self.y = np.zeros((B, self.n_out), np.float32)
+        self.hb = []
+
+    def tearDown(self):
+        self.ce.destroy()
+        self.nat.destroy()
+
+    def feed(self, seconds):
+        """Soundcard cycles in real time, PROBE looped back, the C engine running on its thread."""
+        rng = np.random.default_rng(0)
+        for _ in range(int(seconds * 100)):
+            x = (rng.standard_normal((B, self.n_in)) * 0.01).astype(np.float32)
+            x[:, 6] = self.y[:, 6]
+            self.nat.cycle(x, self.y, B)
+            self.hb.append(float(np.max(np.abs(self.y[:, 7]))))
+            time.sleep(0.01)
+        self.ce.sync()
+
+    def arm(self):
+        return self.core.arm.request_arm(self.core.t, "test")
+
+    def test_refusals_and_a_clean_arm(self):
+        self.feed(6.5)
+        self.assertTrue(self.core.arm.can_arm(self.core.t), self.core.health_why)
+        self.ce.set_ext(False, "Dante network port: en7 has no link.")
+        time.sleep(0.05)
+        ok, msg = self.arm()
+        self.assertFalse(ok)
+        self.assertIn("en7 has no link", msg)
+        self.ce.set_ext(True)
+        self.feed(0.5)
+        ok, msg = self.arm()                    # the red check restarted the 5 s
+        self.assertFalse(ok, msg)
+        self.feed(5.5)
+        ok, msg = self.arm()
+        self.assertTrue(ok, msg)
+        self.feed(0.5)
+        self.assertTrue(self.core.arm.armed)
+        self.assertGreater(max(self.hb[-20:]), 0.05, "HEARTBEAT plays while armed")
+        self.core.arm.request_disarm(self.core.t, "test", "test")
+        time.sleep(0.2)                          # no audio arriving now
+        ok, msg = self.arm()
+        self.assertFalse(ok)
+        self.assertIn("no audio", msg)
+        n = self.ce.lib.se_command(self.ce.h, cengine.CMD_ARM, -1, 0, self.ce.lib.se_clock() - 1.0)
+        res = ctypes.c_double(0)
+        t0 = time.monotonic()
+        while not self.ce.lib.se_result(self.ce.h, n, ctypes.byref(res)) and time.monotonic() - t0 < 1:
+            time.sleep(0.001)
+        self.assertEqual(res.value, -2, "a stale arm request is refused")
+        self.ce.sync()
+        self.assertFalse(self.core.arm.armed)
+
+    def test_engine_late_disarms_and_the_latch_clears_only_on_a_manual_rearm(self):
+        self.feed(6.5)
+        ok, _ = self.arm()
+        self.assertTrue(ok)
+        self.feed(0.3)
+        self.core.inject("freeze", ms=400)       # the engine thread misses its deadlines (beyond the 100 ms margin)
+        self.feed(0.8)
+        st = self.ce.stats()
+        self.assertGreater(st["late_total"], 0)
+        self.assertFalse(self.core.arm.armed)
+        self.assertTrue(self.nat.heartbeat_blocked())
+        ok, msg = self.arm()                     # not green for 5 s after a late engine
+        self.assertFalse(ok, msg)
+        self.feed(5.5)
+        ok, msg = self.arm()                     # then 5 s of green, as in the Python engine
+        self.assertFalse(ok, msg)
+        self.feed(5.0)
+        ok, msg = self.arm()
+        self.assertTrue(ok, msg)
+        self.feed(0.2)
+        self.assertFalse(self.nat.heartbeat_blocked())

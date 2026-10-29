@@ -477,6 +477,9 @@ def build_report(app=None, setup_config=None, run_speed_test=True):
         found.insert(0, f"Core Audio skipped {tr.skipped} soundcard cycles in {tr.skip_events} places since the engine "
                         f"started ({1000 * tr.skipped * tr.io / tr.fs:.0f} ms of audio lost): heard as clicks and "
                         f"dropouts. See 'Audio timing in detail'.")
+    if tr is not None and getattr(tr, "outages", 0):
+        found.insert(0, f"The soundcard stopped {tr.outages} time(s) ({tr.outage_s:.1f} s without audio in all): "
+                        "Dante Virtual Soundcard restarted or lost its network. See 'Where the problem is'.")
     ff = getattr(app, "finder", None) if app is not None else None
     if ff is not None and ff.root:
         st = ff.state()

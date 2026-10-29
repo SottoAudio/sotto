@@ -839,6 +839,7 @@ class BenchApp:
         """Sotto Voce's engine for one block (10 ms): straight from the soundcard, or regrouped."""
         t0 = time.perf_counter()
         c0 = time.thread_time()                      # CPU this thread uses: wall time minus this = held up
+        p0 = time.process_time()                     # CPU the whole process uses, every thread
         if self.regroup is None and self.native is None:   # this callback is the soundcard's own cycle
             self._device_timing(tinfo, t0)
         if self._cb_last is not None:                # time since the last block (should be 10 ms)
@@ -911,7 +912,7 @@ class BenchApp:
         self.cb_ms_max = max(self.cb_ms_max * 0.999, dt)
         if self.trace is not None:
             self.trace.block_done(t0, dt, st, late, self.regroup.count if self.regroup is not None else 0,
-                                  1000 * (time.thread_time() - c0))
+                                  1000 * (time.thread_time() - c0), 1000 * (time.process_time() - p0))
             if self.regroup is None and self.native is None:   # this callback is the soundcard's own cycle
                 self._trace_cycle(t0, tinfo, frames, status)
 

@@ -188,7 +188,15 @@ class BenchApp:
         self._native_seen = 0                            # underrun cycles already acted on
         self._native_bad_until = -1.0                    # audio time until which the engine counts as not green
         self._native_why = ""
+        self._late_total = 0                             # engine-late cycles: counted on the engine thread,
+        self._late_logged = 0                            # put in the event list at most every 2 s
+        self._late_log_t = -1e9
         self._was_armed = False
+        from .faultfinder import FaultFinder
+        self.finder = FaultFinder(getattr(a, "dante_port", "auto"))
+        self.syswatch = None
+        self._finder_t = 0.0
+        self._is_dante = False
         from .phones import LocalPhones
         from .testsrc import TestSources
         allowed = {c: f"talker {i + 1}" for i, c in enumerate(cfg.talker_in)}
@@ -329,6 +337,20 @@ class BenchApp:
                 w.writerows(res)
             self.timing = res
             return {"ok": True, "message": f"timed {len(res)} faults; saved fallback_timing.csv"}
+        if cmd == "dante_port":
+            port = str(c.get("port") or "auto")[:32]
+            self.finder.set_port(port)
+            self.a.dante_port = port
+            try:
+                from . import launcher as L
+                saved = L.load_config()
+                saved["dante_port"] = port
+                L.save_config(saved)
+            except Exception:
+                LOG.exception("Could not save the Dante network port")
+            self.log(Event(core.t, "dante_port", "watching " + ("whichever wired port has a link" if port == "auto" else
+                                                                 "nothing (not checked)" if port == "none" else port), src))
+            return {"ok": True}
         if cmd == "mark":
             self.log(Event(core.t, "mark", str(c.get("note", ""))[:200], src))
             return {"ok": True}
@@ -370,6 +392,7 @@ class BenchApp:
         s["tests"] = self.tests.state()
         s["local_phones"] = self.local_phones.state()
         s["processing"] = self.proc.state() if self.proc is not None else {"on": False, "why": self.proc_note}
+        s["chain"] = self.finder.state()
         if self.proc is not None:
             s["processing"]["plugins_available"] = self.vst3 is not None
         return s
@@ -554,8 +577,6 @@ class BenchApp:
         outdata[:] = y
 
     def _start_engine_thread(self, n_in, n_out):
-        self._proc_health = self.core.extra_health
-        self.core.extra_health = self._health
         self._eng_stop = threading.Event()
         self._eng_thread = threading.Thread(target=self._engine_loop, args=(n_in, n_out), name="engine", daemon=True)
         self._eng_thread.start()
@@ -608,7 +629,7 @@ class BenchApp:
             self._native_why = why
             if self.core.arm.armed:
                 self.core.arm.request_disarm(t, "auto", why)
-            self.core.log.append(Event(t, "engine_late", why, "auto"))
+            self._late_total += n                    # the event goes out from the main loop (_log_late)
         armed = self.core.arm.armed
         if armed and not self._was_armed and nat.heartbeat_blocked():
             nat.clear_heartbeat()
@@ -616,9 +637,62 @@ class BenchApp:
         self._was_armed = armed
 
     def _health(self):
+        why = self.finder.latched()                  # the network port or the soundcard itself
+        if why:
+            return False, why
         if self.native is not None and self.core.t < self._native_bad_until:
             return False, self._native_why
         return self._proc_health() if self._proc_health is not None else (True, "")
+
+    def _log_late(self, now):
+        """Engine-late cycles as one event every 2 s at most, not one per cycle."""
+        n = self._late_total - self._late_logged
+        if n <= 0 or now - self._late_log_t < 2.0:
+            return
+        self._late_logged += n
+        self._late_log_t = now
+        self.log(Event(self.core.t, "engine_late", f"Sotto Voce's engine was late: {n} soundcard cycle"
+                       f"{'s' if n > 1 else ''} played dry; HEARTBEAT held off until re-armed", "auto"))
+
+    # ------------------------------------------------------------ where the problem is
+    def _find_faults(self):
+        """Each link in the chain, from the network port to RRCS: what's wrong and where to look.
+        A lost network link or Dante Virtual Soundcard stopping disarms, like any other fault."""
+        core, cfg = self.core, self.cfg
+        t = core.t
+        lv = core.lv_in
+        used = [c for c in cfg.talker_in + cfg.probe_in + [cfg.pgm_in, cfg.listen_in] if c is not None]
+        silent = lv is not None and len(lv) > max(used) and all(float(lv[c]) <= -170.0 for c in used)
+        probes_ok = all(w.ok(t) for w in core.watch) if core.watch else None
+        missing = max((w.missing_s(t) for w in core.watch), default=0.0)
+        eng = getattr(self, "engine_info", None) or {}
+        pr = self.proc
+        app = {"device_name": eng.get("device_name"), "is_dante": self._is_dante, "simulate": bool(self.a.simulate),
+               "soundcard_down": getattr(self, "_sc_down", False),
+               "skipped": self.trace.skipped if self.trace is not None else None,
+               "late_cycles": self.native.stats()["underrun_cycles"] if self.native is not None else None,
+               "blocks": self.trace.blk_i if self.trace is not None else None,
+               "proc_late": getattr(pr, "misses", None),
+               "inputs_silent": silent, "probe_ok": probes_ok, "probe_missing_ms": 1000 * missing,
+               "probe_in": ", ".join(str(c + 1) for c in cfg.probe_in), "probe_out": cfg.probe_out + 1,
+               "starting": t < cfg.startup_grace_s, "rrcs": self.rrcs.status() if self.rrcs else None,
+               "power": getattr(self, "power", {}), "channels": (self.coreaudio or {}).get("inputs") or eng.get("n_in"),
+               "cycle_ms": 1000.0 * (self.trace.io if self.trace is not None else self.a.block) / cfg.fs,
+               "margin_ms": eng.get("margin_ms"), "processing_on": pr is not None,
+               "processing_ok": getattr(pr, "ok", None), "processing_why": getattr(pr, "why", "") or self.proc_note,
+               "headroom_ms": 10 * pr.headroom if pr is not None and hasattr(pr, "headroom") else None}
+        snap = self.syswatch.get() if self.syswatch is not None else {"available": False}
+        was = self.finder.latched()
+        for kind, text in self.finder.update(time.monotonic(), snap, app):
+            self.log(Event(t, kind, text, "fault finder"))
+        now_bad = self.finder.latched()
+        if now_bad and not was:
+            with self.lock:
+                if core.arm.armed:
+                    core.arm.request_disarm(t, "auto", now_bad)
+                core.arm.update_health(t, False, now_bad)
+                for e in core.arm.drain_events():
+                    core.log.append(e)
 
     def _pull_native(self):
         """The native side's per-cycle timing into the diagnostics record and the 10 s log line."""
@@ -867,6 +941,8 @@ class BenchApp:
         LOG.info("App Nap: %s", self.app_nap)
         try:
             self._start_processing()
+            self._proc_health = self.core.extra_health
+            self.core.extra_health = self._health
             self._start_web()
             if self.rrcs:
                 self.rrcs.start()
@@ -945,6 +1021,10 @@ class BenchApp:
                 if not a.simulate:
                     self._read_coreaudio(name)
                     self._reopen_local_phones()
+                    self._is_dante = self._dante_in(name)
+                    from .faultfinder import SystemWatch
+                    self.syswatch = SystemWatch()
+                    self.syswatch.start()
                 LOG.info("Soundcard open: %s (%s)", name, self.latency_note)
                 diagnostics.last_crash(clear=True)       # started fine: the setup page stops showing it
                 print(f"Running ({self.latency_note}). Console: http://{a.host}:{a.port}   Ctrl+C to stop")
@@ -955,6 +1035,14 @@ class BenchApp:
                         time.sleep(0.05)
                         self._pull_native()
                         self._watch_soundcard()
+                        now = time.monotonic()
+                        self._log_late(now)
+                        if now >= self._finder_t:
+                            self._finder_t = now + 1.0
+                            try:
+                                self._find_faults()
+                            except Exception:
+                                LOG.exception("The fault finder failed")
                         self._drain()
                         self._save_plugin_states()
                         now = time.monotonic()
@@ -971,6 +1059,17 @@ class BenchApp:
             raise
         finally:
             self._shutdown()
+
+    @staticmethod
+    def _dante_in(name):
+        """Dante Virtual Soundcard, on its own or inside an aggregate device."""
+        if "dante" in (name or "").lower():
+            return True
+        try:
+            from . import coreaudio
+            return any("dante" in x.lower() for x in coreaudio.sub_device_names(name))
+        except Exception:
+            return False
 
     def _read_coreaudio(self, name):
         """What Core Audio says the device is doing now (buffer, latency, safety offsets)."""
@@ -1018,6 +1117,7 @@ class BenchApp:
                          ("RRCS", lambda: self.rrcs and (self.rrcs.set_armed_safe(False), self.rrcs.stop())),
                          ("phones on this computer", self.local_phones.close),
                          ("timing record", lambda: self.trace is not None and self.trace.stop()),
+                         ("system watch", lambda: self.syswatch is not None and self.syswatch.stop()),
                          ("engine thread", self._stop_engine_thread),
                          ("event log", self.events_f.close)):
             try:
@@ -1631,6 +1731,9 @@ def build_parser():
     p.add_argument("--margin-ms", type=float, default=10.0,
                    help="native engine: how much time the engine gets for each block beyond one soundcard buffer "
                         "(adds this much delay; if the engine is ever later, the talkers go dry and HEARTBEAT stops)")
+    p.add_argument("--dante-port", default="auto",
+                   help="the network port Dante Virtual Soundcard uses, e.g. en7, for the fault finder to watch "
+                        "(auto: the wired port with a link; none: don't check)")
     p.add_argument("--track-delay", choices=["auto", "on", "off"], default="auto",
                    help="measure the PA delay into each talker's mic (auto: on unless --simulate)")
     p.add_argument("--project", help="project file shared with the console (default: in the app's settings folder)")

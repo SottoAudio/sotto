@@ -21,6 +21,7 @@ STAGES = ("tests", "exchange", "core", "phones", "record")
 
 
 class TimingTrace:
+    OUTAGE_S = 1.0          # a capture-time jump longer than this is the soundcard stopping, not skipping
     def __init__(self, fs=48000, io_frames=480, block=480, seconds=40):
         self.fs, self.io, self.block = fs, int(io_frames), int(block)
         n_dev = int(seconds * fs / max(16, self.io)) + 1
@@ -39,6 +40,8 @@ class TimingTrace:
         self._last_adc = None
         self.skipped = 0                                    # cycles Core Audio skipped since start
         self.skip_events = 0
+        self.outages = 0                                    # the soundcard stopped (DVS restarted): not skips
+        self.outage_s = 0.0
         self.started_wall = time.time()
         self.lock = threading.Lock()                        # summary()/csv() only, never the audio thread
 
@@ -47,7 +50,10 @@ class TimingTrace:
         if adc == adc and adc > 0:                          # not NaN: count skipped cycles as they happen
             if self._last_adc is not None:
                 d = (adc - self._last_adc) * self.fs / self.io
-                if d > 1.5:
+                if d * self.io / self.fs > self.OUTAGE_S:   # a stop and restart, counted on its own
+                    self.outages += 1
+                    self.outage_s += d * self.io / self.fs
+                elif d > 1.5:
                     self.skipped += int(d + 0.5) - 1
                     self.skip_events += 1
             self._last_adc = adc
@@ -123,6 +129,11 @@ class TimingTrace:
         good = ~np.isnan(adc)
         if good.sum() > 2:
             d = np.diff(adc[good]) * self.fs / self.io          # in cycles; 1.0 = no gap
+            gone = d * self.io / self.fs > self.OUTAGE_S
+            if gone.any():
+                out.append(f"The soundcard stopped {int(gone.sum())} time(s) in this stretch "
+                           f"({np.sum(d[gone]) * self.io / self.fs:.1f} s without audio); not counted as skipped cycles.")
+                d = d[~gone]
             skipped = np.clip(np.round(d) - 1, 0, None)
             lost = skipped.sum()
             events = int((skipped > 0).sum())

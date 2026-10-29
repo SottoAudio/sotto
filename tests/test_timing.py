@@ -37,6 +37,26 @@ class TimingTraceTests(unittest.TestCase):
         self.assertTrue(csv[0].startswith("kind,t_s,capture_s"))
         self.assertEqual(sum(1 for r in csv if r.startswith("cycle,")), 600)
 
+    def test_a_soundcard_restart_is_not_skipped_cycles(self):
+        tr = TimingTrace(48000, 480, 480, seconds=5)
+        period = 480 / 48000
+        t = adc = 50.0
+        for i in range(200):
+            adc += period
+            t += period
+            if i == 100:                                    # DVS restarted: 11.7 s without audio
+                adc += 11.7
+                t += 11.7
+            if i == 150:                                    # and one ordinary skip of 2 cycles
+                adc += 2 * period
+                t += 2 * period
+            tr.cycle(t, adc, 480, 0.03, 0)
+        self.assertEqual((tr.skipped, tr.outages), (2, 1))
+        self.assertAlmostEqual(tr.outage_s, 11.71, places=1)
+        s = tr.summary()
+        self.assertIn("The soundcard stopped 1 time(s)", s)
+        self.assertIn("Skipped cycles (capture time jumped): 2 cycles in 1 places", s)
+
     def test_the_ring_wraps_without_growing(self):
         tr = TimingTrace(48000, 480, 480, seconds=1)
         n = len(tr.dev)

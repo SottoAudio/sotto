@@ -175,6 +175,20 @@ textarea{width:100%;resize:vertical;min-height:70px}
 .chk{display:inline-flex;align-items:center;gap:7px;padding:5px 9px;border:1px solid var(--line);border-radius:7px;background:var(--sunk);font-size:12.5px;min-width:0}
 .chk span{font:600 11.5px/1 var(--f-display);letter-spacing:.07em;text-transform:uppercase;color:var(--muted);white-space:nowrap}
 .chk b{font-weight:500;font-family:var(--f-mono);font-size:12px;white-space:nowrap}
+/* where the problem is: one chip per link, upstream first */
+.chain{display:grid;gap:8px;padding:0 16px 14px}
+.links{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:4px 2px;align-items:center}
+.links li{display:contents}
+.links button{appearance:none;display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border:1px solid var(--line);border-radius:6px;background:var(--sunk);color:var(--muted);font:600 11px/1.2 var(--f-display);letter-spacing:.05em;text-transform:uppercase;cursor:pointer;white-space:nowrap}
+.links button[aria-pressed="true"]{color:var(--ink);border-color:var(--ink)}
+.links button.st-fault{color:var(--err);border-color:var(--err)}
+.links button.st-warn{color:var(--warn);border-color:var(--warn)}
+.links .arr{color:var(--muted);font-size:12px;padding:0 2px}
+.dotl.note{background:transparent;box-shadow:inset 0 0 0 2px var(--warn)}
+.start{border-left:4px solid var(--line);background:var(--sunk);padding:8px 12px;border-radius:6px;font-size:13px;display:grid;gap:3px}
+.start.fault{border-left-color:var(--err);background:var(--err-soft)}.start.warn{border-left-color:var(--warn);background:var(--warn-soft)}
+.start.ok{border-left-color:var(--ok)}
+.start b{font-weight:600}.start .lk{color:var(--ink)}.start .lk em{font-style:normal;font-weight:600}.start small{color:var(--muted)}
 
 /* macro keys: panel-key style */
 .mkeys{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px}
@@ -397,6 +411,10 @@ table.t tr.unused td{color:var(--muted)}
         <div class="hold" title="Checks green, out of the 5 s needed to arm"><i id="holdBar"></i></div>
       </div>
       <div class="checks" id="checks"></div>
+      <div class="chain" id="chain" hidden>
+        <ol class="links" id="chainLinks" aria-label="Signal chain, upstream first"></ol>
+        <div class="start" id="chainStart" role="status" aria-live="polite"></div>
+      </div>
     </div>
 
     <div class="box">
@@ -541,7 +559,7 @@ table.t tr.unused td{color:var(--muted)}
       count: 16,
       ch: Array.from({ length: MAXT }, (_, i) => ({ name: `Talker ${i + 1}`, pos: pos[i] || 'SmartPanel', used: i < 4, mode: 'default', op: i < 4 ? OPIDS[i] : null })),
       operators: defaultOperators(),
-      proc: { mode: 'full', tail: 256, supp: 12, atten: 18, hpf: 100, trim: 0, headroom: 1 },
+      proc: { mode: 'full', tail: 256, supp: 12, atten: 18, hpf: 100, trim: 0, headroom: 2 },
       engine: { driver: 'coreaudio', device: 'dvs', rate: 48000, buffer: 128 },
       rrcs: { host: '10.0.0.10', port: 8193, armed: 'ARMED', armReq: 'ARM_REQ', cleanOk: 'CLEAN_OK', hold: 400, probe: 200 },
       macros: defaultMacros(),
@@ -559,6 +577,8 @@ table.t tr.unused td{color:var(--muted)}
       if (!Array.isArray(P.macros)) P.macros = d.macros;
       if (!Array.isArray(P.operators)) P.operators = d.operators;
       P.ch.forEach((c, i) => { if (c.op === undefined) c.op = d.ch[i].op; });
+      // Saved projects carry headroom 1 from the old default, not from a choice: move them to 20 ms.
+      if (!P.proc.headroomChosen) P.proc.headroom = 2;
     }
   } catch (e) { P = defaults(); }
   function save() { try { localStorage.setItem(KEY, JSON.stringify(P)); } catch (e) {} if (typeof pushProject === 'function') pushProject(); }
@@ -1039,10 +1059,38 @@ table.t tr.unused td{color:var(--muted)}
           <ol class="rsteps">${r.steps.map(s => `<li class="${s.st}"><span class="ic">${ic[s.st]}</span><span>${esc(STEPS[s.t].l(s))}</span><span class="nt">${esc(s.note || '')}</span></li>`).join('')}</ol>`;
       }
     }
+    renderChain();
     meters(now, dtms);
     if (logDirty) { logDirty = false; $('#log').innerHTML = S.log.map(x => `<tr><td class="n">${x[0]}</td><td>${esc(x[1])}</td><td class="src">${esc(x[2])}</td></tr>`).join(''); }
     audioUpdate();
   }
+  // where the problem is (the fault finder in Sotto Voce): upstream first; the first link that isn't
+  // working is where to start, and the box under the chips says where to look
+  let chainSig = '';
+  const CHAIN_DOT = { ok: 'ok', note: 'note', warn: 'warn', fault: 'err', off: '' };
+  function renderChain() {
+    const c = APP && S.alive ? APP.chain : null, box = $('#chain');
+    if (!c) { if (!box.hidden) box.hidden = true; chainSig = ''; return; }
+    box.hidden = false;
+    const sel = UI.chainSel && c.links.some(l => l.key === UI.chainSel) ? UI.chainSel : null;
+    const sig = JSON.stringify([c.links.map(l => [l.state, l.what, l.look, l.because]), c.root, sel]);
+    if (sig === chainSig) return;
+    chainSig = sig;
+    $('#chainLinks').innerHTML = c.links.map((l, i) => `<li>${i ? '<span class="arr" aria-hidden="true">›</span>' : ''}<button data-link="${l.key}" class="st-${l.state}" aria-pressed="${sel === l.key}" title="${esc(l.what + (l.look ? ' Look at: ' + l.look : ''))}"><i class="dotl ${CHAIN_DOT[l.state] || ''}"></i>${esc(l.label)}</button></li>`).join('');
+    const L = c.links.find(l => l.key === (sel || c.root));
+    const el = $('#chainStart');
+    if (!L) { el.className = 'start ok'; el.innerHTML = `<span><b>Every link is working.</b> Select a link to see its detail.</span>`; return; }
+    el.className = 'start ' + (L.state === 'fault' ? 'fault' : L.state === 'warn' ? 'warn' : '');
+    const lead = !sel || sel === c.root ? (c.root ? 'Start here: ' : '') : '';
+    const follows = L.because ? c.links.find(x => x.key === L.because) : null;
+    el.innerHTML = `<span><b>${lead}${esc(L.label)}.</b> ${esc(L.what)}${L.since ? ` <small>since ${esc(L.since)}</small>` : ''}</span>` +
+      (L.look ? `<span class="lk"><em>Look at:</em> ${esc(L.look)}</span>` : '') +
+      (follows ? `<small>Probably follows from ${esc(follows.label)}: start there.</small>` : '');
+  }
+  $('#chainLinks').addEventListener('click', e => {
+    const b = e.target.closest('[data-link]'); if (!b) return;
+    UI.chainSel = UI.chainSel === b.dataset.link ? null : b.dataset.link; chainSig = ''; renderChain();
+  });
   $('#runner').addEventListener('click', e => {
     if (e.target.id === 'cancelRun' && S.run) { S.run.state = 'cancelled'; S.run.steps.forEach(s => { if (s.st === 'run' || s.st === 'wait') s.st = 'skip'; }); log(`Macro cancelled: ${S.run.name}`, 'console'); }
     if (e.target.id === 'clearRun') S.run = null;
@@ -1194,7 +1242,7 @@ table.t tr.unused td{color:var(--muted)}
   }
   function secProcessing() {
     const pp = P.proc, buf = P.engine.buffer / (P.engine.rate / 1000);
-    const hr = pp.headroom || 1;
+    const hr = pp.headroom || 2;
     const lat = 2 * buf + (pp.mode === 'full' ? 10 : 0) + 10 * (hr - 1);
     const armedNow = APP && APP.armed;
     const own = P.ch.slice(0, P.count).map((c, i) => i).filter(i => P.ch[i].used && modeIsOwn(i)).length;
@@ -1258,6 +1306,17 @@ table.t tr.unused td{color:var(--muted)}
     const opts = [5, 10, 20, 40].map(v => `<option value="${v}"${+v === +pick ? ' selected' : ''}>${v} ms${v === 10 ? ' (default)' : ''}</option>`).join('');
     return row('Engine safety margin', 'How far ahead of the soundcard Sotto Voce\'s engine works. More margin rides out longer hiccups but adds that much delay. If the engine is ever later than this, the talkers play dry and HEARTBEAT stops until you re-arm. The diagnostics file shows how close it gets (\'Native engine margin\').',
       `<select id="f-margin">${opts}</select><button class="btn sm" data-act="marginapply"${+pick === +cur ? ' disabled' : ''}>Apply (restarts the engine)</button>`);
+  }
+  function dantePortRow() {
+    const c = APP && APP.chain;
+    if (!c) return '';
+    const cur = c.port_setting || 'auto';
+    const opts = [['auto', `Find it (${c.port ? 'watching ' + c.port : 'the wired port with a link'})`],
+      ...c.ports.map(p => [p.dev, `${p.name} (${p.dev})${p.active ? `, link up${p.speed_mbps ? ' ' + p.speed_mbps + ' Mb/s' : ''}` : p.active === false ? ', no link' : ''}${p.ipv4 && p.ipv4.length ? ', ' + p.ipv4[0] : ''}`]),
+      ...(cur !== 'auto' && cur !== 'none' && !c.ports.some(p => p.dev === cur) ? [[cur, `${cur} (not there now)`]] : []),
+      ['none', 'Don\'t check']];
+    return row('Dante network port', 'The wired port Dante Virtual Soundcard uses. Sotto Voce watches its link and address: if the link drops, it disarms and the Live page says to start at the network port. Pick the port if the Mac has more than one wired port with a link.',
+      `<select id="f-dport">${opts.map(([v, l]) => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>`);
   }
   function latencyRow(e) {
     const pa = e.pa_latency_ms || {}, pr = (APP && APP.processing) || {};
@@ -1535,6 +1594,7 @@ table.t tr.unused td{color:var(--muted)}
         (e.simulate ? '' : appDeviceRow(e)) +
         (e.simulate ? '' : appBufferRow(e)) +
         (e.native ? marginRow(e) : '') +
+        (e.simulate ? '' : dantePortRow()) +
         (e.simulate ? '' : phonesRow(e)) +
         latencyRow(e) +
         row('Audio path', e.native ? 'The soundcard\'s real-time thread only copies audio, in native code; Sotto Voce\'s engine runs on its own thread with a safety margin. If the engine is ever later than the margin, the talkers play dry with a short fade and HEARTBEAT stops until you re-arm.' : 'The engine runs inside the soundcard\'s real-time callback (the older way): anything that holds it up can drop audio.',
@@ -1785,6 +1845,7 @@ table.t tr.unused td{color:var(--muted)}
     if (el.dataset.t === 'n') v = +v;
     if (v === 'true') v = true; else if (v === 'false') v = false;
     setPath(P, el.dataset.b, v);
+    if (el.dataset.b === 'proc.headroom') P.proc.headroomChosen = true;   // a real choice: keep it
     P.count = clamp(Math.round(+P.count || 1), 1, 60);
     if (el.type === 'range') { const o = el.parentElement.querySelector('output'); if (o) o.textContent = `${v} ${o.textContent.split(' ').pop()}`; }
     if (el.dataset.b.startsWith('engine')) UI.check = null;
@@ -1817,6 +1878,12 @@ table.t tr.unused td{color:var(--muted)}
       return;
     }
     if (e.target.id === 'f-margin') { UI.marginPick = +e.target.value; renderSet(); return; }
+    if (e.target.id === 'f-dport') {
+      const port = e.target.value;
+      api('/cmd', { cmd: 'dante_port', port, source: 'console' }).then(r => { if (r.ok === false) toast(r.error); else { if (APP && APP.chain) APP.chain.port_setting = port; toast(port === 'none' ? 'Network port: not checked' : port === 'auto' ? 'Network port: Sotto Voce finds it' : `Watching ${port}`); } })
+        .catch(() => toast('Sotto Voce did not answer'));
+      return;
+    }
     if (e.target.id === 'f-op-ch') { assignOp(UI.op, e.target.value === '' ? null : +e.target.value); return; }
     const el = e.target.closest('[data-b]'); if (!el) return; bindEl(el, !(el.type === 'text' || el.tagName === 'TEXTAREA')); });
   ['dragenter', 'dragover'].forEach(ev => $('#setBody').addEventListener(ev, e => {
@@ -2006,6 +2073,7 @@ table.t tr.unused td{color:var(--muted)}
     if (!Array.isArray(P.ch) || P.ch.length !== MAXT) P.ch = d.ch;
     if (!Array.isArray(P.operators)) P.operators = d.operators;
     if (!Array.isArray(P.macros)) P.macros = d.macros;
+    if (!P.proc.headroomChosen) P.proc.headroom = 2;
     P.count = n;
     for (let i = 0; i < n; i++) P.ch[i].used = true;
   }

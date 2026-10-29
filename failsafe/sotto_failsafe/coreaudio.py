@@ -223,6 +223,17 @@ def channel_names(name):
         return None
 
 
+def sub_device_names(name):
+    """The names of an aggregate device's sub-devices ([] for an ordinary device)."""
+    if sys.platform != "darwin" or not name:
+        return []
+    try:
+        obj = next((d for d in _array(SYSTEM_OBJECT, P["devices"]) if _name(d) == name), None)
+        return [] if obj is None else [_name(s) or "" for s in _array(obj, P["sub_devices"])]
+    except Exception:
+        return []
+
+
 def find(name):
     """The device whose name matches (exactly, else the first that contains it)."""
     if not name:

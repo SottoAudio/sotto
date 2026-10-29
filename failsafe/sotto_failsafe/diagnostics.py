@@ -484,9 +484,15 @@ def build_report(app=None, setup_config=None, run_speed_test=True):
     if ff is not None and ff.root:
         st = ff.state()
         found.insert(0, st["headline"] + (f" Look at: {st['look']}" if st["look"] else ""))
+    sh = getattr(app, "shadow", None) if app is not None else None
+    if sh is not None and sh.blocks and sh.matched < sh.blocks:
+        found.insert(0, f"The C core differed from the Python core on {sh.blocks - sh.matched} of {sh.blocks} blocks. "
+                        "See 'C core (shadow)'.")
     sec("What looks wrong", "\n".join(f"- {x}" for x in found))
     if ff is not None:
         sec("Where the problem is (each link in the chain, upstream first)", safe(ff.report))
+    if sh is not None:
+        sec("C core (shadow): the fail-safe core in C, compared with the Python one on every block", safe(sh.report))
     sec("Build", {**build_info(), "packages": safe(package_versions)})
     sec("Computer", sysinfo)
     sec("Audio devices (PortAudio, what Sotto Voce can open)", devs)

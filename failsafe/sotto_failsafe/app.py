@@ -197,6 +197,8 @@ class BenchApp:
         self.syswatch = None
         self._finder_t = 0.0
         self._is_dante = False
+        self.shadow = None                               # the C core beside the Python one (ccore.Shadow)
+        self._ext_ok = True                              # this block's checks outside the core, for the shadow
         self._wg_gen = 0                                 # bumped when the soundcard (re)opens: rejoin its workgroup
         from .phones import LocalPhones
         from .testsrc import TestSources
@@ -394,6 +396,7 @@ class BenchApp:
         s["local_phones"] = self.local_phones.state()
         s["processing"] = self.proc.state() if self.proc is not None else {"on": False, "why": self.proc_note}
         s["chain"] = self.finder.state()
+        s["c_core"] = self.shadow.state() if self.shadow is not None else {"note": getattr(self, "shadow_note", "off")}
         if self.proc is not None:
             s["processing"]["plugins_available"] = self.vst3 is not None
         return s
@@ -648,12 +651,56 @@ class BenchApp:
         self._was_armed = armed
 
     def _health(self):
+        ok, why = self._health_now()
+        self._ext_ok = ok                            # the C core in shadow gets the same answer
+        return ok, why
+
+    def _health_now(self):
         why = self.finder.latched()                  # the network port or the soundcard itself
         if why:
             return False, why
         if self.native is not None and self.core.t < self._native_bad_until:
             return False, self._native_why
         return self._proc_health() if self._proc_health is not None else (True, "")
+
+    def _start_shadow(self, n_in, n_out):
+        """Stage 2: the C core runs beside the Python one, from the same input and the same
+        commands, and every difference is counted. Python still drives the outputs."""
+        from . import ccore
+        try:
+            sh = ccore.Shadow(self.core, n_in, n_out)
+        except Exception as e:
+            LOG.warning("C core not running in shadow: %s", e)
+            self.shadow_note = f"not running ({e})"
+            return
+        arm, core = self.core.arm, self.core
+        ra, rd, tt, inj, clr = arm.request_arm, arm.request_disarm, arm.trip_talker, core.inject, core.clear_faults
+
+        def request_arm(t, source, talker=None):
+            ok, msg = ra(t, source, talker)
+            sh.arm(talker, ok)
+            return ok, msg
+
+        def request_disarm(t, source, why="disarmed by engineer"):
+            rd(t, source, why)
+            sh.disarm()
+
+        def trip_talker(t, talker, why, source="auto"):
+            tt(t, talker, why, source)
+            sh.trip(talker)
+
+        def inject(name, seconds=None, ms=None):
+            inj(name, seconds=seconds, ms=ms)
+            sh.inject(name, seconds)
+
+        def clear_faults():
+            clr()
+            sh.clear_faults()
+        arm.request_arm, arm.request_disarm, arm.trip_talker = request_arm, request_disarm, trip_talker
+        core.inject, core.clear_faults = inject, clear_faults
+        self.shadow = sh
+        self.shadow_note = "running in shadow: Python drives the outputs, the C core's are compared"
+        LOG.info("C core: %s", self.shadow_note)
 
     def _log_late(self, now):
         """Engine-late cycles as one event every 2 s at most, not one per cycle."""
@@ -890,6 +937,8 @@ class BenchApp:
                 t1 = t2
                 with self.lock:
                     self.core.process(indata, outdata, status, returns=out.T, dry=dry.T)
+                    if self.shadow is not None:
+                        self.shadow.block(indata, outdata, status, out.T, dry.T, self._ext_ok)
                     for i, why in self.proc.drain_faults():
                         self.core.arm.trip_talker(self.core.t, i, why, "auto")
                         for e in self.core.arm.drain_events():
@@ -897,6 +946,8 @@ class BenchApp:
             else:
                 with self.lock:
                     self.core.process(indata, outdata, status)
+                    if self.shadow is not None:
+                        self.shadow.block(indata, outdata, status, None, None, self._ext_ok)
             t2 = pc()
             st[2] = 1000 * (t2 - t1)
             if self.local_phones.stream is not None and self.cfg.monitor_out:
@@ -959,6 +1010,8 @@ class BenchApp:
             self._start_processing()
             self._proc_health = self.core.extra_health
             self.core.extra_health = self._health
+            if a.c_core != "off":
+                self._start_shadow(n_in, n_out)
             self._start_web()
             if self.rrcs:
                 self.rrcs.start()
@@ -1764,6 +1817,8 @@ def build_parser():
     p.add_argument("--margin-ms", type=float, default=10.0,
                    help="native engine: how much time the engine gets for each block beyond one soundcard buffer "
                         "(adds this much delay; if the engine is ever later, the talkers go dry and HEARTBEAT stops)")
+    p.add_argument("--c-core", choices=["shadow", "off"], default="shadow",
+                   help="run the fail-safe core in C beside the Python one and compare every block (stage 2)")
     p.add_argument("--dante-port", default="auto",
                    help="the network port Dante Virtual Soundcard uses, e.g. en7, for the fault finder to watch "
                         "(auto: the wired port with a link; none: don't check)")

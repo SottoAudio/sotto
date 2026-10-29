@@ -198,6 +198,9 @@ class BenchApp:
         self._finder_t = 0.0
         self._is_dante = False
         self.shadow = None                               # the C core beside the Python one (ccore.Shadow)
+        self.cengine = None                              # the engine in C (cengine.CEngine), stage 3
+        self._c_late_seen = 0
+        self._c_wg_seen = 0
         self._ext_ok = True                              # this block's checks outside the core, for the shadow
         self._wg_gen = 0                                 # bumped when the soundcard (re)opens: rejoin its workgroup
         from .phones import LocalPhones
@@ -586,6 +589,8 @@ class BenchApp:
         self._eng_thread.start()
 
     def _stop_engine_thread(self):
+        if self.cengine is not None:
+            self.cengine.stop()                          # before the rings it reads go away
         if getattr(self, "_eng_thread", None) is not None:
             self._eng_stop.set()
             self._eng_thread.join(2.0)
@@ -593,6 +598,8 @@ class BenchApp:
         if self.native is not None:
             self.native.close()
             self.native.destroy()
+        if self.cengine is not None:
+            self.cengine.destroy()
 
     def _engine_loop(self, n_in, n_out):
         """Sotto Voce's engine on its own thread: a 10 ms block in, the same engine as before, a
@@ -662,6 +669,101 @@ class BenchApp:
         if self.native is not None and self.core.t < self._native_bad_until:
             return False, self._native_why
         return self._proc_health() if self._proc_health is not None else (True, "")
+
+    # ------------------------------------------------------------ the engine in C (stage 3)
+    def _want_c_engine(self):
+        a = self.a
+        if a.engine != "c" or a.native_io == "off":
+            return False
+        from . import cengine
+        if cengine.library() is None:
+            LOG.warning("C engine: this build doesn't have it; the engine runs in Python")
+            return False
+        if self.proc is not None and not hasattr(self.proc, "workers"):
+            LOG.warning("C engine: processing runs inside this process (no workers); the engine runs in Python")
+            return False
+        if a.block != 480:
+            LOG.warning("C engine: needs 480-sample blocks; the engine runs in Python")
+            return False
+        return True
+
+    def _start_c_engine(self, n_in, n_out):
+        from . import cengine
+        try:
+            ce = cengine.CEngine(self.native, self.cfg, n_in, n_out, self.a.block)
+            if self.proc is not None:
+                ce.attach_pool(self.proc)
+            ce.attach(self.core)
+        except Exception:
+            LOG.exception("C engine couldn't start; the engine runs in Python")
+            return
+        self.cengine = ce
+        self.shadow_note = "not needed: the engine itself runs in C"
+        LOG.info("C engine: the 10 ms engine runs in C on its own real-time thread; Python only controls it")
+
+    def _ext_health(self):
+        """The checks Sotto Voce makes outside the C engine: the network port and the soundcard."""
+        why = self.finder.latched()
+        if why:
+            return False, why
+        if self.core.t < self._native_bad_until:
+            return False, self._native_why
+        return True, ""
+
+    def _pull_cengine(self):
+        """The control room's side of the C engine, every 50 ms: checks in; events, state, timing,
+        recording, phones and test sources out."""
+        ce, core = self.cengine, self.core
+        st = ce.stats()
+        ok, why = self._ext_health()
+        ce.set_ext(ok, why)
+        for e in ce.events():
+            core.log.append(e)
+        ce.sync()
+        for e in core.arm.drain_events():
+            core.log.append(e)
+        ce.sync_pool(st)
+        late = int(st["late_total"])
+        if late > self._c_late_seen:
+            self._late_total += late - self._c_late_seen
+            self._c_late_seen = late
+        if self.proc is not None:
+            for i, why in self.proc.drain_faults():
+                core.arm.trip_talker(core.t, i, why, "auto")
+        rows = ce.timing()
+        g = self.gaps
+        for r in rows:
+            t0, ms = float(r[0]), float(r[1])
+            if self._cb_last is not None:
+                gap = 1000 * (t0 - self._cb_last)
+                g["n"] += 1
+                g["min_ms"] = min(g["min_ms"], gap)
+                g["max_ms"] = max(g["max_ms"], gap)
+                if gap < 3.0:
+                    g["bunched"] += 1
+                elif gap > 17.0:
+                    g["late"] += 1
+            self._cb_last = t0
+            self.cb_ms = 0.98 * self.cb_ms + 0.02 * ms
+            self.cb_ms_max = max(self.cb_ms_max * 0.999, ms)
+            if self.trace is not None:
+                self.trace.block_done(t0, ms, r[2:7], int(r[7]), 0, float(r[8]), float(r[9]))
+        for blk in ce.recording():
+            if self.rec.on:
+                self.rec.push(blk.copy())
+        if self.local_phones.stream is not None:
+            for blk in ce.phones():
+                self.local_phones.push(blk[:, 0].copy(), blk[:, 1].copy())
+        else:
+            ce.phones()
+        if not core.arm.armed:
+            ce.feed_tests(self.tests)
+        if self._wg_gen != self._c_wg_seen:
+            self._c_wg_seen = self._wg_gen
+            ce.set_workgroup_device((self.coreaudio or {}).get("id"))
+        if isinstance(getattr(self, "engine_info", None), dict):
+            self.engine_info["engine_thread"] = ce.thread_note()
+            self.engine_info["c_engine"] = {k: (round(v, 3) if isinstance(v, float) else v) for k, v in st.items()}
 
     def _start_shadow(self, n_in, n_out):
         """Stage 2: the C core runs beside the Python one, from the same input and the same
@@ -1010,7 +1112,8 @@ class BenchApp:
             self._start_processing()
             self._proc_health = self.core.extra_health
             self.core.extra_health = self._health
-            if a.c_core != "off":
+            want_c = self._want_c_engine()
+            if a.c_core != "off" and not want_c:
                 self._start_shadow(n_in, n_out)
             self._start_web()
             if self.rrcs:
@@ -1035,6 +1138,8 @@ class BenchApp:
                 LOG.info("Native audio: the soundcard's thread only copies audio; the engine runs on its own thread, "
                          "%.1f ms behind the input (engine deadline %.1f ms per block)", self.native.added_ms,
                          a.margin_ms + 1000 * io / cfg.fs)
+                if want_c:
+                    self._start_c_engine(n_in, n_out)
             elif a.io_buffer and a.io_buffer != a.block:
                 from .regroup import Regrouper
                 self.regroup = Regrouper(n_in, n_out, a.block, a.io_buffer)
@@ -1066,7 +1171,10 @@ class BenchApp:
                 else:
                     stream = sd.Stream(device=dev, samplerate=cfg.fs, blocksize=io, channels=(n_in, n_out),
                                        dtype="float32", latency=lat, callback=cb)
-            if self.native:
+            if self.cengine is not None:
+                self.cengine.start()
+                LOG.info("C engine started: %s", self.cengine.thread_note())
+            elif self.native:
                 self._start_engine_thread(n_in, n_out)
             self._settle_memory()
             with stream as st:
@@ -1080,7 +1188,9 @@ class BenchApp:
                         name = str(a.device)
                 self.engine_info = {"device": "simulated" if a.simulate else str(a.device), "device_name": name,
                                     "native": bool(self.native),
-                                    "engine_thread": getattr(self, "engine_thread_note", "") if self.native else None,
+                                    "engine": "C" if self.cengine is not None else "Python",
+                                    "engine_thread": (self.cengine.thread_note() if self.cengine is not None else
+                                                      getattr(self, "engine_thread_note", "")) if self.native else None,
                                     "margin_ms": round(a.margin_ms, 1) if self.native else None,
                                     "added_ms": round(self.native.added_ms, 2) if self.native else None,
                                     "app_nap": self.app_nap, "display_awake": macos.DISPLAY_AWAKE,
@@ -1110,6 +1220,9 @@ class BenchApp:
                         with span("main: native timing"):
                             self._pull_native()
                             self._watch_soundcard()
+                        if self.cengine is not None:
+                            with span("main: C engine"):
+                                self._pull_cengine()
                         now = time.monotonic()
                         self._log_late(now)
                         if now >= self._finder_t:
@@ -1817,6 +1930,8 @@ def build_parser():
     p.add_argument("--margin-ms", type=float, default=10.0,
                    help="native engine: how much time the engine gets for each block beyond one soundcard buffer "
                         "(adds this much delay; if the engine is ever later, the talkers go dry and HEARTBEAT stops)")
+    p.add_argument("--engine", choices=["c", "python"], default="c",
+                   help="where the 10 ms engine runs: in C on its own real-time thread (stage 3), or in Python")
     p.add_argument("--c-core", choices=["shadow", "off"], default="shadow",
                    help="run the fail-safe core in C beside the Python one and compare every block (stage 2)")
     p.add_argument("--dante-port", default="auto",

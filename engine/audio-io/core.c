@@ -198,6 +198,12 @@ SC_API int sc_request_arm(SC *c, int talker) {
 
 SC_API void sc_request_disarm(SC *c) { disarm(c, sc_time(c), WHY_REQUEST, 0); }
 
+/* A disarm that says why: 5 = the engine was late, 6 = processing can't keep up, 3 = a check
+ * Sotto Voce makes outside the core (its reason stays on the Python side). */
+SC_API void sc_disarm_why(SC *c, int why, int arg) { disarm(c, sc_time(c), why ? why : WHY_REQUEST, arg); }
+
+SC_API int sc_armed(SC *c) { return c->armed; }
+
 SC_API void sc_trip_talker(SC *c, int talker) {
     if (talker < 0 || talker >= c->nt || !c->tarmed[talker]) return;
     c->tarmed[talker] = 0;

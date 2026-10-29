@@ -272,6 +272,12 @@ class _Worker:
             args=(self.wid, names, settings, self.pool.model, self.shm.name, self.g, self.in_sem, self.out_sem,
                   child, self.pool.up, self.pool.track_delay))
         self.proc.start()
+        cb = getattr(self.pool, "on_worker_start", None)
+        if cb is not None:                               # the C engine needs the new semaphores
+            try:
+                cb(self)
+            except Exception:
+                LOG.exception("Could not hand worker %d's semaphores to the engine", self.wid + 1)
 
     def request(self, op, *args, timeout=30.0):
         return self.pool._request(self, op, args, timeout)

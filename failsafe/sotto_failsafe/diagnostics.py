@@ -491,6 +491,10 @@ def build_report(app=None, setup_config=None, run_speed_test=True):
     sec("What looks wrong", "\n".join(f"- {x}" for x in found))
     if ff is not None:
         sec("Where the problem is (each link in the chain, upstream first)", safe(ff.report))
+    ce = getattr(app, "cengine", None) if app is not None else None
+    if ce is not None:
+        sec("Engine in C (stage 3): the 10 ms engine on its own real-time thread",
+            safe(lambda: {"thread": ce.thread_note(), **ce.stats()}))
     if sh is not None:
         sec("C core (shadow): the fail-safe core in C, compared with the Python one on every block", safe(sh.report))
     sec("Build", {**build_info(), "packages": safe(package_versions)})

@@ -541,7 +541,7 @@ table.t tr.unused td{color:var(--muted)}
       count: 16,
       ch: Array.from({ length: MAXT }, (_, i) => ({ name: `Talker ${i + 1}`, pos: pos[i] || 'SmartPanel', used: i < 4, mode: 'default', op: i < 4 ? OPIDS[i] : null })),
       operators: defaultOperators(),
-      proc: { mode: 'full', tail: 256, supp: 12, atten: 18, hpf: 100, trim: 0, headroom: 1 },
+      proc: { mode: 'full', tail: 256, supp: 12, atten: 18, hpf: 100, trim: 0, headroom: 2 },
       engine: { driver: 'coreaudio', device: 'dvs', rate: 48000, buffer: 128 },
       rrcs: { host: '10.0.0.10', port: 8193, armed: 'ARMED', armReq: 'ARM_REQ', cleanOk: 'CLEAN_OK', hold: 400, probe: 200 },
       macros: defaultMacros(),
@@ -559,6 +559,8 @@ table.t tr.unused td{color:var(--muted)}
       if (!Array.isArray(P.macros)) P.macros = d.macros;
       if (!Array.isArray(P.operators)) P.operators = d.operators;
       P.ch.forEach((c, i) => { if (c.op === undefined) c.op = d.ch[i].op; });
+      // Saved projects carry headroom 1 from the old default, not from a choice: move them to 20 ms.
+      if (!P.proc.headroomChosen) P.proc.headroom = 2;
     }
   } catch (e) { P = defaults(); }
   function save() { try { localStorage.setItem(KEY, JSON.stringify(P)); } catch (e) {} if (typeof pushProject === 'function') pushProject(); }
@@ -1194,7 +1196,7 @@ table.t tr.unused td{color:var(--muted)}
   }
   function secProcessing() {
     const pp = P.proc, buf = P.engine.buffer / (P.engine.rate / 1000);
-    const hr = pp.headroom || 1;
+    const hr = pp.headroom || 2;
     const lat = 2 * buf + (pp.mode === 'full' ? 10 : 0) + 10 * (hr - 1);
     const armedNow = APP && APP.armed;
     const own = P.ch.slice(0, P.count).map((c, i) => i).filter(i => P.ch[i].used && modeIsOwn(i)).length;
@@ -1785,6 +1787,7 @@ table.t tr.unused td{color:var(--muted)}
     if (el.dataset.t === 'n') v = +v;
     if (v === 'true') v = true; else if (v === 'false') v = false;
     setPath(P, el.dataset.b, v);
+    if (el.dataset.b === 'proc.headroom') P.proc.headroomChosen = true;   // a real choice: keep it
     P.count = clamp(Math.round(+P.count || 1), 1, 60);
     if (el.type === 'range') { const o = el.parentElement.querySelector('output'); if (o) o.textContent = `${v} ${o.textContent.split(' ').pop()}`; }
     if (el.dataset.b.startsWith('engine')) UI.check = null;
@@ -2006,6 +2009,7 @@ table.t tr.unused td{color:var(--muted)}
     if (!Array.isArray(P.ch) || P.ch.length !== MAXT) P.ch = d.ch;
     if (!Array.isArray(P.operators)) P.operators = d.operators;
     if (!Array.isArray(P.macros)) P.macros = d.macros;
+    if (!P.proc.headroomChosen) P.proc.headroom = 2;
     P.count = n;
     for (let i = 0; i < n; i++) P.ch[i].used = true;
   }

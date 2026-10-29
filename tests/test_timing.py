@@ -65,7 +65,7 @@ class TimingTraceTests(unittest.TestCase):
             if i == 100:                       # held up: 25 ms, but the engine only ran for 1 ms
                 with_span = (t + 0.002, t + 0.020)
                 tr.span_done("web GET /api/state", *with_span)
-                tr.block_done(t, 25.0, [0.1, 0.2, 24.5, 0.0, 0.2], 0, 0, cpu_ms=1.0)
+                tr.block_done(t, 25.0, [0.1, 0.2, 24.5, 0.0, 0.2], 0, 0, cpu_ms=1.0, proc_ms=22.0)
             elif i == 200:                     # working: 12 ms of its own CPU, nothing else running
                 tr.block_done(t, 12.0, [0.1, 11.0, 0.7, 0.0, 0.2], 0, 0, cpu_ms=11.5)
             else:
@@ -75,6 +75,7 @@ class TimingTraceTests(unittest.TestCase):
         self.assertIn("Working (the engine thread used the CPU for most of it): 1", r)
         self.assertIn("Waiting (it wasn't running for most of it", r)
         self.assertIn("web GET /api/state 1", r)
+        self.assertIn("(Python's lock: only one Python thread runs at a time) in 1", r)
         self.assertIn("nothing else recorded during 1", r)
         self.assertIn("core 2", "".join(r.split("biggest stage each time): ")[1:]) or r)
         with tr.span("main: stats line"):

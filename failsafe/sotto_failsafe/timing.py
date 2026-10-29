@@ -57,7 +57,7 @@ class TimingTrace:
         self.span_names, self._span_ids = [], {}
         self.thread_names, self._thread_ids = [], {}
         # every engine block over STALL_MS since start (the last 512): start, wall ms, CPU ms, stage ms
-        self.stalls = np.full((512, 3 + len(STAGES)), np.nan)
+        self.stalls = np.full((512, 4 + len(STAGES)), np.nan)   # + CPU of the whole Sotto Voce process
         self.stall_i = 0
         self.stall_total = 0
         self.gc_rows = np.full((512, 3), np.nan)            # wall time, generation, pause ms
@@ -88,7 +88,7 @@ class TimingTrace:
         r[0], r[1], r[2], r[3], r[4], r[5] = t, adc, frames, cb_ms, status_bits, margin
         self.dev_i += 1
 
-    def block_done(self, t, engine_ms, stages, late_workers, queue, cpu_ms=float("nan")):
+    def block_done(self, t, engine_ms, stages, late_workers, queue, cpu_ms=float("nan"), proc_ms=float("nan")):
         i = self.blk_i % len(self.blk)
         r = self.blk[i]
         r[0], r[1], r[2], r[3] = t, engine_ms, late_workers, queue
@@ -101,6 +101,7 @@ class TimingTrace:
             s[0], s[1], s[2] = t, engine_ms, cpu_ms
             for k, v in enumerate(stages):
                 s[3 + k] = v
+            s[3 + len(STAGES)] = proc_ms
             self.stall_i += 1
             self.stall_total += 1
 
@@ -141,7 +142,18 @@ class TimingTrace:
                    f"Working (the engine thread used the CPU for most of it): {working}. Waiting (it wasn't running "
                    f"for most of it: held up by another Python thread, or macOS ran something else): {waiting}. "
                    f"In between: {len(st) - working - waiting}.")
-        by_stage = {name: int(np.sum(np.nanargmax(np.nan_to_num(st[:, 3:], nan=-1), axis=1) == k))
+        # Waiting for what? If the rest of Sotto Voce used the CPU while the engine waited, another of
+        # its threads had Python's lock; if the whole process sat idle, macOS wasn't running it.
+        other = st[:, 3 + len(STAGES)] - cpu
+        idle = wall - cpu
+        wt = has_cpu & (cpu < 0.3 * wall) & ~np.isnan(other)
+        if wt.any():
+            gil = int(np.sum(wt & (other >= 0.5 * idle)))
+            osw = int(np.sum(wt & (other < 0.2 * idle)))
+            out.append(f"Of the waiting ones: another Sotto Voce thread was busy for most of the wait (Python's lock: "
+                       f"only one Python thread runs at a time) in {gil}; the whole of Sotto Voce sat idle (macOS "
+                       f"wasn't running it) in {osw}; in between {int(wt.sum()) - gil - osw}.")
+        by_stage = {name: int(np.sum(np.nanargmax(np.nan_to_num(st[:, 3:3 + len(STAGES)], nan=-1), axis=1) == k))
                     for k, name in enumerate(STAGES)}
         out.append("Where in the block the time went (the biggest stage each time): "
                    + ", ".join(f"{k} {v}" for k, v in by_stage.items() if v) + ".")
@@ -164,8 +176,10 @@ class TimingTrace:
                 what = "; ".join(
                     f"{self.span_names[int(r[2])]} ({1000 * (r[1] - r[0]):.1f} ms, {self.thread_names[int(r[3])]})"
                     for r in ov[:6]) or "nothing else recorded"
+                pm = st[i, 3 + len(STAGES)]
                 details.append(f"  at +{t0 - self.t_start:8.2f} s: {st[i, 1]:.1f} ms, engine CPU "
-                               f"{'?' if np.isnan(st[i, 2]) else f'{st[i, 2]:.1f}'} ms [{stg}] | at the same time: {what}"
+                               f"{'?' if np.isnan(st[i, 2]) else f'{st[i, 2]:.1f}'} ms, all of Sotto Voce "
+                               f"{'?' if np.isnan(pm) else f'{pm:.1f}'} ms [{stg}] | at the same time: {what}"
                                + (f"; garbage collection {np.max(g[:, 2]):.1f} ms" if len(g) else ""))
         if counts:
             out.append("Other work running during these stalls (how many stalls each overlapped): "

@@ -160,7 +160,12 @@ static void sem_take_nowait(void *h) {           /* a barrier, as Python's acqui
 #define NTEST 32
 #define STAGES 5
 
-enum { CMD_ARM = 1, CMD_DISARM, CMD_TRIP, CMD_INJECT, CMD_CLEAR, CMD_SOLO, CMD_HEADROOM, CMD_WORKER, CMD_FREEZE };
+enum { CMD_ARM = 1, CMD_DISARM, CMD_TRIP, CMD_INJECT, CMD_CLEAR, CMD_SOLO, CMD_HEADROOM, CMD_WORKER, CMD_FREEZE,
+       CMD_TESTS };
+/* A test-source loop as Python hands it over (its samples stay alive in Python until the next plan
+ * has been taken): the input channel it replaces, the samples, how many, the gain. */
+typedef struct { int32_t ch; int32_t pad; const float *x; int64_t n; double gain; } TLoop;
+#define MAXLOOPS 64
 /* an arm request's answer: 1 armed; 0 not green long enough (or everyone not armed yet); -1 no such
  * talker; -2 too old (asked more than ARM_MAX_AGE ago); -3 a check outside the core is red (the
  * network, the soundcard, processing, the engine just late); -4 no audio arriving */
@@ -222,7 +227,12 @@ typedef struct SE {
     float *rec; volatile int64_t rec_w, rec_r; int64_t rec_dropped;
     int mon_l, mon_r;
     float *ph; volatile int64_t ph_w, ph_r;
-    /* ring in: test sources */
+    /* test sources, played here: the loops and the clock every loop follows */
+    TLoop loops[MAXLOOPS];
+    int nloops;
+    int64_t tclock;
+    uint8_t tch[512];                  /* which inputs the plan replaces */
+    /* ring in: test sources (older path, unused) */
     float *test; uint8_t *test_mask; volatile int64_t test_w, test_r; int64_t test_short;
     int64_t blocks;
 } SE;
@@ -389,6 +399,17 @@ static void apply_cmd(SE *e, Cmd *c, double *res) {
             e->w[c->a] = w;
         }
         break;
+    case CMD_TESTS: {                   /* a new plan: p0 = TLoop[a] (copied here), or a = 0 for none */
+        int n = c->a < 0 ? 0 : c->a > MAXLOOPS ? MAXLOOPS : c->a;
+        const TLoop *src = (const TLoop *)c->p0;
+        memset(e->tch, 0, sizeof e->tch);
+        for (int i = 0; i < n; i++) {
+            e->loops[i] = src[i];
+            if (src[i].ch >= 0 && src[i].ch < e->n_in && src[i].ch < 512) e->tch[src[i].ch] = 1;
+        }
+        e->nloops = n;
+        break;
+    }
     case CMD_FREEZE: {                  /* the console's "freeze" test: deliberately miss deadlines */
         int ms = c->a < 0 ? 0 : c->a > 2000 ? 2000 : c->a;
 #ifdef _WIN32
@@ -495,17 +516,23 @@ static void run_block(SE *e) {
     e->last_block = t0;
     drain_commands(e);
     int armed = sc_armed(e->core);
-    /* test sources: never while armed */
-    int64_t tr = e->test_r;
-    if (tr < ld64(&e->test_w)) {
-        if (!armed) {
-            const float *tb = e->test + (size_t)(tr % NTEST) * B * ni;
-            const uint8_t *m = e->test_mask + (size_t)(tr % NTEST) * ni;
-            for (int ch = 0; ch < ni; ch++)
-                if (m[ch]) for (int f = 0; f < B; f++) e->inb[(size_t)f * ni + ch] = tb[(size_t)f * ni + ch];
+    /* test sources, as TestSources.apply: each planned input is replaced by the sum of its loops,
+     * all following one clock. Never while armed. */
+    if (e->nloops && !armed) {
+        for (int ch = 0; ch < ni && ch < 512; ch++)
+            if (e->tch[ch]) for (int f = 0; f < B; f++) e->inb[(size_t)f * ni + ch] = 0.0f;
+        for (int i = 0; i < e->nloops; i++) {
+            const TLoop *lp = &e->loops[i];
+            if (lp->n <= 0 || lp->ch < 0 || lp->ch >= ni) continue;
+            float g = (float)lp->gain;
+            int64_t s = e->tclock % lp->n;
+            for (int f = 0; f < B; f++) {
+                e->inb[(size_t)f * ni + lp->ch] += lp->x[s] * g;
+                if (++s == lp->n) s = 0;
+            }
         }
-        st64(&e->test_r, tr + 1);
     }
+    e->tclock += B;
     double tb_ = wall_s(); st[0] = 1000 * (tb_ - ta); ta = tb_;
     int ext = ld32(&e->ext_ok);
     double t = sc_time(e->core);

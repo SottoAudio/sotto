@@ -784,8 +784,7 @@ class BenchApp:
                 self.local_phones.push(blk[:, 0].copy(), blk[:, 1].copy())
         else:
             ce.phones()
-        if not core.arm.armed:
-            ce.feed_tests(self.tests)
+        ce.sync_tests(self.tests)                   # played by the engine (never while armed)
         if self._wg_gen != self._c_wg_seen:
             self._c_wg_seen = self._wg_gen
             ce.set_workgroup_device((self.coreaudio or {}).get("id"))

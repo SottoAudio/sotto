@@ -124,6 +124,8 @@ typedef struct {
     /* timing record */
     double trace[TRACE_ROWS][TRACE_COLS];
     volatile int64_t trace_n;
+    volatile double last_cycle_t;  /* when the last soundcard cycle started, and its length */
+    volatile int32_t last_frames;
     /* PortAudio */
     void *pa, *stream;
     int pa_inited;                /* our own Pa_Initialize, undone in sio_close (so a later rescan sees new devices) */
@@ -258,6 +260,8 @@ SIO_API void sio_cycle(sio_t *s, const float *in, float *out, int frames, double
         }
         if (ld32(&s->hb_block) && s->hb_ch >= 0) o[s->hb_ch] = 0.0f;
     }
+    s->last_cycle_t = t0;
+    st32(&s->last_frames, frames);
     st64(&s->out_r, r + frames);
     if (short_cycle && started) {
         s->underrun_cycles++;
@@ -318,6 +322,14 @@ SIO_API int sio_write(sio_t *s, const float *buf, int frames) {
     if (at + frames > ld64(&s->out_w)) st64(&s->out_w, at + frames);
     st32(&s->started, 1);
     return 0;
+}
+
+/* Seconds left before the block the engine is working on would be late: the samples between where
+ * it lands and the soundcard's play position, plus the rest of the current soundcard buffer. */
+SIO_API double sio_time_left(sio_t *s) {
+    double t = s->last_cycle_t;
+    int64_t slack = s->eng_pos + s->prefill - ld64(&s->out_r);
+    return (double)(slack + s->last_frames) / s->fs - (now_s() - t);
 }
 
 SIO_API void sio_clear_heartbeat(sio_t *s) { st32(&s->hb_block, 0); }

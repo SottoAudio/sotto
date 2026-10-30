@@ -21,6 +21,11 @@
  * k - headroom is taken if the worker has written it; otherwise that worker's talkers get the dry
  * input from the same delay. A talker switching between the two is faded over 2.5 ms. Three late
  * blocks in a row make processing unhealthy, which disarms (latched), as in Python.
+ *
+ * Headroom 0 ("same block", C engine only): block k goes to every worker, then the engine waits a
+ * bounded time (the wait budget, inside the engine's safety margin) for block k's own results,
+ * polling the tags. A worker that hasn't answered by then gives dry for that block, as above. The
+ * workers see headroom 1 (they only ever work on the newest block).
  */
 #include <stdint.h>
 #include <stdlib.h>
@@ -53,6 +58,7 @@ int sio_write(sio_t *s, const float *buf, int frames);
 void sio_clear_heartbeat(sio_t *s);
 int sio_heartbeat_blocked(sio_t *s);
 void sio_stats(sio_t *s, int64_t *v);
+double sio_time_left(sio_t *s);
 double sc_time(SC *c);
 int sc_request_arm(SC *c, int talker);
 void sc_request_disarm(SC *c);
@@ -143,6 +149,15 @@ static void sem_take_nowait(void *h) {           /* a barrier, as Python's acqui
 #endif
 }
 
+static void nap_short(void) {                    /* ~100 us, for the same-block wait */
+#ifdef _WIN32
+    Sleep(0);
+#else
+    struct timespec ts = {0, 100000L};
+    nanosleep(&ts, NULL);
+#endif
+}
+
 /* ------------------------------------------------------------------ the engine */
 #define HOP 480
 #define RAMP 120
@@ -208,6 +223,9 @@ typedef struct SE {
     volatile int32_t ext_ok, ready[MAXW];
     /* processing */
     int proc_on, nw, headroom;
+    double same_wait_s;            /* headroom 0: how long to wait for the block's own results */
+    double same_guard_s;           /* ... and never closer than this to the block's real deadline */
+    double wait_ms, wait_max_ms;   /* headroom 0: the last block's wait, and the longest so far */
     Worker w[MAXW];
     float *hist, *out_buf, *dry_buf, *last_out, fade[RAMP];
     uint8_t *missed, *was_missed;
@@ -292,8 +310,17 @@ SE_API void se_destroy(SE *e) {
 SE_API void se_set_proc(SE *e, int on, int nw, int headroom, int ok) {
     e->proc_on = on && e->block == HOP && nw > 0 && nw <= MAXW;
     e->nw = nw;
-    e->headroom = headroom < 1 ? 1 : headroom > MAX_HEADROOM ? MAX_HEADROOM : headroom;
+    e->headroom = headroom < 0 ? 0 : headroom > MAX_HEADROOM ? MAX_HEADROOM : headroom;
     e->proc_ok = ok;
+}
+
+/* Headroom 0's wait budget, in ms, and the guard: the wait also ends once the block's real deadline
+ * (when the soundcard will play it) is fewer than guard_ms away, however much budget is left, so a
+ * bunch of blocks can't add their waits up into a late block. Before start; after start the
+ * budget comes with CMD_HEADROOM. */
+SE_API void se_set_same_wait(SE *e, double ms, double guard_ms) {
+    e->same_wait_s = ms < 0 ? 0 : ms > 20 ? 0.020 : ms / 1000;
+    if (guard_ms >= 0) e->same_guard_s = guard_ms / 1000;
 }
 
 /* Before start: a worker's table directly. After start: through se_command(CMD_WORKER). */
@@ -386,11 +413,13 @@ static void apply_cmd(SE *e, Cmd *c, double *res) {
         sc_set_solo(e->core, e->st_nl, e->st_lk, e->st_lc, e->st_nr, e->st_rk, e->st_rc,
                     e->st_level, e->st_dim, e->st_dim_db, e->st_limit);
         break;
-    case CMD_HEADROOM: {
-        int h = c->a < 1 ? 1 : c->a > MAX_HEADROOM ? MAX_HEADROOM : c->a;
-        for (int i = 0; i < e->nw; i++) if (e->w[i].base) ((int64_t *)e->w[i].base)[1] = h;
+    case CMD_HEADROOM: {                /* a = blocks (0 = same block), x = the same-block wait budget (ms) */
+        int h = c->a < 0 ? 0 : c->a > MAX_HEADROOM ? MAX_HEADROOM : c->a;
+        for (int i = 0; i < e->nw; i++) if (e->w[i].base) ((int64_t *)e->w[i].base)[1] = h < 1 ? 1 : h;
         e->grace_until = e->pblocks + 2 * MAX_HEADROOM;
         e->headroom = h;
+        if (c->x > 0) se_set_same_wait(e, c->x, -1.0);
+        e->wait_max_ms = 0;
         break;
     }
     case CMD_WORKER:                    /* by value: wid, row0 | g << 16, shared memory, semaphores */
@@ -424,6 +453,54 @@ static void apply_cmd(SE *e, Cmd *c, double *res) {
 }
 
 /* ------------------------------------------------------------------ the processing hand-over */
+static size_t in_slot_size(const Worker *w) { return 16 + (size_t)4 * HOP * (w->g + 1); }
+static size_t out_slot_size(const Worker *w) { return 16 + (size_t)4 * HOP * 2 * w->g; }
+
+static void hand_over(SE *e, Worker *w, const float *mics, const float *in, int64_t k) {
+    uint8_t *is = w->base + HEADER + (size_t)(k % SLOTS) * in_slot_size(w);
+    memcpy(is + 16, mics + (size_t)w->row0 * HOP, sizeof(float) * HOP * w->g);
+    float *ref = (float *)(is + 16 + (size_t)4 * HOP * w->g);
+    if (e->pgm >= 0) for (int f = 0; f < HOP; f++) ref[f] = in[(size_t)f * e->n_in + e->pgm];
+    else memset(ref, 0, sizeof(float) * HOP);
+    fence();
+    ((volatile int64_t *)is)[0] = k;
+    ((volatile int64_t *)w->base)[0] = k;
+    sem_give(w->in_sem);
+}
+
+static uint8_t *out_slot(Worker *w, int64_t j) {
+    return w->base + HEADER + (size_t)SLOTS * in_slot_size(w) + (size_t)(((j % SLOTS) + SLOTS) % SLOTS) * out_slot_size(w);
+}
+
+/* Block j's result from this worker if it has written it (1), else dry from the same delay (0). */
+static int take(SE *e, Worker *w, int64_t j, int64_t k, int h) {
+    int n = e->nt;
+    uint8_t *os = out_slot(w, j);
+    int got = 0;
+    if (j >= 0 && ((volatile int64_t *)os)[0] == j) {
+        sem_take_nowait(w->out_sem);
+        fence();
+        memcpy(e->out_buf + (size_t)w->row0 * HOP, os + 16, sizeof(float) * HOP * w->g);
+        memcpy(e->dry_buf + (size_t)w->row0 * HOP, os + 16 + (size_t)4 * HOP * w->g, sizeof(float) * HOP * w->g);
+        fence();
+        got = ((volatile int64_t *)os)[0] == j;
+    }
+    if (!got) {
+        memset(e->missed + w->row0, 1, w->g);
+        for (int r = w->row0; r < w->row0 + w->g; r++) {
+            if (k - h - 1 >= 0) {
+                const float *old = e->hist + (size_t)((k - h - 1) % NHIST) * n * HOP + (size_t)r * HOP;
+                memcpy(e->out_buf + (size_t)r * HOP, old, sizeof(float) * HOP);
+                memcpy(e->dry_buf + (size_t)r * HOP, old, sizeof(float) * HOP);
+            } else {
+                memset(e->out_buf + (size_t)r * HOP, 0, sizeof(float) * HOP);
+                memset(e->dry_buf + (size_t)r * HOP, 0, sizeof(float) * HOP);
+            }
+        }
+    }
+    return got;
+}
+
 static void exchange(SE *e, const float *in, int frames) {
     int n = e->nt, h = e->headroom;
     int64_t k = e->pblocks++;
@@ -432,45 +509,32 @@ static void exchange(SE *e, const float *in, int frames) {
         for (int f = 0; f < HOP; f++) mics[(size_t)i * HOP + f] = in[(size_t)f * e->n_in + e->tin[i]];
     int any_missed = 0, n_missed = 0;
     memset(e->missed, 0, (size_t)(n > 0 ? n : 0));
-    for (int wi = 0; wi < e->nw; wi++) {
-        Worker *w = &e->w[wi];
-        if (!w->base) continue;
-        size_t in_slot = 16 + (size_t)4 * HOP * (w->g + 1);
-        size_t out_slot = 16 + (size_t)4 * HOP * 2 * w->g;
-        uint8_t *is = w->base + HEADER + (size_t)(k % SLOTS) * in_slot;
-        memcpy(is + 16, mics + (size_t)w->row0 * HOP, sizeof(float) * HOP * w->g);
-        float *ref = (float *)(is + 16 + (size_t)4 * HOP * w->g);
-        if (e->pgm >= 0) for (int f = 0; f < HOP; f++) ref[f] = in[(size_t)f * e->n_in + e->pgm];
-        else memset(ref, 0, sizeof(float) * HOP);
-        fence();
-        ((volatile int64_t *)is)[0] = k;
-        ((volatile int64_t *)w->base)[0] = k;
-        sem_give(w->in_sem);
-        int64_t j = k - h;
-        uint8_t *os = w->base + HEADER + (size_t)SLOTS * in_slot + (size_t)(((j % SLOTS) + SLOTS) % SLOTS) * out_slot;
-        int got = 0;
-        if (j >= 0 && ((volatile int64_t *)os)[0] == j) {
-            sem_take_nowait(w->out_sem);
-            fence();
-            memcpy(e->out_buf + (size_t)w->row0 * HOP, os + 16, sizeof(float) * HOP * w->g);
-            memcpy(e->dry_buf + (size_t)w->row0 * HOP, os + 16 + (size_t)4 * HOP * w->g, sizeof(float) * HOP * w->g);
-            fence();
-            got = ((volatile int64_t *)os)[0] == j;
+    if (h > 0) {
+        for (int wi = 0; wi < e->nw; wi++) {        /* as Pool.exchange: hand over k, take k - h */
+            Worker *w = &e->w[wi];
+            if (!w->base) continue;
+            hand_over(e, w, mics, in, k);
+            if (!take(e, w, k - h, k, h)) { any_missed = 1; n_missed++; }
         }
-        if (!got) {
-            any_missed = 1;
-            n_missed++;
-            memset(e->missed + w->row0, 1, w->g);
-            for (int r = w->row0; r < w->row0 + w->g; r++) {
-                if (k - h - 1 >= 0) {
-                    const float *old = e->hist + (size_t)((k - h - 1) % NHIST) * n * HOP + (size_t)r * HOP;
-                    memcpy(e->out_buf + (size_t)r * HOP, old, sizeof(float) * HOP);
-                    memcpy(e->dry_buf + (size_t)r * HOP, old, sizeof(float) * HOP);
-                } else {
-                    memset(e->out_buf + (size_t)r * HOP, 0, sizeof(float) * HOP);
-                    memset(e->dry_buf + (size_t)r * HOP, 0, sizeof(float) * HOP);
-                }
-            }
+    } else {
+        /* same block: everyone gets block k first, then wait (bounded) for block k's results */
+        for (int wi = 0; wi < e->nw; wi++)
+            if (e->w[wi].base) hand_over(e, &e->w[wi], mics, in, k);
+        double t0 = wall_s(), until = t0 + e->same_wait_s;
+        for (;;) {
+            int all = 1;
+            for (int wi = 0; wi < e->nw && all; wi++)
+                if (e->w[wi].base && ((volatile int64_t *)out_slot(&e->w[wi], k))[0] != k) all = 0;
+            if (all || wall_s() >= until) break;
+            if (e->io && sio_time_left(e->io) < e->same_guard_s) break;   /* the real deadline is close */
+            nap_short();
+        }
+        e->wait_ms = 1000 * (wall_s() - t0);
+        if (e->wait_ms > e->wait_max_ms) e->wait_max_ms = e->wait_ms;
+        for (int wi = 0; wi < e->nw; wi++) {
+            Worker *w = &e->w[wi];
+            if (!w->base) continue;
+            if (!take(e, w, k, k, 0)) { any_missed = 1; n_missed++; }
         }
     }
     e->last_missed = n_missed;
@@ -697,12 +761,14 @@ SE_API void se_stop(SE *e) {
 
 /* ------------------------------------------------------------------ reading, from Python */
 /* v: running, blocks, proc blocks, misses, miss run, max miss run, proc ok, last missed, late total,
- *    late until (s), rec dropped, test short, headroom, live */
+ *    late until (s), rec dropped, test short, headroom, live, same-block wait budget (ms), the last
+ *    block's wait (ms), the longest wait (ms) */
 SE_API void se_stats(SE *e, double *v) {
     v[0] = ld32(&e->running); v[1] = (double)e->blocks; v[2] = (double)e->pblocks; v[3] = (double)e->misses;
     v[4] = (double)e->miss_run; v[5] = (double)e->max_miss_run; v[6] = e->proc_ok; v[7] = e->last_missed;
     v[8] = (double)e->late_total; v[9] = e->late_until; v[10] = (double)e->rec_dropped; v[11] = (double)e->test_short;
     v[12] = e->headroom; v[13] = e->live;
+    v[14] = 1000 * e->same_wait_s; v[15] = e->wait_ms; v[16] = e->wait_max_ms;
 }
 
 SE_API const char *se_thread_note(SE *e) { return e->rt_note; }

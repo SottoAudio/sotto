@@ -303,6 +303,8 @@ class Pool:
                 self.of[i] = (w, j)
         self.history = [np.zeros((self.n, HOP), np.float32) for _ in range(MAX_HEADROOM + 2)]
         self.headroom = 1
+        self.wanted_headroom = 1                         # as asked: 0 (same block) needs the C engine
+        self.min_headroom = 1                            # the C engine lowers this to 0
         self.grace_until = 0                             # no misses counted while headroom changes
         self.out_buf = np.zeros((self.n, HOP), np.float32)
         self.dry_buf = np.zeros((self.n, HOP), np.float32)
@@ -420,12 +422,16 @@ class Pool:
         """How many blocks the workers get for each block (1 = 10 ms: 20 ms through Sotto Voce; 2 =
         20 ms: 30 ms through Sotto Voce). Changing it moves every talker's delay, so the app only
         allows it while disarmed."""
-        h = min(MAX_HEADROOM, max(1, int(blocks)))
+        self.wanted_headroom = min(MAX_HEADROOM, max(0, int(blocks)))
+        h = max(self.min_headroom, self.wanted_headroom)
         for w in self.workers:
-            w.latest[1] = h
+            w.latest[1] = max(1, h)                      # the workers work on the newest block either way
         self.grace_until = self.blocks + 2 * MAX_HEADROOM
         if h != self.headroom:
-            LOG.info("Processing headroom: %d block(s), %d ms through Sotto Voce", h, 10 * (h + 1))
+            LOG.info("Processing headroom: %s, %d ms through Sotto Voce",
+                     f"{h} block(s)" if h else "same block", 10 * (h + 1))
+        elif h != self.wanted_headroom:
+            LOG.info("Processing headroom: same block needs the engine in C; using 1 block")
         self.headroom = h
 
     def health(self):

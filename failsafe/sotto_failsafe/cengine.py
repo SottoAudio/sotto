@@ -29,7 +29,8 @@ class TLoop(ctypes.Structure):
 WHY_PROBE, WHY_STARTING, WHY_EXTERNAL, WHY_REQUEST, WHY_LATE, WHY_PROC = 1, 2, 3, 4, 5, 6
 TIMING_COLS = 10
 STATS = ("running", "blocks", "proc_blocks", "misses", "miss_run", "max_miss_run", "proc_ok", "last_missed",
-         "late_total", "late_until", "rec_dropped", "test_short", "headroom", "live")
+         "late_total", "late_until", "rec_dropped", "test_short", "headroom", "live", "same_wait_ms", "wait_ms",
+         "wait_max_ms")
 _ready = False
 
 
@@ -46,6 +47,7 @@ def library():
         lib.se_create.argtypes = [P, P, I, I, I, I, I, IP, I, I, IP, IP, I, I]
         lib.se_destroy.argtypes = [P]
         lib.se_set_proc.argtypes = [P, I, I, I, I]
+        lib.se_set_same_wait.argtypes = [P, D, D]
         lib.se_stage_worker.argtypes = [P, I, I, I, P, P, P]
         lib.se_stage_solo.argtypes = [P, I, IP, IP, I, IP, IP, D, I, D, D]
         lib.se_set_ext.argtypes = [P, I]
@@ -150,20 +152,26 @@ class CEngine:
             return res.value
 
     # ------------------------------------------------------------ processing
-    def attach_pool(self, pool):
-        """The processing workers' shared memory and semaphores, as workers.Pool.exchange uses them."""
+    def attach_pool(self, pool, same_wait_ms=6.0, guard_ms=3.0):
+        """The processing workers' shared memory and semaphores, as workers.Pool.exchange uses them.
+        Headroom 0 (same block) works here only: the engine waits up to same_wait_ms for each block's
+        own results, and stops waiting guard_ms before the block would be late, whatever is left."""
         self.pool = pool
+        self.same_wait_ms = float(same_wait_ms)
         pool.on_worker_start = self._worker_started      # first: a restart from now on is handed over
         for w in pool.workers:
             self._stage_worker(w)
+        self.lib.se_set_same_wait(self.h, self.same_wait_ms, float(guard_ms))
+        pool.min_headroom = 0
+        set_headroom = pool.set_headroom
+        set_headroom(pool.wanted_headroom)               # same block, if that was asked for before the engine
         self.lib.se_set_proc(self.h, 1, len(pool.workers), pool.headroom, int(bool(pool.ok)))
         for w in pool.workers:
             self.lib.se_set_ready(self.h, w.wid, int(bool(w.ready)))
-        set_headroom = pool.set_headroom
 
         def headroom(blocks):
             set_headroom(blocks)
-            self.cmd(CMD_HEADROOM, pool.headroom)
+            self.cmd(CMD_HEADROOM, pool.headroom, x=self.same_wait_ms)
         pool.set_headroom = headroom
 
     def _stage_worker(self, w):

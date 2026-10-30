@@ -485,16 +485,20 @@ class BenchApp:
             self.log(Event(self.core.t, kind, detail, "console"))
         errors = list(res.get("errors", []))
         if hasattr(self.proc, "set_headroom"):
+            raw = (project.get("proc") or {}).get("headroom")
             try:
-                hr = int((project.get("proc") or {}).get("headroom") or self.a.headroom)
+                hr = int(self.a.headroom if raw in (None, "") else raw)     # 0 is a choice: same block
             except (TypeError, ValueError):
                 hr = self.a.headroom
-            if hr != self.proc.headroom:
+            if hr != getattr(self.proc, "wanted_headroom", self.proc.headroom):
                 if self.core.arm.armed:              # it moves every talker's delay: never mid-show
                     errors.append("Disarm Sotto Voce before changing the processing headroom: it moves every talker's delay.")
                 else:
                     self.proc.set_headroom(hr)
-                    self.log(Event(self.core.t, "headroom", f"{10 * hr} ms ({10 * (hr + 1)} ms through Sotto Voce)", "console"))
+                    h = self.proc.headroom
+                    what = "same block" if h == 0 else f"{10 * h} ms"
+                    note = "" if h == hr else " (same block needs the engine in C)"
+                    self.log(Event(self.core.t, "headroom", f"{what} ({10 * (h + 1)} ms through Sotto Voce){note}", "console"))
         return {"ok": True, "applied": True, "errors": errors}
 
     def insert_info(self, talker):
@@ -696,7 +700,7 @@ class BenchApp:
         try:
             ce = cengine.CEngine(self.native, self.cfg, n_in, n_out, self.a.block)
             if self.proc is not None:
-                ce.attach_pool(self.proc)
+                ce.attach_pool(self.proc, same_wait_ms=self._same_wait_ms(), guard_ms=self.a.same_block_guard_ms)
             ce.attach(self.core)
         except Exception:
             LOG.exception("C engine couldn't start; the engine runs in Python")
@@ -704,6 +708,13 @@ class BenchApp:
         self.cengine = ce
         self.shadow_note = "not needed: the engine itself runs in C"
         LOG.info("C engine: the 10 ms engine runs in C on its own real-time thread; Python only controls it")
+
+    def _same_wait_ms(self):
+        """Same-block processing: how long the engine may wait for a block's own results. Inside the
+        engine's safety margin, leaving room for the engine's own work."""
+        if self.a.same_block_wait_ms:
+            return float(self.a.same_block_wait_ms)
+        return max(1.0, min(8.0, self.a.margin_ms - 3.0))
 
     def _ext_health(self):
         """The checks Sotto Voce makes outside the C engine: the network port and the soundcard."""
@@ -1953,8 +1964,14 @@ def build_parser():
                         "0 = ask the soundcard for 10 ms blocks directly (as before)")
     p.add_argument("--switch-interval", type=float, default=0.5,
                    help="ms another Python thread may hold the lock before the audio callback gets it back (Python's default is 5)")
-    p.add_argument("--headroom", type=int, default=2, choices=[1, 2, 3],
-                   help="blocks of time the processing workers get per block (1 = 20 ms through Sotto Voce, 2 = 30 ms)")
+    p.add_argument("--headroom", type=int, default=2, choices=[0, 1, 2, 3],
+                   help="blocks of time the processing workers get per block (1 = 20 ms through Sotto Voce, 2 = 30 ms; "
+                        "0 = same block, 10 ms: the C engine waits for each block's own results, dry if they're late)")
+    p.add_argument("--same-block-wait-ms", type=float, default=0.0,
+                   help="headroom 0: how long the engine waits for a block's results (0 = auto: the safety margin less 3 ms, "
+                        "at most 8)")
+    p.add_argument("--same-block-guard-ms", type=float, default=3.0,
+                   help="headroom 0: stop waiting this long before the block would be late, whatever is left of the wait")
     p.add_argument("--native-io", choices=["auto", "on", "off"], default="auto",
                    help="run the soundcard side in C (the real-time thread only copies audio; Sotto Voce's engine "
                         "runs on its own thread). auto: when this build has the library")

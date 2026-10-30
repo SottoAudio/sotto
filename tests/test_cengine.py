@@ -95,6 +95,109 @@ class ExchangeTests(unittest.TestCase):
             pool.stop()
 
 
+@unittest.skipUnless(cengine.library() is not None, "native library not built")
+class SameBlockTests(unittest.TestCase):
+    """Headroom 0: the engine hands block k to the workers and waits (bounded) for block k's own
+    results, so the processing adds 10 ms instead of 20."""
+
+    def _engine(self, pool, n, n_in, tin, pgm, wait_ms):
+        lib = cengine.library()
+        e = lib.se_create(None, None, n_in, 8, B, 48000, n, cengine._ints(tin), pgm, 0, cengine._ints([]),
+                          cengine._ints([]), -1, -1)
+        ce = cengine.CEngine.__new__(cengine.CEngine)
+        ce.lib, ce.h, ce._keep = lib, e, []
+        for w in pool.workers:
+            ce._stage_worker(w)
+            lib.se_set_ready(e, w.wid, 1)
+        lib.se_set_same_wait(e, wait_ms, 0.0)
+        lib.se_set_proc(e, 1, len(pool.workers), 0, 1)
+        lib.se_exchange_test.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_float),
+                                         ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double)]
+        return lib, e
+
+    @staticmethod
+    def _run(lib, e, x, ret, dry):
+        lib.se_exchange_test(e, x.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                             ret.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                             dry.ctypes.data_as(ctypes.POINTER(ctypes.c_double)))
+
+    def test_each_block_comes_back_in_the_same_block(self):
+        """The C engine at headroom 0 plays at block k what the Python hand-over (headroom 1) plays at
+        block k + 1: the same processing, one block sooner."""
+        n, n_in = 4, 8
+        tin, pgm = [0, 1, 2, 3], 5
+        mk = lambda h: W.Pool([f"t{i}" for i in range(n)], [P.Settings(mode="aec", hpf_hz=100) for _ in range(n)],  # noqa: E731
+                              model=None, workers=2, track_delay=False, headroom=h)
+        a, b = mk(1), mk(0)
+        try:
+            self.assertEqual((b.headroom, b.wanted_headroom), (1, 0))   # not without the C engine
+            lib, e = self._engine(b, n, n_in, tin, pgm, wait_ms=20.0)   # the most it allows
+            rng = np.random.default_rng(7)
+            xs = [(rng.standard_normal((B, n_in)) * 0.1).astype(np.float32) for _ in range(150)]
+            ret, dry = np.zeros((B, n)), np.zeros((B, n))
+            c_out, py_out, c_missed = [], [], []
+            stats = (ctypes.c_double * len(cengine.STATS))()
+            for k, x in enumerate(xs):
+                out_a, _ = a.exchange(np.asarray(x[:, tin], np.float64).T, x[:, pgm])
+                py_out.append(out_a.copy())
+                self._run(lib, e, x, ret, dry)
+                lib.se_stats(e, stats)
+                c_out.append(ret.T.astype(np.float32).copy())
+                c_missed.append(stats[7])
+                time.sleep(0.02)
+            st = dict(zip(cengine.STATS, stats))
+            lib.se_destroy(e)
+            self.assertEqual(st["headroom"], 0)
+            self.assertEqual(st["same_wait_ms"], 20.0)
+            self.assertGreater(st["wait_max_ms"], 0.0)          # it did wait for the workers
+            compared = 0
+            for k in range(4, 148):
+                if c_missed[k] or a.last_missed:
+                    continue
+                if not np.array_equal(c_out[k], py_out[k + 1]):
+                    break                                       # after a late Python block the two differ for good
+                compared += 1
+            if compared < 60:
+                self.skipTest(f"only {compared} blocks compared before this machine fell behind")
+            self.assertLess(sum(1 for m in c_missed[4:] if m), 10)
+        finally:
+            a.stop()
+            b.stop()
+
+    def test_no_answer_in_time_gives_dry_from_the_same_delay(self):
+        n, n_in = 2, 4
+        pool = W.Pool(["a", "b"], [P.Settings(mode="bypass", hpf_hz=0) for _ in range(n)], model=None, workers=1,
+                      track_delay=False, headroom=0)
+        try:
+            lib, e = self._engine(pool, n, n_in, [0, 1], -1, wait_ms=0.0)     # no time to wait at all
+            ret, dry = np.zeros((B, n)), np.zeros((B, n))
+            stats = (ctypes.c_double * len(cengine.STATS))()
+            for k in range(6):
+                self._run(lib, e, np.full((B, n_in), 0.01 * (k + 1), np.float32), ret, dry)
+                lib.se_stats(e, stats)
+                if k >= 1:                                      # block k - 1: the chain's own 10 ms
+                    self.assertEqual(stats[7], 1)
+                    self.assertAlmostEqual(float(dry[0, 0]), 0.01 * k, places=6)
+            self.assertLess(stats[15], 5.0)                     # and it didn't hang about
+            lib.se_destroy(e)
+        finally:
+            pool.stop()
+
+    def test_the_pool_only_goes_to_same_block_with_the_c_engine(self):
+        pool = W.Pool(["a"], [P.Settings(mode="bypass", hpf_hz=0)], model=None, workers=1, track_delay=False,
+                      headroom=0)
+        try:
+            self.assertEqual(pool.headroom, 1)
+            pool.min_headroom = 0
+            pool.set_headroom(0)
+            self.assertEqual(pool.headroom, 0)
+            self.assertEqual(int(pool.workers[0].latest[1]), 1)    # the workers still work on the newest block
+            pool.set_headroom(2)
+            self.assertEqual((pool.headroom, pool.wanted_headroom), (2, 2))
+        finally:
+            pool.stop()
+
+
 class _Args:
     pass
 

@@ -137,8 +137,9 @@ jobs:
         run: |
           export SOTTO_EXTRA_VST3="$PLUGDIR"
           "$APP" --simulate --track-delay on --io-buffer 160 --no-browser --port 8790 --project "$RUNNER_TEMP/project.json" > smoke.log 2>&1 &
-          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8790/api/state > state.json && break; sleep 1; done
-          fail() { echo "::error title=Smoke test (${{ matrix.name }})::$1 $(tail -c 2000 smoke.log | tr '\n' ' ')"; exit 1; }
+          # the console answers before the soundcard is open: wait until the engine has started
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8790/api/state > state.json && python -c "import json,sys; sys.exit(0 if json.load(open('state.json')).get('engine') else 1)" && break; sleep 1; done
+          fail() { echo "::error title=Smoke test (${{ matrix.name }})::$1 $(tail -c 2000 smoke.log | tr '\n' ' ') | state: $(head -c 2500 state.json 2>/dev/null | tr '\n' ' ') | log: $(tail -n 40 "$SOTTO_CONFIG_DIR/logs/sotto-bench.log" 2>/dev/null | cut -c 1-300 | tr '\n' ' ')"; exit 1; }
           python -c "import json; s=json.load(open('state.json')); assert s['armed'] is False and s['solo']['ids'] == []; p=s['processing']; assert p['on'] and p['model'] and p['plugins_available'], p; print('console up, disarmed, processing on with the speech model')" || fail "state check failed:"
           python -c "import json, sys; s=json.load(open('state.json')); e, p = s['engine'], s['processing']; print('App Nap:', e.get('app_nap'), '| processing thread:', p.get('thread')); sys.exit(0 if sys.platform != 'darwin' or (e.get('app_nap') == 'App Nap off' and str(p.get('thread')).startswith('real-time (')) else 1)" || fail "macOS priority check failed:"
           python -c "import json, sys; c=json.load(open('state.json')).get('chain') or {}; print('Fault finder:', c.get('headline')); sys.exit(0 if len(c.get('links', [])) == 8 else 1)" || fail "fault finder missing from the state:"

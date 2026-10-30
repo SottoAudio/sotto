@@ -32,6 +32,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
+#include <errno.h>
 
 #ifdef _WIN32
 #  include <windows.h>
@@ -149,6 +150,18 @@ static void sem_take_nowait(void *h) {           /* a barrier, as Python's acqui
 #endif
 }
 
+#ifdef __APPLE__
+/* Same block: the engine sleeps until a worker writes its result, instead of checking every 100 us
+ * (checks that macOS often lets oversleep by a millisecond or two). os_sync_wait_on_address (macOS
+ * 14.4+) works across processes on shared memory; the workers call os_sync_wake_by_address_all
+ * after writing their tag. Looked up at run time; without it, or if it misbehaves, back to checks. */
+typedef int (*fn_os_wait)(void *, uint64_t, size_t, uint32_t, uint32_t, uint64_t);
+static fn_os_wait os_wait;
+static int os_wait_works(void);
+#define OS_SYNC_SHARED 1u
+#define OS_CLOCK_MACH_ABSOLUTE_TIME 32u
+#endif
+
 static void nap_short(void) {                    /* ~100 us, for the same-block wait */
 #ifdef _WIN32
     Sleep(0);
@@ -226,6 +239,8 @@ typedef struct SE {
     double same_wait_s;            /* headroom 0: how long to wait for the block's own results */
     double same_guard_s;           /* ... and never closer than this to the block's real deadline */
     double wait_ms, wait_max_ms;   /* headroom 0: the last block's wait, and the longest so far */
+    int32_t woken;                 /* headroom 0: 1 = woken by the workers (os_sync), 0 = checking every 100 us */
+    int64_t wake_errors;
     Worker w[MAXW];
     float *hist, *out_buf, *dry_buf, *last_out, fade[RAMP];
     uint8_t *missed, *was_missed;
@@ -296,6 +311,9 @@ SE_API SE *se_create(sio_t *io, SC *core, int n_in, int n_out, int block, int fs
     strcpy(e->wg_note, "not joined");
     strcpy(e->rt_note, "not started");
     workgroup_symbols();
+#ifdef __APPLE__
+    e->woken = os_wait_works();
+#endif
     return e;
 }
 
@@ -523,11 +541,30 @@ static void exchange(SE *e, const float *in, int frames) {
             if (e->w[wi].base) hand_over(e, &e->w[wi], mics, in, k);
         double t0 = wall_s(), until = t0 + e->same_wait_s;
         for (;;) {
-            int all = 1;
-            for (int wi = 0; wi < e->nw && all; wi++)
-                if (e->w[wi].base && ((volatile int64_t *)out_slot(&e->w[wi], k))[0] != k) all = 0;
-            if (all || wall_s() >= until) break;
+            Worker *pend = NULL;
+            int64_t seen = 0;
+            for (int wi = 0; wi < e->nw && !pend; wi++) {
+                if (!e->w[wi].base) continue;
+                int64_t t = ((volatile int64_t *)out_slot(&e->w[wi], k))[0];
+                if (t != k) { pend = &e->w[wi]; seen = t; }
+            }
+            if (!pend) break;                                       /* every result is in */
+            double now = wall_s();
+            if (now >= until) break;
             if (e->io && sio_time_left(e->io) < e->same_guard_s) break;   /* the real deadline is close */
+            (void)seen;
+#ifdef __APPLE__
+            if (os_wait && e->woken) {
+                double left = until - now;
+                if (left > 0.001) left = 0.001;                     /* look at the deadline at least every 1 ms */
+                uint64_t ns = (uint64_t)(left * 1e9);
+                if (ns < 20000) ns = 20000;
+                int rc = os_wait((void *)out_slot(pend, k), (uint64_t)seen, 8, OS_SYNC_SHARED,
+                                 OS_CLOCK_MACH_ABSOLUTE_TIME, ns);  /* sleeps while the tag is still `seen` */
+                if (rc < 0 && errno != ETIMEDOUT && errno != EINTR) { e->woken = 0; e->wake_errors++; }
+                continue;
+            }
+#endif
             nap_short();
         }
         e->wait_ms = 1000 * (wall_s() - t0);
@@ -688,6 +725,19 @@ static void *wg_obj; static char wg_token[64];
 
 static fn_wg_join wg_join; static fn_wg_leave wg_leave; static fn_release wg_release;
 
+/* Off the real-time thread, once: is os_sync_wait_on_address there, and does its timeout mean what we
+ * think (2 ms asked, so somewhere between 1 and 20 ms back)? */
+static int os_wait_works(void) {
+    os_wait = (fn_os_wait)dlsym(RTLD_DEFAULT, "os_sync_wait_on_address_with_timeout");
+    if (!os_wait) return 0;
+    volatile uint64_t word = 7;
+    double t0 = wall_s();
+    int rc = os_wait((void *)&word, 7, 8, 0, OS_CLOCK_MACH_ABSOLUTE_TIME, 2000000);
+    double took = wall_s() - t0;
+    if (!(rc < 0 && errno == ETIMEDOUT) || took < 0.001 || took > 0.020) { os_wait = NULL; return 0; }
+    return 1;
+}
+
 static void workgroup_symbols(void) {                 /* once, at create time, off the real-time thread */
     wg_join = (fn_wg_join)dlsym(RTLD_DEFAULT, "os_workgroup_join");
     wg_leave = (fn_wg_leave)dlsym(RTLD_DEFAULT, "os_workgroup_leave");
@@ -770,6 +820,7 @@ SE_API void se_stats(SE *e, double *v) {
     v[8] = (double)e->late_total; v[9] = e->late_until; v[10] = (double)e->rec_dropped; v[11] = (double)e->test_short;
     v[12] = e->headroom; v[13] = e->live;
     v[14] = 1000 * e->same_wait_s; v[15] = e->wait_ms; v[16] = e->wait_max_ms;
+    v[17] = e->woken; v[18] = (double)e->wake_errors;
 }
 
 SE_API const char *se_thread_note(SE *e) { return e->rt_note; }

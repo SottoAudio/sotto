@@ -34,9 +34,14 @@
 #endif
 #ifdef __APPLE__
 #  include <mach/mach_time.h>
+#  include <mach/mach.h>
+#  include <mach/semaphore.h>
+#elif !defined(_WIN32)
+#  include <semaphore.h>
+#  include <errno.h>
 #endif
 
-#define SIO_VERSION 1
+#define SIO_VERSION 2
 
 /* ------------------------------------------------------------------ atomics */
 #if defined(_MSC_VER)
@@ -70,16 +75,6 @@ static double now_s(void) {
 #endif
 }
 
-static void nap_us(int us) {
-#ifdef _WIN32
-    (void)us;
-    Sleep(1);
-#else
-    struct timespec ts = {0, (long)us * 1000L};
-    nanosleep(&ts, NULL);
-#endif
-}
-
 /* ------------------------------------------------------------------ PortAudio (loaded at run time) */
 typedef struct { int device; int channelCount; unsigned long sampleFormat; double suggestedLatency; void *hostApiSpecificStreamInfo; } PaStreamParameters;
 typedef struct { double inputBufferAdcTime; double currentTime; double outputBufferDacTime; } PaStreamCallbackTimeInfo;
@@ -109,6 +104,17 @@ typedef struct {
     int64_t eng_pos;              /* input position of the block the engine is working on */
     volatile int32_t started;     /* the engine has written its first block */
     volatile int32_t hb_block;    /* HEARTBEAT latched off */
+    /* The engine sleeps until the callback wakes it with a new block (as a DAW's worker threads
+     * do), instead of checking every 250 us: a real-time thread waking 4,000 times a second
+     * can be pushed back by macOS. */
+    volatile int32_t waiting;
+#if defined(__APPLE__)
+    semaphore_t wake;
+#elif defined(_WIN32)
+    HANDLE wake;
+#else
+    sem_t wake;
+#endif
     /* fallback */
     int n_map, *map_in, *map_out, hb_ch;
     float g;                      /* 1 = engine output, 0 = fallback */
@@ -146,7 +152,50 @@ SIO_API sio_t *sio_create(int n_in, int n_out, int block, int fs, int prefill, i
 #endif
     s->g = 1.0f;
     s->hb_ch = -1;
+#if defined(__APPLE__)
+    semaphore_create(mach_task_self(), &s->wake, SYNC_POLICY_FIFO, 0);
+#elif defined(_WIN32)
+    s->wake = CreateSemaphore(NULL, 0, 1 << 30, NULL);
+#else
+    sem_init(&s->wake, 0, 0);
+#endif
     return s;
+}
+
+static void full_fence(void) {
+#if defined(_MSC_VER)
+    MemoryBarrier();
+#else
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+#endif
+}
+
+static void wake_engine(sio_t *s) {           /* real-time safe: one non-blocking kernel signal */
+#if defined(__APPLE__)
+    semaphore_signal(s->wake);
+#elif defined(_WIN32)
+    ReleaseSemaphore(s->wake, 1, NULL);
+#else
+    sem_post(&s->wake);
+#endif
+}
+
+static void wait_for_wake(sio_t *s, double seconds) {
+    if (seconds <= 0) return;
+    if (seconds > 0.5) seconds = 0.5;
+#if defined(__APPLE__)
+    mach_timespec_t ts = {(unsigned int)seconds, (clock_res_t)((seconds - (unsigned int)seconds) * 1e9)};
+    semaphore_timedwait(s->wake, ts);
+#elif defined(_WIN32)
+    WaitForSingleObject(s->wake, (DWORD)(seconds * 1000.0) + 1);
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    long ns = ts.tv_nsec + (long)(seconds * 1e9);
+    ts.tv_sec += ns / 1000000000L;
+    ts.tv_nsec = ns % 1000000000L;
+    while (sem_timedwait(&s->wake, &ts) == -1 && errno == EINTR) {}
+#endif
 }
 
 /* Dry fallback: talker input map_in[k] plays on output map_out[k]; hb = HEARTBEAT output (-1 = none). */
@@ -176,6 +225,11 @@ SIO_API void sio_cycle(sio_t *s, const float *in, float *out, int frames, double
     }
     st64(&s->in_w, w + frames);
     if (w + frames - ld64(&s->in_r) > s->cap) s->overruns++;
+    full_fence();                                  /* with the engine's: it sees the block, or we see it waiting */
+    if (ld32(&s->waiting) && w + frames - ld64(&s->in_r) >= s->block) {
+        st32(&s->waiting, 0);
+        wake_engine(s);
+    }
 
     /* outputs from the engine's ring, or the fallback */
     int64_t r = s->out_r, avail = ld64(&s->out_w);
@@ -246,8 +300,13 @@ SIO_API int sio_read(sio_t *s, float *buf, int frames, int timeout_ms) {
             st64(&s->in_r, r + frames);
             return 1;
         }
-        if (now_s() >= give_up) return 0;
-        nap_us(250);
+        double left = give_up - now_s();
+        if (left <= 0) return 0;
+        st32(&s->waiting, 1);
+        full_fence();
+        if (ld64(&s->in_w) - ld64(&s->in_r) >= frames) { st32(&s->waiting, 0); continue; }   /* it arrived meanwhile */
+        wait_for_wake(s, left);
+        st32(&s->waiting, 0);
     }
 }
 
@@ -352,5 +411,12 @@ SIO_API void sio_destroy(sio_t *s) {
     timeEndPeriod(1);
 #endif
     free(s->in_ring); free(s->out_ring); free(s->held); free(s->map_in); free(s->map_out);
+#if defined(__APPLE__)
+    semaphore_destroy(mach_task_self(), s->wake);
+#elif defined(_WIN32)
+    CloseHandle(s->wake);
+#else
+    sem_destroy(&s->wake);
+#endif
     free(s);
 }

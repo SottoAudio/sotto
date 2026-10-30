@@ -265,7 +265,7 @@ class ChainTests(unittest.TestCase):
         st = ff.state()
         self.assertEqual(st["root"], "processing")
         self.assertIn("16 %", st["headline"])
-        self.assertIn("Processing headroom: 20 ms", st["look"])
+        self.assertIn("Processing headroom: 30 ms through Sotto Voce", st["look"])
 
     def test_probe_missing(self):
         ff = F.FaultFinder()

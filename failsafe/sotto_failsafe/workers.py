@@ -65,7 +65,7 @@ def split(n, k):
 class _Layout:
     def __init__(self, g):
         self.g = g
-        self.in_slot = 8 + 8 + 4 * HOP * (g + 1)            # tag, spare, mics (g, HOP) f32, ref (HOP) f32
+        self.in_slot = 8 + 8 + 4 * HOP * (g + 1)            # tag, handed over (ns), mics (g, HOP) f32, ref (HOP) f32
         self.out_slot = 8 + 8 + 4 * HOP * 2 * g             # tag, spare, outs (g, HOP) f32, drys (g, HOP) f32
         self.in_base = HEADER
         self.out_base = HEADER + SLOTS * self.in_slot
@@ -88,6 +88,53 @@ class _Layout:
 
 
 # ---------------------------------------------------------------------------- worker process
+REALTIME_MS = 8.0                       # the processing thread's real-time budget per 10 ms block. At 6 ms,
+                                        # a block that ran over could get the thread pushed down by macOS
+
+
+class AnswerTiming:
+    """How quickly a worker answers, from the moment the engine handed the block over: when the
+    worker woke, when its result was written, and blocks it never got to."""
+
+    BUCKETS = (1, 2, 4, 6, 8, 10, 15, 20)        # ms: answered within each
+
+    def __init__(self):
+        self.n = 0
+        self.skipped = 0
+        self.wake_max = self.answer_max = 0.0
+        self.wake_sum = self.answer_sum = 0.0
+        self.hist = [0] * (len(self.BUCKETS) + 1)
+
+    def add(self, wake_ns, answer_ns):
+        if wake_ns < 0 or answer_ns < 0 or answer_ns > 10e9:   # no hand-over time (an old engine)
+            return
+        w, a = wake_ns / 1e6, answer_ns / 1e6
+        self.n += 1
+        self.wake_sum += w
+        self.answer_sum += a
+        self.wake_max = max(self.wake_max, w)
+        self.answer_max = max(self.answer_max, a)
+        for i, b in enumerate(self.BUCKETS):
+            if a <= b:
+                self.hist[i] += 1
+                break
+        else:
+            self.hist[-1] += 1
+
+    def over(self, ms):
+        """How many answers took longer than ms (ms one of BUCKETS)."""
+        i = self.BUCKETS.index(ms)
+        return sum(self.hist[i + 1:])
+
+    def report(self):
+        n = max(1, self.n)
+        return {"blocks": self.n, "skipped": self.skipped,
+                "wake_ms_avg": round(self.wake_sum / n, 3), "wake_ms_max": round(self.wake_max, 2),
+                "answer_ms_avg": round(self.answer_sum / n, 3), "answer_ms_max": round(self.answer_max, 2),
+                "over_8_ms": self.over(8), "over_10_ms": self.over(10),
+                "within_ms": {str(b): c for b, c in zip(self.BUCKETS, self.hist)} | {"more": self.hist[-1]}}
+
+
 class _UpHandler(logging.handlers.QueueHandler):
     def __init__(self, q, wid):
         super().__init__(q)
@@ -136,23 +183,29 @@ def _worker_main(wid, names, settings, model, shm_name, g, in_sem, out_sem, ctrl
         return
     stop = threading.Event()
     errors = [0]
+    timing = AnswerTiming()
+    last_state = [0.0]
 
     def send_state():
+        last_state[0] = time.monotonic()
         up.put((wid, "state", {**work.timing(), "talkers": work.talker_states(), "errors": errors[0],
-                               "model": work.dfn is not None}))
+                               "model": work.dfn is not None, "answer": timing.report()}))
 
     def audio():
         """The processing, on its own thread at the highest everyday priority. Plugins are only
         run here (process); they're created, changed and destroyed on the main thread."""
-        _, work.thread_note = macos.realtime_thread(10.0, 6.0, 10.0)
+        _, work.thread_note = macos.realtime_thread(10.0, REALTIME_MS, 10.0)
         next_state = 0.0
         next_tag = 0
         while not stop.is_set():
-            if not in_sem.acquire(timeout=0.2):
-                if time.monotonic() >= next_state:  # idle (no audio yet): still report
-                    next_state = time.monotonic() + 0.5
-                    send_state()
-                continue
+            # A wait with no timeout: on macOS, multiprocessing's wait *with* a timeout is a loop that
+            # sleeps 1, 2, 3 ... up to 20 ms between checks, so a block could wait milliseconds
+            # before the worker noticed it. Without one it really sleeps until the engine posts.
+            # Idle reports come from the main thread instead, and stopping posts to wake this up.
+            in_sem.acquire()
+            if stop.is_set():
+                break
+            woke = time.perf_counter_ns()
             while in_sem.acquire(False):
                 pass
             # Every block still in time, oldest first. With headroom h, Sotto Voce takes the result for
@@ -160,10 +213,14 @@ def _worker_main(wid, names, settings, model, shm_name, g, in_sem, out_sem, ctrl
             # late: skip them rather than fall further behind.
             newest = int(latest[0])
             h = min(MAX_HEADROOM, max(1, int(latest[1])))
-            for tag in range(max(next_tag, newest - (h - 1)), newest + 1):
+            first = max(next_tag, newest - (h - 1))
+            if next_tag > 0 and first > next_tag:
+                timing.skipped += first - next_tag   # never processed: too late by the time we woke
+            for tag in range(first, newest + 1):
                 tg, mics_v, ref_v = ins[tag % SLOTS]
                 if int(tg[0]) != tag:
                     continue
+                given = int(tg[1])
                 mics, ref = mics_v.copy(), ref_v.copy()
                 if int(tg[0]) != tag:                # overwritten while copying: too late anyway
                     continue
@@ -174,6 +231,8 @@ def _worker_main(wid, names, settings, model, shm_name, g, in_sem, out_sem, ctrl
                     dv[:] = d
                     out_sem.release()                # barrier: the data is visible before the tag
                     otg[0] = tag
+                    if tag == newest:
+                        timing.add(woke - given, time.perf_counter_ns() - given)
                 except Exception as e:
                     errors[0] += 1
                     if errors[0] == 1 or errors[0] % 100 == 0:
@@ -200,6 +259,8 @@ def _worker_main(wid, names, settings, model, shm_name, g, in_sem, out_sem, ctrl
         try:
             if not ctrl.poll(0.2):
                 work.close_retired()
+                if time.monotonic() - last_state[0] >= 0.5:   # idle (no audio yet): still report
+                    send_state()
                 continue
             rid, op, args = ctrl.recv()
         except (EOFError, OSError):
@@ -224,6 +285,7 @@ def _worker_main(wid, names, settings, model, shm_name, g, in_sem, out_sem, ctrl
             LOG.exception("Worker %d: request %s failed", wid + 1, op)
             up.put((wid, "reply", (rid, False, repr(e))))
         work.close_retired()
+    in_sem.release()                                 # wakes the processing thread so it sees stop
     th.join(timeout=2)
     if tracker:
         tracker.stop()
@@ -362,6 +424,7 @@ class Pool:
             tg, mv, rv = w.ins[k % SLOTS]
             mv[:] = mics[w.rows[0]:w.rows[-1] + 1]
             rv[:] = ref
+            tg[1] = time.perf_counter_ns()               # when it was handed over, for the timing
             tg[0] = k
             w.latest[0] = k
             w.in_sem.release()                           # wakes the worker (and is a barrier)
@@ -683,6 +746,7 @@ class Pool:
             "thread": ws[0].get("thread", "") if ws else "",
             "worker_detail": [{"worker": w.wid + 1, "talkers": [i + 1 for i in w.rows], "pid": w.pid, "ready": w.ready,
                                "restarts": w.restarts, "proc_ms": w.state.get("proc_ms"), "cpu_ms": w.state.get("cpu_ms"),
-                               "stage_ms": w.state.get("stage_ms"), "errors": w.state.get("errors")} for w in self.workers],
+                               "stage_ms": w.state.get("stage_ms"), "errors": w.state.get("errors"),
+                               "answer": w.state.get("answer")} for w in self.workers],
             "talkers": talkers,
         }

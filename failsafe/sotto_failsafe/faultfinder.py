@@ -502,7 +502,7 @@ class FaultFinder:
             if frac >= 0.02:
                 new["processing"] = (WARN, f"Late on about {100 * min(frac, 1):.0f} % of blocks in the last "
                                            f"{WINDOW_S:.0f} s; those talkers got dry audio.",
-                                     ("Settings, Processing headroom: 20 ms. " if hr is not None and hr < 20 else "") +
+                                     ("Settings, Processing headroom: 30 ms through Sotto Voce. " if hr is not None and hr < 20 else "") +
                                      "Then fewer talkers on Full clean, or check This Mac.")
             elif app.get("processing_ok") is False:
                 new["processing"] = (WARN, app.get("processing_why") or "not keeping up", "Settings, Processing.")

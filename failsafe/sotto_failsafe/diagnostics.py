@@ -399,6 +399,17 @@ def _findings(app_state, sysinfo, devs, crash, speed):
                      f"({pr.get('cpu_ms')} ms of it computing). Talkers are getting dry audio.")
         if pr.get("on") is False and pr.get("why"):
             f.append(f"Processing is off: {pr.get('why')}")
+        for w in pr.get("worker_detail") or []:
+            an = w.get("answer") or {}
+            n = an.get("blocks") or 0
+            if n < 500:
+                continue
+            slow = (an.get("over_10_ms") or 0) + (an.get("skipped") or 0)
+            if slow / n > 0.002:
+                f.append(f"Processing worker {w.get('worker')} answered more than 10 ms after the hand-over on "
+                         f"{100 * slow / n:.1f} % of blocks (woke {an.get('wake_ms_avg')} ms after on average, worst "
+                         f"{an.get('wake_ms_max')} ms; answered {an.get('answer_ms_avg')} ms after, worst "
+                         f"{an.get('answer_ms_max')} ms). See 'Processing', worker_detail, answer.")
         if speed and not speed.get("error") and pr.get("cpu_ms"):
             bg, ui = speed.get("background", {}), speed.get("user_interactive", {})
             if bg and ui and ui.get("cpu_total"):
@@ -415,7 +426,7 @@ def _findings(app_state, sysinfo, devs, crash, speed):
         if gaps.get("bunched"):
             f.append(f"The soundcard delivered {gaps['bunched']} of the last {gaps.get('blocks')} blocks bunched together "
                      f"(gaps {gaps.get('min_ms')} to {gaps.get('max_ms')} ms). Set a small soundcard buffer (Settings, "
-                     "Audio engine), or 20 ms of processing headroom.")
+                     "Audio engine), or Processing headroom: 30 ms through Sotto Voce.")
         d = gaps.get("delay_ms")
         if d and d[1] - d[0] > 15:
             f.append(f"The audio callback ran between {d[0]} and {d[1]} ms after the audio was captured: it is being held "

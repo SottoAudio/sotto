@@ -462,6 +462,7 @@ static void hand_over(SE *e, Worker *w, const float *mics, const float *in, int6
     float *ref = (float *)(is + 16 + (size_t)4 * HOP * w->g);
     if (e->pgm >= 0) for (int f = 0; f < HOP; f++) ref[f] = in[(size_t)f * e->n_in + e->pgm];
     else memset(ref, 0, sizeof(float) * HOP);
+    ((volatile int64_t *)is)[1] = (int64_t)(wall_s() * 1e9);   /* handed over (ns), for the workers' timing */
     fence();
     ((volatile int64_t *)is)[0] = k;
     ((volatile int64_t *)w->base)[0] = k;

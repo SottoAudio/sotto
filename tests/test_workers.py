@@ -229,6 +229,43 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class AnswerTimingTests(unittest.TestCase):
+    def test_buckets_and_report(self):
+        t = W.AnswerTiming()
+        for a in (0.5, 3, 7, 9, 12, 30):
+            t.add(int(0.2e6), int(a * 1e6))
+        t.add(-1, 5)                                   # no hand-over time: ignored
+        t.skipped = 2
+        r = t.report()
+        self.assertEqual(r["blocks"], 6)
+        self.assertEqual(r["over_8_ms"], 3)
+        self.assertEqual(r["over_10_ms"], 2)
+        self.assertEqual(r["skipped"], 2)
+        self.assertEqual(r["answer_ms_max"], 30.0)
+        self.assertEqual(sum(r["within_ms"].values()), 6)
+
+    def test_workers_report_how_quickly_they_answer(self):
+        """The workers time each block from the hand-over; with a wait that really sleeps, they
+        wake within a millisecond or two of it (a polling wait could be many ms late)."""
+        pool = W.Pool(["a", "b"], [P.Settings(mode="bypass", hpf_hz=0) for _ in range(2)], model=None, workers=2,
+                      track_delay=False, headroom=1)
+        try:
+            self.assertTrue(all(w.ready for w in pool.workers))
+            rng = np.random.default_rng(1)
+            paced(pool, 300, lambda b: (rng.standard_normal((2, W.HOP)) * 0.1, np.zeros(W.HOP)))
+            time.sleep(0.8)                              # the next state reports
+            for w in pool.state()["worker_detail"]:
+                an = w["answer"]
+                self.assertIsNotNone(an, w)
+                self.assertGreater(an["blocks"], 200)
+                self.assertLess(an["wake_ms_avg"], 3.0, an)
+                self.assertLess(an["answer_ms_avg"], 5.0, an)
+        finally:
+            t0 = time.monotonic()
+            pool.stop()
+            self.assertLess(time.monotonic() - t0, 10.0)    # stopping wakes the waiting workers
+
+
 class DeclickTests(unittest.TestCase):
     def test_switching_to_unprocessed_audio_is_faded_not_stepped(self):
         p = W.Pool.__new__(W.Pool)                         # just the hand-over's fade, no processes

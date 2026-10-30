@@ -17,4 +17,8 @@
 - The soundcard's real-time callback is native C (`engine/audio-io`): it only copies audio through
   lock-free rings, plays the talkers dry and latches HEARTBEAT off if the engine is late. Python
   never runs on it; the engine runs on its own thread a fixed safety margin behind.
+- The 10 ms engine itself is C too (`engine.c`, with the fail-safe core in `core.c`), on a real-time
+  thread in the soundcard's audio workgroup. Python is the control room: commands in, state and rings
+  out (`cengine.py`), and never runs on the engine thread. `--engine python` keeps the old path, with
+  the C core compared in shadow (`ccore.py`). The two cores must stay bit-identical: `tests/test_ccore.py`.
 - Write user-facing text plainly, for comms engineers.

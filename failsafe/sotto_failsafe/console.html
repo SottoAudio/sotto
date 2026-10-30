@@ -1597,8 +1597,8 @@ table.t tr.unused td{color:var(--muted)}
         (e.simulate ? '' : dantePortRow()) +
         (e.simulate ? '' : phonesRow(e)) +
         latencyRow(e) +
-        row('Audio path', e.native ? 'The soundcard\'s real-time thread only copies audio, in native code; Sotto Voce\'s engine runs on its own thread with a safety margin. If the engine is ever later than the margin, the talkers play dry with a short fade and HEARTBEAT stops until you re-arm.' : 'The engine runs inside the soundcard\'s real-time callback (the older way): anything that holds it up can drop audio.',
-          `<span class="fixed">${e.native ? `Native, margin ${e.margin_ms} ms (output ${e.added_ms} ms behind input)` : 'Python callback'}</span>`) +
+        row('Audio path', e.native ? (e.engine === 'C' ? 'The 10 ms engine runs in C on its own real-time thread, in the soundcard\'s audio workgroup; Python only controls it, so the console, the fault finder and everything else can\'t hold it up. ' : '') + 'The soundcard\'s real-time thread only copies audio, in native code; Sotto Voce\'s engine runs on its own thread with a safety margin. If the engine is ever later than the margin, the talkers play dry with a short fade and HEARTBEAT stops until you re-arm.' : 'The engine runs inside the soundcard\'s real-time callback (the older way): anything that holds it up can drop audio.',
+          `<span class="fixed">${e.native ? `${e.engine === 'C' ? 'Engine in C' : 'Engine in Python'}, margin ${e.margin_ms} ms (output ${e.added_ms} ms behind input)` : 'Python callback'}</span>${e.engine_thread ? `<span class="muted">${esc(e.engine_thread)}</span>` : ''}`) +
         coreAudioRow(e) +
         (e.app_nap ? row('App Nap', 'macOS slows down apps with no window. Sotto Voce turns this off while it runs.', `<span class="fixed">${esc(e.app_nap)}</span>`) : '') +
         row('Channels open', 'Inputs and outputs Sotto Voce asked the device for.', `<span class="fixed">${e.n_in} in / ${e.n_out} out</span>`) +

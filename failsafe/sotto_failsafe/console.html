@@ -1303,7 +1303,7 @@ table.t tr.unused td{color:var(--muted)}
   }
   function marginRow(e) {
     const cur = e.margin_ms || 10, pick = UI.marginPick ?? cur;
-    const opts = [5, 10, 20, 40].map(v => `<option value="${v}"${+v === +pick ? ' selected' : ''}>${v} ms${v === 10 ? ' (default)' : ''}</option>`).join('');
+    const opts = [5, 10, 20, 25, 30, 40].map(v => `<option value="${v}"${+v === +pick ? ' selected' : ''}>${v} ms${v === 10 ? ' (default)' : ''}</option>`).join('');
     return row('Engine safety margin', 'How far ahead of the soundcard Sotto Voce\'s engine works. More margin rides out longer hiccups but adds that much delay. If the engine is ever later than this, the talkers play dry and HEARTBEAT stops until you re-arm. The diagnostics file shows how close it gets (\'Native engine margin\').',
       `<select id="f-margin">${opts}</select><button class="btn sm" data-act="marginapply"${+pick === +cur ? ' disabled' : ''}>Apply (restarts the engine)</button>`);
   }

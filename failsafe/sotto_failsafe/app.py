@@ -199,6 +199,7 @@ class BenchApp:
         self._is_dante = False
         self.shadow = None                               # the C core beside the Python one (ccore.Shadow)
         self.cengine = None                              # the engine in C (cengine.CEngine), stage 3
+        self._c_pending = a.engine == "c"                # the C engine may still start (same block needs it)
         self._c_late_seen = 0
         self._c_wg_seen = 0
         self._ext_ok = True                              # this block's checks outside the core, for the shadow
@@ -497,7 +498,7 @@ class BenchApp:
                     self.proc.set_headroom(hr)
                     h = self.proc.headroom
                     what = "same block" if h == 0 else f"{10 * h} ms"
-                    note = "" if h == hr else " (same block needs the engine in C)"
+                    note = "" if h == hr or self._c_pending else " (same block needs the engine in C)"
                     self.log(Event(self.core.t, "headroom", f"{what} ({10 * (h + 1)} ms through Sotto Voce){note}", "console"))
         return {"ok": True, "applied": True, "errors": errors}
 
@@ -697,6 +698,7 @@ class BenchApp:
 
     def _start_c_engine(self, n_in, n_out):
         from . import cengine
+        self._c_pending = False
         try:
             ce = cengine.CEngine(self.native, self.cfg, n_in, n_out, self.a.block)
             if self.proc is not None:
@@ -706,6 +708,8 @@ class BenchApp:
             LOG.exception("C engine couldn't start; the engine runs in Python")
             return
         self.cengine = ce
+        if self.proc is not None and getattr(self.proc, "headroom", None) == 0:
+            self.log(Event(self.core.t, "headroom", "same block (10 ms through Sotto Voce), with the engine in C", "auto"))
         self.shadow_note = "not needed: the engine itself runs in C"
         LOG.info("C engine: the 10 ms engine runs in C on its own real-time thread; Python only controls it")
 
@@ -1418,7 +1422,7 @@ class BenchApp:
     PATCH_KEYS = ("talker_in", "talker_out", "names", "probe_in", "probe_out", "heartbeat_out", "pgm_in", "monitor",
                   "listen_in")
     ENGINE_KEYS = ("device", "io_buffer", "rrcs_host", "rrcs_port", "margin_ms")
-    MARGINS = (5, 10, 20, 40)
+    MARGINS = (5, 10, 20, 25, 30, 40)
 
     def config(self):
         from . import launcher as L

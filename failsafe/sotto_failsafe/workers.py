@@ -23,12 +23,14 @@ re-arming stays manual.
 """
 import atexit
 import contextlib
+import ctypes
 import itertools
 import logging
 import logging.handlers
 import math
 import multiprocessing as mp
 import os
+import sys
 import threading
 import time
 from multiprocessing import shared_memory
@@ -48,6 +50,32 @@ def auto_workers(n_talkers, cores=None):
     """Up to three talkers per worker, leaving cores for the audio engine, Dante and the system."""
     cores = cores or os.cpu_count() or 2
     return max(1, min(math.ceil(n_talkers / 3), max(1, cores - 3)))
+
+
+MODEL_WEIGHT = 3                            # a speech-model talker costs about three echo-only ones
+
+
+def plan_groups(settings, max_workers):
+    """Contiguous groups of talkers for the workers, by weight: a talker on the speech model weighs 3,
+    any other 1, and a group holds 3. So each speech-model talker gets a worker to itself, which keeps
+    every worker's time per block short (it's the slowest worker the engine waits for). With more
+    talkers than workers allow, the groups grow evenly."""
+    w = [MODEL_WEIGHT if getattr(s, "mode", "full") == "full" else 1 for s in settings]
+    if not w:
+        return [[]]
+    cap = MODEL_WEIGHT
+    while True:
+        groups, cur, load = [], [], 0
+        for i, x in enumerate(w):
+            if cur and load + x > cap:
+                groups.append(cur)
+                cur, load = [], 0
+            cur.append(i)
+            load += x
+        groups.append(cur)
+        if len(groups) <= max(1, max_workers):
+            return groups
+        cap += 1
 
 
 def split(n, k):
@@ -90,6 +118,20 @@ class _Layout:
 # ---------------------------------------------------------------------------- worker process
 REALTIME_MS = 8.0                       # the processing thread's real-time budget per 10 ms block. At 6 ms,
                                         # a block that ran over could get the thread pushed down by macOS
+
+
+def waker():
+    """macOS 14.4+: os_sync_wake_by_address_all, so the engine (waiting on a result's tag in shared
+    memory) wakes the moment the result is written. None elsewhere: the engine then checks instead."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        f = ctypes.CDLL(None).os_sync_wake_by_address_all
+    except (OSError, AttributeError):
+        return None
+    f.restype = ctypes.c_int
+    f.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32]
+    return f
 
 
 class AnswerTiming:
@@ -185,6 +227,8 @@ def _worker_main(wid, names, settings, model, shm_name, g, in_sem, out_sem, ctrl
     errors = [0]
     timing = AnswerTiming()
     last_state = [0.0]
+    wake = waker()
+    out_addr = [otg.ctypes.data for otg, _, _ in outs]   # each result's tag, for the engine's wait
 
     def send_state():
         last_state[0] = time.monotonic()
@@ -231,6 +275,8 @@ def _worker_main(wid, names, settings, model, shm_name, g, in_sem, out_sem, ctrl
                     dv[:] = d
                     out_sem.release()                # barrier: the data is visible before the tag
                     otg[0] = tag
+                    if wake is not None:
+                        wake(out_addr[tag % SLOTS], 8, 1)   # OS_SYNC_WAKE_BY_ADDRESS_SHARED
                     if tag == newest:
                         timing.add(woke - given, time.perf_counter_ns() - given)
                 except Exception as e:
@@ -357,8 +403,11 @@ class Pool:
         self.track_delay = track_delay
         self.ctx = mp.get_context("spawn")
         self.up = self.ctx.Queue()
-        k = workers if workers else auto_workers(self.n)
-        self.workers = [_Worker(self, w, rows) for w, rows in enumerate(split(self.n, k))]
+        if workers:
+            groups = split(self.n, workers)
+        else:                                            # auto: one speech-model talker per worker
+            groups = plan_groups(self.settings, max(1, (os.cpu_count() or 2) - 3))
+        self.workers = [_Worker(self, w, rows) for w, rows in enumerate(groups)]
         self.of = {}                                     # talker -> (worker, row in its group)
         for w in self.workers:
             for j, i in enumerate(w.rows):

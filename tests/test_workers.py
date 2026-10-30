@@ -229,6 +229,22 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class PlanGroupsTests(unittest.TestCase):
+    """Auto: each speech-model talker gets a worker to itself; echo-only talkers share, three a worker."""
+
+    def test_speech_model_talkers_get_their_own_worker(self):
+        s = lambda m: P.Settings(mode=m)  # noqa: E731
+        self.assertEqual(W.plan_groups([s("aec"), s("aec"), s("aec"), s("full"), s("aec")], 9),
+                         [[0, 1, 2], [3], [4]])
+        self.assertEqual(W.plan_groups([s("full")] * 5, 9), [[0], [1], [2], [3], [4]])
+
+    def test_more_talkers_than_workers_share_evenly(self):
+        g = W.plan_groups([P.Settings(mode="full")] * 64, 9)
+        self.assertLessEqual(len(g), 9)
+        self.assertEqual(sorted(i for grp in g for i in grp), list(range(64)))
+        self.assertLessEqual(max(map(len, g)) - min(map(len, g)), 7)
+
+
 class AnswerTimingTests(unittest.TestCase):
     def test_buckets_and_report(self):
         t = W.AnswerTiming()

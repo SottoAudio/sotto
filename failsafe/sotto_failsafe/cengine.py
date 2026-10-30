@@ -30,7 +30,7 @@ WHY_PROBE, WHY_STARTING, WHY_EXTERNAL, WHY_REQUEST, WHY_LATE, WHY_PROC = 1, 2, 3
 TIMING_COLS = 10
 STATS = ("running", "blocks", "proc_blocks", "misses", "miss_run", "max_miss_run", "proc_ok", "last_missed",
          "late_total", "late_until", "rec_dropped", "test_short", "headroom", "live", "same_wait_ms", "wait_ms",
-         "wait_max_ms")
+         "wait_max_ms", "woken_by_workers", "wake_errors")
 _ready = False
 
 

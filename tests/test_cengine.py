@@ -150,6 +150,9 @@ class SameBlockTests(unittest.TestCase):
             self.assertEqual(st["headroom"], 0)
             self.assertEqual(st["same_wait_ms"], 20.0)
             self.assertGreater(st["wait_max_ms"], 0.0)          # it did wait for the workers
+            if sys.platform == "darwin":                        # macOS 14.4+: woken by the workers, not checking
+                self.assertEqual(st["woken_by_workers"], 1.0, st)
+                self.assertEqual(st["wake_errors"], 0.0, st)
             compared = 0
             for k in range(4, 148):
                 if c_missed[k] or a.last_missed:

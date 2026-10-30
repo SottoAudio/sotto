@@ -286,6 +286,9 @@ class CEngine:
             with me.lock:
                 if not me.h:                      # stopped: the model only
                     return plan
+                if not me.started:                # not running yet: straight into the core, no waiting
+                    me.cc.set_solo(core._solo_plan, s)
+                    return plan
                 if me._solo_seq is not None:      # the last plan must be taken before staging the next
                     res = ctypes.c_double(0)
                     end = time.monotonic() + 1.0

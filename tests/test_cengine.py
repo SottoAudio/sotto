@@ -225,3 +225,47 @@ class ArmingSafetyTests(unittest.TestCase):
         self.assertTrue(ok, msg)
         self.feed(0.2)
         self.assertFalse(self.nat.heartbeat_blocked())
+
+
+@unittest.skipUnless(cengine.library() is not None, "native library not built")
+class TestSourcePlaybackTests(unittest.TestCase):
+    def test_the_engine_plays_test_sources_exactly_as_python_would(self):
+        import tempfile
+        from sotto_failsafe import nativeio, testsrc
+        from sotto_failsafe.core import FailsafeCore
+        cfg = Config(talker_in=[0, 1], talker_out=[0, 1], talker_names=["a", "b"], probe_in=[6], probe_out=6,
+                     heartbeat_out=7, monitor_out=[], marker_on=False)
+        n_in = n_out = 8
+        nat = nativeio.NativeIO(n_in, n_out, B, B, 48000, margin=960)
+        core = FailsafeCore(cfg)
+        ce = cengine.CEngine(nat, cfg, n_in, n_out, B)
+        ce.attach(core)
+        with tempfile.TemporaryDirectory() as d:
+            ts = testsrc.TestSources(d, {0: "talker 1", 1: "talker 2"})
+            rng = np.random.default_rng(2)
+            ts.plan = {0: [testsrc._Loop(rng.standard_normal(1234) * 0.1, 0.5)],
+                       1: [testsrc._Loop(rng.standard_normal(4800) * 0.1, 1.0),
+                           testsrc._Loop(rng.standard_normal(777) * 0.1, 0.25)]}
+            ce.start()
+            try:
+                ce.sync_tests(ts)
+                self.assertIs(ce._plan_sent, ts.plan)
+                y = np.zeros((B, n_out), np.float32)
+                got = []
+                for k in range(40):
+                    nat.cycle(np.zeros((B, n_in), np.float32), y, B)
+                    got.append(y[:, :2].copy())
+                    time.sleep(0.01)
+                got = np.concatenate(got)
+                ref = ts.apply(np.zeros((B * 40, n_in), np.float32), B * 40)[:, :2]
+                start = int(np.argmax(np.any(got != 0, axis=1)))      # the engine's first block out
+                blocks = (len(got) - start) // B - 1
+                self.assertGreater(blocks, 20)
+                # the engine's clock started with its first block: the same samples, block for block
+                np.testing.assert_array_equal(got[start:start + blocks * B], ref[:blocks * B])
+                ts.plan = {}
+                ce.sync_tests(ts)
+                self.assertIs(ce._plan_sent, ts.plan)
+            finally:
+                ce.destroy()
+                nat.destroy()

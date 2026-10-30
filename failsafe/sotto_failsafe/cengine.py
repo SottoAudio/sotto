@@ -8,6 +8,7 @@ The app keeps its Python FailsafeCore object as the model the console and the fa
 CEngine.sync() copies the C core's state into it, and the ArmState / core methods the app calls are
 wrapped so they act on the C core first (attach()). The C core decides; the model shows.
 """
+import collections
 import ctypes
 import threading
 import time
@@ -18,7 +19,13 @@ from . import ccore
 from .arming import Event
 from .diagnostics import LOG
 
-CMD_ARM, CMD_DISARM, CMD_TRIP, CMD_INJECT, CMD_CLEAR, CMD_SOLO, CMD_HEADROOM, CMD_WORKER, CMD_FREEZE = range(1, 10)
+CMD_ARM, CMD_DISARM, CMD_TRIP, CMD_INJECT, CMD_CLEAR, CMD_SOLO, CMD_HEADROOM, CMD_WORKER, CMD_FREEZE, CMD_TESTS = range(1, 11)
+
+
+class TLoop(ctypes.Structure):
+    """engine.c's TLoop: one test-source loop, played by the engine itself."""
+    _fields_ = [("ch", ctypes.c_int32), ("pad", ctypes.c_int32), ("x", ctypes.c_void_p), ("n", ctypes.c_int64),
+                ("gain", ctypes.c_double)]
 WHY_PROBE, WHY_STARTING, WHY_EXTERNAL, WHY_REQUEST, WHY_LATE, WHY_PROC = 1, 2, 3, 4, 5, 6
 TIMING_COLS = 10
 STATS = ("running", "blocks", "proc_blocks", "misses", "miss_run", "max_miss_run", "proc_ok", "last_missed",
@@ -117,6 +124,8 @@ class CEngine:
         self.ext_why = ""
         self._solo_seq = None
         self.test_short = 0
+        self._plan_sent = None
+        self._plans = collections.deque(maxlen=32)   # plans the engine may still be reading: kept alive
 
     # ------------------------------------------------------------ commands
     def cmd(self, op, a=0, b=0, x=0.0, wait=0.25, p=(None, None, None)):
@@ -400,6 +409,20 @@ class CEngine:
     def phones(self):
         n = self.lib.se_phones(self.h, self._ph.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), len(self._ph))
         return self._ph[:n]
+
+    def sync_tests(self, tests):
+        """Test sources play in the engine itself: when the plan changes, its loops (samples stay
+        in Python, kept alive here) are handed over. The engine never plays them while armed."""
+        plan = tests.plan
+        if plan is self._plan_sent:
+            return
+        loops = [(ch, lp) for ch, lps in plan.items() for lp in lps if ch < self.n_in and len(lp.x)][:64]
+        arr = (TLoop * max(1, len(loops)))(*[TLoop(int(ch), 0, lp.x.ctypes.data, len(lp.x), float(lp.gain))
+                                             for ch, lp in loops])
+        self._plans.append((plan, arr))
+        res = self.cmd(CMD_TESTS, len(loops), wait=0.5, p=(ctypes.cast(arr, ctypes.c_void_p), None, None))
+        if res is not None:
+            self._plan_sent = plan
 
     def feed_tests(self, tests):
         """Test sources rendered ahead for the engine to mix in (never while armed: the engine checks)."""

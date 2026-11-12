@@ -36,6 +36,11 @@
   table.pt td { padding: 3px 6px; } table.pt td:first-child { color: var(--muted); font-variant-numeric: tabular-nums; width: 28px; }
   table.pt select { width: auto; min-width: 70px; } select.clash { border-color: var(--bad); }
   .scroll { max-height: 360px; overflow: auto; } button.link { background: none; border: 0; padding: 0; color: var(--accent); font-weight: 600; text-decoration: underline; }
+  table.lt { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 14px; margin-top: 10px; }
+  table.lt th { text-align: right; font-size: 12px; color: var(--muted); font-weight: 600; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+  table.lt td { text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+  table.lt .fit { color: var(--ok); } table.lt .nofit { color: var(--bad); font-weight: 650; }
+  .headline { font-weight: 600; margin: 10px 0 0; }
   a.button { display: inline-block; text-decoration: none; font-weight: 650; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); color: var(--text); padding: 11px 16px; }
 </style>
 </head>
@@ -83,6 +88,18 @@
     </div>
     <p class="muted" id="runsDir"></p>
     <div class="row"><button class="primary" id="devBtn">Start with this soundcard</button><span class="err" id="err"></span></div>
+  </div>
+  <div class="panel" id="ltPanel">
+    <h2>Processing load test</h2>
+    <p class="muted" style="margin-top:0">How many talkers this computer can clean, and what each one costs. It runs Full clean on more and more talkers (1, 2, 4, 6, 8 and so on) for 10 seconds each, the way Sotto Voce runs them, and checks every block arrives in time for 10, 20 and 30 ms through Sotto Voce. It stops when even 30 ms doesn't keep up. Nothing goes to the soundcard. Quit other apps first; it takes a few minutes.</p>
+    <div class="row">
+      <label class="check" style="margin:0"><select id="ltMax" style="width:auto"><option>8</option><option>16</option><option>24</option><option>32</option><option>48</option><option selected>64</option></select> talkers at most</label>
+      <label class="check" style="margin:0" id="ltInsWrap" hidden><input type="checkbox" id="ltIns"> <span id="ltInsName"></span></label>
+    </div>
+    <div class="row" style="margin-top:10px"><button class="primary" id="ltBtn">Run the load test</button><button id="ltStop" hidden>Stop</button><span class="muted" id="ltNote"></span></div>
+    <p class="headline" id="ltHead" hidden></p>
+    <div class="scroll"><table class="lt" id="ltTable" hidden><thead><tr><th>Talkers</th><th>Workers</th><th>CPU per talker (ms per block)</th><th>Cores busy</th><th>Late: 10 ms</th><th>20 ms</th><th>30 ms</th></tr></thead><tbody></tbody></table></div>
+    <p class="muted" id="ltKey" hidden>Late: the share of blocks that weren't ready when the engine would take them. Green fits (0.5 % or less, never 3 in a row); red doesn't. The result is saved in the diagnostics file.</p>
   </div>
   <div class="panel">
     <h2>Troubleshooting</h2>
@@ -254,6 +271,43 @@ async function start(simulate) {
   }
   $('#starting').textContent = 'The console did not start. Check the soundcard and try opening Sotto Voce again.';
 }
+// ---- the processing load test
+let ltTimer = null;
+function ltCell(x) { return x ? `<td class="${x.fits ? 'fit' : 'nofit'}">${x.late_pct.toFixed(2)} %${x.max_run >= 3 ? ` (${x.max_run} in a row)` : ''}</td>` : '<td></td>'; }
+function ltShow(d) {
+  const r = d.result;
+  $('#ltInsWrap').hidden = !d.insert;
+  $('#ltInsName').textContent = d.insert ? `With the insert from your project (${d.insert}) on every talker` : '';
+  const running = !!d.running;
+  $('#ltBtn').disabled = running; $('#ltStop').hidden = !running;
+  $('#devBtn').disabled = running; $('#simBtn').disabled = running;
+  if (!r) { $('#ltNote').textContent = ''; return running; }
+  $('#ltNote').textContent = running ? (r.step ? `Running ${r.step} talker${r.step > 1 ? 's' : ''}…` : 'Starting…')
+    : r.state === 'done' ? `Last run ${new Date(r.started * 1000).toLocaleString()}${r.insert ? ', with ' + r.insert : ''}.`
+    : r.state === 'cancelled' ? 'Stopped.' : r.state === 'failed' ? 'It didn\'t finish: ' + (r.error || '') : '';
+  const head = r.summary && r.summary.headline;
+  $('#ltHead').hidden = !head; $('#ltHead').textContent = head || '';
+  const rows = r.rows || [];
+  $('#ltTable').hidden = !rows.length; $('#ltKey').hidden = !rows.length;
+  $('#ltTable tbody').innerHTML = rows.map(x => x.error
+    ? `<tr><td>${x.talkers}</td><td>${x.workers ?? ''}</td><td colspan="5" style="text-align:left">${esc(x.error)}</td></tr>`
+    : `<tr><td>${x.talkers}</td><td>${x.workers}</td><td>${x.cpu_ms_per_talker.toFixed(2)}</td><td>${x.cores_busy.toFixed(1)}</td>${ltCell(x.same)}${ltCell(x.h1)}${ltCell(x.h2)}</tr>`).join('');
+  return running;
+}
+async function ltPoll() {
+  clearTimeout(ltTimer);
+  let d; try { d = await (await fetch('/setup/loadtest', {cache: 'no-store'})).json(); } catch (e) { return; }
+  if (ltShow(d)) ltTimer = setTimeout(ltPoll, 1000);
+}
+$('#ltBtn').onclick = async () => {
+  $('#ltNote').textContent = 'Starting…';
+  const r = await (await fetch('/setup/loadtest', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({max_talkers: +$('#ltMax').value, insert: $('#ltIns').checked})})).json();
+  if (!r.ok) { $('#ltNote').textContent = r.error; return; }
+  ltPoll();
+};
+$('#ltStop').onclick = async () => { await fetch('/setup/loadtest/stop', {method: 'POST'}); $('#ltNote').textContent = 'Stopping…'; ltPoll(); };
+ltPoll();
 $('#simBtn').onclick = () => start(true);
 $('#devAgain').onclick = () => loadDevices();
 $('#devBtn').onclick = () => start(false);

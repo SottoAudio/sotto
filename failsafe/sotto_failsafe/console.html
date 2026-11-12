@@ -1350,6 +1350,17 @@ table.t tr.unused td{color:var(--muted)}
     return row('Delay, mic to return', 'Measured from what the audio driver reports, plus Sotto Voce\'s own delay. Add the Dante latency set in Dante Virtual Soundcard (each way).',
       `<span class="fixed">${total.toFixed(1)} ms</span><span class="muted">soundcard in ${pa.in} ms + Sotto Voce ${sotto.toFixed(1)} ms (${e.regroup_ms ? `regrouping ${e.regroup_ms} ms, ` : ''}processing ${pr.latency_ms ?? '–'} ms) + soundcard out ${pa.out} ms</span>`);
   }
+  function measureRow() {
+    const m = APP && APP.latency_measure, armed = S.armed;
+    const listen = APP && APP.channels && APP.channels.listen_in;
+    let res = '';
+    if (m && m.state === 'measuring') res = '<span class="muted">Measuring… speech is playing into talker 1.</span>';
+    else if (m && m.state === 'done') res = `<span class="fixed">${m.total_ms} ms</span><span class="muted">Sotto Voce's processing ${m.processing_ms} ms${m.processing_measured ? '' : ' (nominal)'} + out and back ${m.loop_ms} ms · match ${m.confidence}${m.when ? ' · ' + new Date(m.when * 1000).toLocaleTimeString() : ''}</span>`;
+    else if (m && m.state === 'failed') res = `<span class="muted">${esc(m.error || 'Failed')}</span>`;
+    const why = armed ? 'Disarm first: it plays a test source.' : !listen ? 'Set a listener feed input on the setup page first.' : '';
+    return row('Measure latency', `Times the real delay with a loop: talker 1's return goes out over Dante, through an interface and a cable, and back in on the listener feed input${listen ? ` (IN ${listen})` : ''}. Sotto Voce plays speech into talker 1 for about 5 seconds, while disarmed, then puts talker 1's test source back. The result is the whole mic-to-headset delay through this Mac, with the interface standing in for the panel's converters.`,
+      `<button class="btn sm" data-act="measurelat"${why || (m && m.state === 'measuring') ? ' disabled' : ''}>Measure</button>${why ? `<span class="muted">${why}</span>` : ''}${res}`);
+  }
   function coreAudioRow(e) {
     const c = e.coreaudio;
     if (!c) return '';
@@ -1626,6 +1637,7 @@ table.t tr.unused td{color:var(--muted)}
         (e.simulate ? '' : dantePortRow()) +
         (e.simulate ? '' : phonesRow(e)) +
         latencyRow(e) +
+        (e.simulate ? '' : measureRow()) +
         row('Audio path', e.native ? (e.engine === 'C' ? 'The 10 ms engine runs in C on its own real-time thread, in the soundcard\'s audio workgroup; Python only controls it, so the console, the fault finder and everything else can\'t hold it up. ' : '') + 'The soundcard\'s real-time thread only copies audio, in native code; Sotto Voce\'s engine runs on its own thread with a safety margin. If the engine is ever later than the margin, the talkers play dry with a short fade and HEARTBEAT stops until you re-arm.' : 'The engine runs inside the soundcard\'s real-time callback (the older way): anything that holds it up can drop audio.',
           `<span class="fixed">${e.native ? `${e.engine === 'C' ? 'Engine in C' : 'Engine in Python'}, margin ${e.margin_ms} ms (output ${e.added_ms} ms behind input)` : 'Python callback'}</span>${e.engine_thread ? `<span class="muted">${esc(e.engine_thread)}</span>` : ''}`) +
         coreAudioRow(e) +
@@ -1964,6 +1976,15 @@ table.t tr.unused td{color:var(--muted)}
         const el = $('#f-lphones'); const dev = el && el.value !== '' ? +el.value : null;
         api('/api/phones', { device: dev }).then(r => { if (r.ok === false) toast(r.error); else { APP.local_phones = r.state; toast(dev == null ? 'Phones on this Mac: off' : `Phones also on ${r.name}`); renderSet(); } })
           .catch(() => toast('Sotto Voce did not answer'));
+        return;
+      }
+      case 'measurelat': {
+        appCmd({ cmd: 'measure_latency' }).then(r => {
+          if (r.ok === false) { toast(r.error); return; }
+          if (APP) APP.latency_measure = r.state; renderSet();
+          (async () => { for (let i = 0; i < 40; i++) { await new Promise(res => setTimeout(res, 500)); const m = APP && APP.latency_measure;
+            if (m && m.state !== 'measuring') { renderSet(); if (m.state === 'done') toast(`Measured: ${m.total_ms} ms, mic to headset`); return; } } })();
+        });
         return;
       }
       case 'marginapply': {

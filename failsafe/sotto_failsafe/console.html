@@ -477,7 +477,27 @@ table.t tr.unused td{color:var(--muted)}
   const pad = n => String(n).padStart(2, '0');
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const DT = 10, GRACE = 1000, ARM_HOLD = 5000, NET = 4, LOGIC = 20, RRCS_MS = 30, MAXT = 60;
-  const SYSNAME = { i61: 'PROBE return', i62: 'PGM', o61: 'HEARTBEAT', o62: 'PROBE', o63: 'Phones L', o64: 'Phones R' };
+  // The system channels: the running app's own (state.channels), or the usual 61-64 in the preview.
+  let SYSCH = null;
+  function sysChannels() {
+    const c = SYSCH || {};
+    return { probe_in: c.probe_in && c.probe_in.length ? c.probe_in : [61], pgm_in: c.pgm_in === undefined ? 62 : c.pgm_in,
+             heartbeat_out: c.heartbeat_out || 61, probe_out: c.probe_out || 62, monitor_out: c.monitor_out && c.monitor_out.length ? c.monitor_out : [63, 64] };
+  }
+  function sysName(k, n) {
+    const c = sysChannels();
+    if (k === 'i') {
+      const p = c.probe_in.indexOf(n);
+      if (p >= 0) return c.probe_in.length > 1 ? `PROBE return ${p + 1}` : 'PROBE return';
+      if (n === c.pgm_in) return 'PGM';
+    } else {
+      if (n === c.heartbeat_out) return 'HEARTBEAT';
+      if (n === c.probe_out) return 'PROBE';
+      const m = c.monitor_out.indexOf(n);
+      if (m >= 0) return m ? 'Phones R' : 'Phones L';
+    }
+    return null;
+  }
   const SK = '<span class="sk" aria-hidden="true">S</span>';
   const PHMODES = {
     clicked: { l: 'As clicked', d: 'Both ears. An input solo is the dry signal as it reaches the DSP; an output solo is the clean return going to the Riedel.' },
@@ -590,7 +610,7 @@ table.t tr.unused td{color:var(--muted)}
   const modeRaw = i => { const o = opOf(i); return o ? o.mode : P.ch[i].mode; };
   const modeOf = i => modeRaw(i) === 'default' ? P.proc.mode : modeRaw(i);
   const modeIsOwn = i => modeRaw(i) !== 'default';
-  const nameOf = (k, n) => n <= MAXT ? ((opOf(n - 1) || {}).name || P.ch[n - 1].name) : SYSNAME[k + n];
+  const nameOf = (k, n) => sysName(k, n) || (n <= MAXT ? ((opOf(n - 1) || {}).name || P.ch[n - 1].name) : `${k === 'i' ? 'IN' : 'OUT'} ${n}`);
   const chName = i => nameOf('i', i + 1);
   function insOf(i) {
     if (APP) {                                   // connected: inserts are real plugins, named by path
@@ -880,9 +900,13 @@ table.t tr.unused td{color:var(--muted)}
     const n = P.count, used = P.ch.slice(0, n).filter(c => c.used).length;
     $('#inCount').textContent = `1–${n}`; $('#outCount').textContent = `1–${n}`;
     $('#inList').innerHTML = Array.from({ length: n }, (_, i) => stripHTML('i', i + 1, P.ch[i].used ? P.ch[i].pos : 'not patched')).join('');
-    $('#inSys').innerHTML = stripHTML('i', 61, 'from OUT 62') + stripHTML('i', 62, 'reference', { cls: 'pgm' });
+    const sc = sysChannels();
+    $('#inSys').innerHTML = sc.probe_in.map(ch => stripHTML('i', ch, `from OUT ${sc.probe_out}`)).join('') +
+      (sc.pgm_in ? stripHTML('i', sc.pgm_in, 'reference', { cls: 'pgm' }) : '');
     $('#outList').innerHTML = Array.from({ length: n }, (_, i) => stripHTML('o', i + 1)).join('');
-    $('#outSys').innerHTML = stripHTML('o', 61, 'to VOX 4-wire') + stripHTML('o', 62, 'loops to IN 61') + stripHTML('o', 63, 'phones bus', { static: true }) + stripHTML('o', 64, 'phones bus', { static: true });
+    $('#outSys').innerHTML = stripHTML('o', sc.heartbeat_out, 'to VOX 4-wire') +
+      stripHTML('o', sc.probe_out, sc.probe_in.length > 1 ? 'feeds every loop' : `loops to IN ${sc.probe_in[0]}`) +
+      [...new Set(sc.monitor_out)].map(ch => stripHTML('o', ch, 'phones bus', { static: true })).join('');
     strips = [...document.querySelectorAll('.strip')].map(el => ({ id: el.dataset.id, el, m: el.querySelector('.m'), pk: el.querySelector('.pk'), db: el.querySelector('.db'), tag: el.querySelector('[data-tag]'), ear: el.querySelector('.ear') }));
     $('#tiles').innerHTML = Array.from({ length: n }, (_, i) => {
       const c = P.ch[i];
@@ -1455,8 +1479,8 @@ table.t tr.unused td{color:var(--muted)}
   const chRange = n => Array.from({ length: n }, (_, k) => k + 1);
   const chLabel = (side, c) => { const n = devCh().names && devCh().names[side] && devCh().names[side][c - 1]; return n ? `${c} · ${n}` : String(c); };
   const SYS = [
-    ['pgm_in', 'PGM input (echo reference)', 'in'], ['probe_in', 'PROBE return input', 'in'], ['probe_in2', 'Second PROBE return (optional: another loop)', 'in', true], ['listen_in', 'Listener feed input (optional, for timing)', 'in', true],
-    ['probe_out', 'PROBE output', 'out'], ['heartbeat_out', 'HEARTBEAT output (to the VOX)', 'out'], ['mon_l', 'Headphones left (phones bus)', 'out'], ['mon_r', 'Headphones right', 'out'],
+    ['pgm_in', 'PGM (echo reference)', 'in'], ['probe_in', 'PROBE return 1 (the loop through the frame)', 'in'], ['probe_in2', 'PROBE return 2 (optional: a second loop)', 'in', true], ['listen_in', 'Listener feed (optional, for timing)', 'in', true],
+    ['probe_out', 'PROBE (feeds every loop)', 'out'], ['heartbeat_out', 'HEARTBEAT (to the VOX)', 'out'], ['mon_l', 'Headphones left (phones bus)', 'out'], ['mon_r', 'Headphones right', 'out'],
   ];
   function chansParse(v) {
     const out = [];
@@ -1500,11 +1524,11 @@ table.t tr.unused td{color:var(--muted)}
         else seen[ch] = [key, what];
       });
     };
-    check('Input', [...pt.talkers.map((t, k) => [`t${k}.in`, t.in, `talker ${k + 1}`]), ['pgm_in', pt.pgm_in, 'PGM'], ['probe_in', pt.probe_in, 'PROBE return'], ['probe_in2', pt.probe_in2, 'second PROBE return'], ['listen_in', pt.listen_in, 'listener feed']]);
+    check('Input', [...pt.talkers.map((t, k) => [`t${k}.in`, t.in, `talker ${k + 1}`]), ['pgm_in', pt.pgm_in, 'PGM'], ['probe_in', pt.probe_in, 'PROBE return 1'], ['probe_in2', pt.probe_in2, 'PROBE return 2'], ['listen_in', pt.listen_in, 'listener feed']]);
     check('Output', [...pt.talkers.map((t, k) => [`t${k}.out`, t.out, `talker ${k + 1}`]), ['probe_out', pt.probe_out, 'PROBE'], ['heartbeat_out', pt.heartbeat_out, 'HEARTBEAT'], ['mon_l', pt.mon_l, 'headphones'], ['mon_r', pt.mon_r, 'headphones']]);
     const d = devCh();
     const over = (side, have, items) => items.forEach(([key, ch, what]) => { if (ch > have) { bad.add(key); msgs.push(`${side} ${ch} (${what}) isn't on ${d.device}, which has ${have} ${side.toLowerCase()}s.`); } });
-    over('Input', d.inputs, [...pt.talkers.map((t, k) => [`t${k}.in`, t.in, `talker ${k + 1}`]), ['pgm_in', pt.pgm_in, 'PGM'], ['probe_in', pt.probe_in, 'PROBE return'], ['probe_in2', pt.probe_in2, 'second PROBE return'], ['listen_in', pt.listen_in, 'listener feed']]);
+    over('Input', d.inputs, [...pt.talkers.map((t, k) => [`t${k}.in`, t.in, `talker ${k + 1}`]), ['pgm_in', pt.pgm_in, 'PGM'], ['probe_in', pt.probe_in, 'PROBE return 1'], ['probe_in2', pt.probe_in2, 'PROBE return 2'], ['listen_in', pt.listen_in, 'listener feed']]);
     over('Output', d.outputs, [...pt.talkers.map((t, k) => [`t${k}.out`, t.out, `talker ${k + 1}`]), ['probe_out', pt.probe_out, 'PROBE'], ['heartbeat_out', pt.heartbeat_out, 'HEARTBEAT'], ['mon_l', pt.mon_l, 'headphones'], ['mon_r', pt.mon_r, 'headphones']]);
     return { bad, msgs };
   }
@@ -1529,12 +1553,15 @@ table.t tr.unused td{color:var(--muted)}
     const trows = pt.talkers.map((t, k) => `<tr><td class="n">${pad(k + 1)}</td>
       <td><input type="text" data-pk="t${k}.name" value="${esc(t.name)}" placeholder="Talker ${k + 1}" aria-label="Name of talker ${k + 1}"></td>
       <td>${chSel(`t${k}.in`, t.in, 'in', bad)}</td><td>${chSel(`t${k}.out`, t.out, 'out', bad)}</td></tr>`).join('');
-    const srows = SYS.map(([key, label, side, optional]) => `<label>${label}${chSel(key, pt[key], side, bad, optional ? [[0, 'Off']] : [])}<small class="muted">default ${key === 'mon_l' ? 63 : key === 'mon_r' ? 64 : (key === 'probe_in2' ? 'off' : chansParse(UI.cfg.defaults[key])[0] || 'off')}</small></label>`).join('');
+    const srow = ([key, label, side, optional]) => `<label>${label}${chSel(key, pt[key], side, bad, optional ? [[0, 'Off']] : [])}<small class="muted">default ${key === 'mon_l' ? 63 : key === 'mon_r' ? 64 : (key === 'probe_in2' ? 'off' : chansParse(UI.cfg.defaults[key])[0] || 'off')}</small></label>`;
+    const srowsIn = SYS.filter(s => s[2] === 'in').map(srow).join(''), srowsOut = SYS.filter(s => s[2] === 'out').map(srow).join('');
     const dc = devCh();
     return box('I/O patch', `Which soundcard channel does each job, numbered as in Dante Controller. Every dropdown lists ${esc(dc.device)}'s channels: inputs 1–${dc.inputs}, outputs 1–${dc.outputs}. The defaults put the system on 61–64. Applying checks the soundcard has the channels, then restarts the engine: HEARTBEAT stops, the frame puts listeners on dry, and Sotto Voce starts again disarmed.`,
       row('Talkers', 'How many people Sotto Voce cleans up. New talkers take the next free input and return.', `<select data-pk="count">${COUNT_CH.map(c => `<option value="${c}"${c === n ? ' selected' : ''}>${c}</option>`).join('')}</select>`) +
       `<div class="scroll"><table class="t ptab"><thead><tr><th>#</th><th>Name</th><th>Input</th><th>Return (clean)</th></tr></thead><tbody>${trows}</tbody></table></div>` +
-      `<h4 class="subh">System channels</h4><div class="pgrid">${srows}</div>` +
+      `<h4 class="subh">System channels: into Sotto Voce</h4><div class="pgrid">${srowsIn}</div>` +
+      `<h4 class="subh">System channels: out of Sotto Voce</h4><div class="pgrid">${srowsOut}</div>` +
+      `<p class="muted" style="margin:6px 0 0">One PROBE output feeds every loop; subscribe each loop to it in Dante Controller. Each PROBE return is watched on its own, so if one loop fails the fault finder says which.</p>` +
       (msgs.length ? `<p class="note warn">${msgs.map(esc).join('<br>')}</p>` : '') +
       (UI.patchErr ? `<p class="note warn">${esc(UI.patchErr)}</p>` : '') +
       `<div class="row" style="margin-top:10px"><button class="btn sm" data-act="patchapply"${changed && !msgs.length ? '' : ' disabled'}>Apply (restarts the engine)</button><button class="btn sm" data-act="patchdefaults">Back to defaults</button><button class="btn sm" data-act="patchundo"${changed ? '' : ' disabled'}>Undo changes</button></div>`);
@@ -1973,7 +2000,7 @@ table.t tr.unused td{color:var(--muted)}
           [ok ? 'ok' : 'err', `${d.in} inputs and ${d.out} outputs. ${ok ? 'Channels 61 to 64 are there.' : 'Sotto Voce needs 64 of each.'}`],
           ['ok', `Running at ${e2.rate / 1000} kHz, buffer ${e2.buffer} samples (${(e2.buffer / (e2.rate / 1000)).toFixed(2)} ms).`],
           [ok ? 'ok' : 'err', ok ? 'PROBE sent on OUT 62 came back on IN 61 in 8 ms.' : 'PROBE could not be sent: no output 62.'],
-          [ok ? 'ok' : 'warn', ok ? `PGM present on IN 62 at ${Math.round(S.pgm)} dBFS.` : 'No input 62, so no PGM reference.'],
+          [ok ? 'ok' : 'warn', ok ? `PGM present on IN ${sysChannels().pgm_in} at ${Math.round(S.pgm)} dBFS.` : `No input ${sysChannels().pgm_in}, so no PGM reference.`],
           ['ok', 'Microphone permission granted.'],
         ];
         log(`Device check: ${ok ? 'passed' : 'failed'}`, 'settings'); break;
@@ -2021,6 +2048,7 @@ table.t tr.unused td{color:var(--muted)}
   }
   function applyState(st) {
     APP = st; S.alive = true; S.t = st.t * 1000;
+    if (st.channels && JSON.stringify(st.channels) !== JSON.stringify(SYSCH)) { SYSCH = st.channels; buildMain(); }
     S.armed = !!st.armed;
     (st.talkers || []).forEach((tk, i) => { S.chArmed[i] = !!tk.armed; });
     S.greenSince = st.health === 'all green' ? S.t - st.green_for_s * 1000 : null;

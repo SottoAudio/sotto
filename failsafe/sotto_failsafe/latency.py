@@ -77,9 +77,18 @@ class LatencyMeter:
             if self.active is None:
                 return
             self.active = None
-            self.result = {"state": "failed", "error": why, "when": time.time()}
+        self._publish({"state": "failed", "error": why, "when": time.time()})
+
+    def _publish(self, res):
+        """on_done first (it puts talker 1's test source back), then the answer is shown: so anything
+        that sees "done" also sees the test source as it was."""
         if self.on_done:
-            self.on_done(self.result)
+            try:
+                self.on_done(res)
+            except Exception:
+                pass
+        with self.lock:
+            self.result = res
 
     def feed(self, blk):
         with self.lock:
@@ -101,10 +110,7 @@ class LatencyMeter:
         x = np.concatenate(a["blocks"], axis=0)
         res = measure(x[:, 0], x[:, 1], x[:, 2], self.fs, a["processing_ms"])
         res["when"] = time.time()
-        with self.lock:
-            self.result = res
-        if self.on_done:
-            self.on_done(res)
+        self._publish(res)
 
     def state(self):
         with self.lock:

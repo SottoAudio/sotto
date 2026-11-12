@@ -91,14 +91,18 @@
   </div>
   <div class="panel" id="ltPanel">
     <h2>Processing load test</h2>
-    <p class="muted" style="margin-top:0">How many talkers this computer can clean, and what each one costs. It runs Full clean on more and more talkers (1, 2, 4, 6, 8 and so on) for 10 seconds each, the way Sotto Voce runs them, and checks every block arrives in time for 10, 20 and 30 ms through Sotto Voce. It stops when even 30 ms doesn't keep up. Nothing goes to the soundcard. Quit other apps first; it takes a few minutes.</p>
+    <p class="muted" style="margin-top:0">How many talkers this computer can clean, and what each one costs. It runs Full clean on more and more talkers (1, 2, 4, 6, 8 and so on) for 10 seconds each and checks every block arrives in time for 10, 20 and 30 ms through Sotto Voce. It stops when even 30 ms doesn't keep up. Nothing goes to the soundcard. Quit other apps first; it takes a few minutes.</p>
+    <p class="muted">Talkers per worker: Sotto Voce now gives each Full clean talker a worker of its own, so each one is done quickly. Sharing a worker runs the speech model on several talkers at once, which uses less CPU per talker but takes longer per block. Run the test at each setting to compare; the last run of each is kept in the table at the bottom.</p>
     <div class="row">
       <label class="check" style="margin:0"><select id="ltMax" style="width:auto"><option>8</option><option>16</option><option>24</option><option>32</option><option>48</option><option selected>64</option></select> talkers at most</label>
+      <label class="check" style="margin:0"><select id="ltPer" style="width:auto"><option value="1" selected>1 (as now)</option><option>2</option><option>3</option><option>4</option><option>6</option></select> talkers per worker</label>
       <label class="check" style="margin:0" id="ltInsWrap" hidden><input type="checkbox" id="ltIns"> <span id="ltInsName"></span></label>
     </div>
     <div class="row" style="margin-top:10px"><button class="primary" id="ltBtn">Run the load test</button><button id="ltStop" hidden>Stop</button><span class="muted" id="ltNote"></span></div>
     <p class="headline" id="ltHead" hidden></p>
     <div class="scroll"><table class="lt" id="ltTable" hidden><thead><tr><th>Talkers</th><th>Workers</th><th>CPU per talker (ms per block)</th><th>Cores busy</th><th>Late: 10 ms</th><th>20 ms</th><th>30 ms</th></tr></thead><tbody></tbody></table></div>
+    <h3 class="sub" id="ltCmpHead" hidden>Every setting tried (the last run of each)</h3>
+    <div class="scroll"><table class="lt" id="ltCmp" hidden><thead><tr><th>Talkers per worker</th><th>Insert</th><th>Most at 10 ms</th><th>20 ms</th><th>30 ms</th><th>CPU per talker (ms)</th><th>Run</th></tr></thead><tbody></tbody></table></div>
     <p class="muted" id="ltKey" hidden>Late: the share of blocks that weren't ready when the engine would take them. Green fits (0.5 % or less, never 3 in a row); red doesn't. The result is saved in the diagnostics file.</p>
   </div>
   <div class="panel">
@@ -283,7 +287,7 @@ function ltShow(d) {
   $('#devBtn').disabled = running; $('#simBtn').disabled = running;
   if (!r) { $('#ltNote').textContent = ''; return running; }
   $('#ltNote').textContent = running ? (r.step ? `Running ${r.step} talker${r.step > 1 ? 's' : ''}…` : 'Starting…')
-    : r.state === 'done' ? `Last run ${new Date(r.started * 1000).toLocaleString()}${r.insert ? ', with ' + r.insert : ''}.`
+    : r.state === 'done' ? `Last run ${new Date(r.started * 1000).toLocaleString()}, ${r.per_worker || 1} talker${(r.per_worker || 1) > 1 ? 's' : ''} per worker${r.insert ? ', with ' + r.insert : ''}.`
     : r.state === 'cancelled' ? 'Stopped.' : r.state === 'failed' ? 'It didn\'t finish: ' + (r.error || '') : '';
   const head = r.summary && r.summary.headline;
   $('#ltHead').hidden = !head; $('#ltHead').textContent = head || '';
@@ -292,6 +296,9 @@ function ltShow(d) {
   $('#ltTable tbody').innerHTML = rows.map(x => x.error
     ? `<tr><td>${x.talkers}</td><td>${x.workers ?? ''}</td><td colspan="5" style="text-align:left">${esc(x.error)}</td></tr>`
     : `<tr><td>${x.talkers}</td><td>${x.workers}</td><td>${x.cpu_ms_per_talker.toFixed(2)}</td><td>${x.cores_busy.toFixed(1)}</td>${ltCell(x.same)}${ltCell(x.h1)}${ltCell(x.h2)}</tr>`).join('');
+  const cmp = d.compare || [];
+  $('#ltCmp').hidden = $('#ltCmpHead').hidden = !cmp.length;
+  $('#ltCmp tbody').innerHTML = cmp.map(h => `<tr><td>${h.per_worker}</td><td>${esc(h.insert || 'none')}</td><td>${h.same}</td><td>${h.h1}</td><td>${h.h2}</td><td>${h.cpu_ms_per_talker == null ? '' : h.cpu_ms_per_talker.toFixed(2)}</td><td>${new Date(h.started * 1000).toLocaleString([], {day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'})}</td></tr>`).join('');
   return running;
 }
 async function ltPoll() {
@@ -302,7 +309,7 @@ async function ltPoll() {
 $('#ltBtn').onclick = async () => {
   $('#ltNote').textContent = 'Starting…';
   const r = await (await fetch('/setup/loadtest', {method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({max_talkers: +$('#ltMax').value, insert: $('#ltIns').checked})})).json();
+    body: JSON.stringify({max_talkers: +$('#ltMax').value, per_worker: +$('#ltPer').value, insert: $('#ltIns').checked})})).json();
   if (!r.ok) { $('#ltNote').textContent = r.error; return; }
   ltPoll();
 };

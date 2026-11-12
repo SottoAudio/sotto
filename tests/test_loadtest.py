@@ -75,6 +75,16 @@ class InsertTests(unittest.TestCase):
         self.assertIsNone(L.first_insert({}))
 
 
+class PerWorkerTests(unittest.TestCase):
+    def test_workers_for(self):
+        self.assertIsNone(L.workers_for(8, None))                 # Sotto Voce's own plan
+        self.assertEqual(L.workers_for(8, 1, cores=12), 8)
+        self.assertEqual(L.workers_for(8, 3, cores=12), 3)        # 3 + 3 + 2
+        self.assertEqual(L.workers_for(64, 1, cores=12), 9)       # all the cores but three, then the groups grow
+        self.assertEqual(L.workers_for(1, 4, cores=12), 1)
+        self.assertEqual(L.workers_for(8, 1, cores=2), 1)
+
+
 class RunTests(unittest.TestCase):
     """A short real run: the workers start, get a block every 10 ms, and the row is filled in.
     Echo removal only, so it runs without the speech model and on slow test machines."""
@@ -86,6 +96,12 @@ class RunTests(unittest.TestCase):
         self.assertGreater(r["cpu_ms_per_block"], 0.0)
         for k, _ in L.FITS:
             self.assertEqual(r[k]["blocks"], 100)
+
+    def test_talkers_sharing_a_worker(self):
+        r = L.run_step(4, None, mode="aec", seconds=0.5, track_delay=False, per_worker=2)
+        self.assertNotIn("error", r, r)
+        self.assertEqual(r["workers"], L.workers_for(4, 2))
+        self.assertEqual(sum(r["groups"]), 4)
 
     def test_runs_in_the_background_and_stops(self):
         """The steps in order, up to the most asked for, stopping at the first that doesn't fit at 30 ms;
@@ -118,6 +134,15 @@ class RunTests(unittest.TestCase):
             t.thread.join(10)
             self.assertEqual(t.state()["state"], "cancelled")
             self.assertEqual(rs.call_count, 4)
+            self.assertEqual(rs.call_args.kwargs["per_worker"], 1)
+            ok, _ = t.start("model", steps=(1, 2), seconds=0.05, per_worker=3)    # another setting
+            t.thread.join(30)
+            self.assertEqual(rs.call_args.kwargs["per_worker"], 3)
+            cmp = L.compare(t.state())
+            self.assertEqual([h["per_worker"] for h in cmp], [1, 3])            # the cancelled run isn't kept
+            self.assertEqual((cmp[0]["h2"], cmp[1]["h2"]), (2, 2))
+            self.assertEqual(len(L.compare(L.LoadTest(path).state())), 2)       # kept after a restart
+            self.assertIn("Every setting tried", L.report(t.state()))
 
 
 class SetupPageTests(unittest.TestCase):
@@ -142,11 +167,19 @@ class SetupPageTests(unittest.TestCase):
                 self.assertIsNone(st["result"])
                 busy = mock.Mock()
                 busy.running.return_value = True
+                busy.start.return_value = (False, "The load test is already running.")
+                busy.state.return_value = None
                 launcher._LOADTEST = busy
 
                 def post(path, body):
                     rq = urllib.request.Request(base + path, json.dumps(body).encode(), {"Content-Type": "application/json"})
                     return json.loads(urllib.request.urlopen(rq, timeout=5).read())
+                r = post("/setup/loadtest", {"per_worker": 3, "max_talkers": 16, "insert": True})
+                self.assertFalse(r["ok"])
+                kw = busy.start.call_args.kwargs
+                self.assertEqual((kw["per_worker"], kw["max_talkers"], L.insert_name(kw["insert"])), (3, 16, "Denoise"))
+                post("/setup/loadtest", {"per_worker": 5})
+                self.assertEqual(busy.start.call_args.kwargs["per_worker"], 1)   # not one of the choices
                 r = post("/setup/start", {"simulate": True})
                 self.assertFalse(r["ok"])
                 self.assertIn("load test", r["error"])

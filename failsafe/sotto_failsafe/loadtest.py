@@ -20,6 +20,7 @@ per talker. Nothing here touches the soundcard, the network or the fail-safe.
 """
 
 import json
+import math
 import os
 import threading
 import time
@@ -35,6 +36,7 @@ SAME_BLOCK_MS = 8.0         # the engine waits up to this for its own block (eng
 OK_RATE = 0.005             # late blocks allowed: 0.5 %
 RUN_LIMIT = 3               # this many late in a row drops the talker to dry: never allowed
 FITS = (("same", "10 ms through (same block)"), ("h1", "20 ms through"), ("h2", "30 ms through"))
+PER_WORKER = (1, 2, 3, 4, 6)   # talkers sharing one worker: 1 is how Sotto Voce runs Full clean now
 PERIOD = 0.010
 FS = 48000
 HOP = 480
@@ -113,8 +115,20 @@ def _ready(pool, j):
     return True
 
 
-def run_step(n, model, insert=None, mode="full", seconds=MEASURE_S, track_delay=True, cancel=None, workers=None):
-    """One talker count. Returns the row for the table."""
+def workers_for(n, per_worker, cores=None):
+    """How many workers for n talkers at per_worker each, with the same limit Sotto Voce has (all
+    the cores but three): past it, the groups grow. None: Sotto Voce's own plan."""
+    if not per_worker:
+        return None
+    cores = cores or os.cpu_count() or 2
+    return max(1, min(math.ceil(n / per_worker), max(1, cores - 3)))
+
+
+def run_step(n, model, insert=None, mode="full", seconds=MEASURE_S, track_delay=True, cancel=None, workers=None,
+             per_worker=None):
+    """One talker count. Returns the row for the table. per_worker: talkers sharing a worker (the
+    speech model runs them together, which costs less per talker but takes longer per block)."""
+    workers = workers or workers_for(n, per_worker)
     from . import processing as P
     from . import workers as W
     settings = [P.Settings(mode=mode, insert=dict(insert) if insert else None) for _ in range(n)]
@@ -218,12 +232,13 @@ class LoadTest:
         self.thread = None
         self.path = path                          # where the last result is saved, for the diagnostics
         self.result = load(path) if path else None
+        self.history = dict((self.result or {}).get("history") or {})   # the last run of each setting
 
     def running(self):
         return self.thread is not None and self.thread.is_alive()
 
     def start(self, model, insert=None, max_talkers=64, seconds=MEASURE_S, steps=STEPS, mode="full",
-              track_delay=True, workers=None):
+              track_delay=True, workers=None, per_worker=1):
         with self.lock:
             if self.running():
                 return False, "The load test is already running."
@@ -233,9 +248,9 @@ class LoadTest:
             self.cancel_ev.clear()
             self.result = {"state": "running", "started": time.time(), "plan": plan, "rows": [], "step": None,
                            "insert": insert_name(insert), "seconds_per_step": seconds, "mode": mode,
-                           "cores": os.cpu_count()}
+                           "cores": os.cpu_count(), "per_worker": per_worker, "history": dict(self.history)}
             self.thread = threading.Thread(target=self._run, args=(plan, model, insert, seconds, mode, track_delay,
-                                                                   workers), name="load-test", daemon=True)
+                                                                   workers, per_worker), name="load-test", daemon=True)
             self.thread.start()
             return True, ""
 
@@ -246,9 +261,9 @@ class LoadTest:
         with self.lock:
             self.result.update(kw)
 
-    def _run(self, plan, model, insert, seconds, mode, track_delay, workers):
-        LOG.info("Load test: %s talkers, %s, %.0f s each", plan, f"insert {insert_name(insert)}" if insert else "no insert",
-                 seconds)
+    def _run(self, plan, model, insert, seconds, mode, track_delay, workers, per_worker):
+        LOG.info("Load test: %s talkers, %s per worker, %s, %.0f s each", plan, per_worker,
+                 f"insert {insert_name(insert)}" if insert else "no insert", seconds)
         rows = []
         state, why = "done", ""
         try:
@@ -263,7 +278,7 @@ class LoadTest:
                     break
                 self._set(step=n)
                 row = run_step(n, model, insert=insert, mode=mode, seconds=seconds, track_delay=track_delay,
-                               cancel=self.cancel_ev, workers=workers)
+                               cancel=self.cancel_ev, workers=workers, per_worker=per_worker)
                 if row.get("cancelled"):
                     state = "cancelled"
                     break
@@ -279,6 +294,14 @@ class LoadTest:
             LOG.exception("Load test failed")
             state, why = "failed", repr(e)
         self._set(state=state, error=why, step=None, rows=rows, summary=summarise(rows), finished=time.time())
+        if rows and state != "cancelled":
+            sm = summarise(rows)
+            key = f"{per_worker or 1}|{insert_name(insert)}"
+            with self.lock:
+                self.history[key] = {"per_worker": per_worker or 1, "insert": insert_name(insert), "state": state,
+                                     "started": self.result["started"], "cpu_ms_per_talker": sm["cpu_ms_per_talker"],
+                                     "tried_up_to": sm["tried_up_to"], **{k: sm[k] for k, _ in FITS}}
+                self.result["history"] = dict(self.history)
         if self.path:
             save(self.path, self.state())
         LOG.info("Load test %s: %s", state, (self.result.get("summary") or {}).get("headline"))
@@ -319,6 +342,7 @@ def report(result):
              f"State: {result.get('state')}{(' (' + result['error'] + ')') if result.get('error') else ''}; "
              f"insert: {result.get('insert') or 'none'}; {result.get('seconds_per_step')} s per step; "
              f"{result.get('cores')} cores; run {time.strftime('%Y-%m-%d %H:%M', time.localtime(result.get('started', 0)))}",
+             f"Talkers per worker: {result.get('per_worker') or 1}",
              "",
              "talkers workers  CPU ms/block  per talker  cores busy  slowest worker ms (avg/max)  "
              "late %: same block / 20 ms / 30 ms  (longest run)"]
@@ -335,4 +359,18 @@ def report(result):
     lines.append("")
     lines.append("! = doesn't fit (over 0.5 % late, or 3 late in a row). Late is checked where the engine takes "
                  "each block: 8 ms after hand-over (same block), and one and two blocks later.")
+    hist = compare(result)
+    if hist:
+        lines += ["", "Every setting tried (the last run of each):",
+                  "per worker  insert              most talkers at 10 / 20 / 30 ms   CPU ms per talker  run"]
+        for h in hist:
+            lines.append(f"{h['per_worker']:>10}  {(h['insert'] or 'none')[:18]:<18}  {h['same']:>14} / {h['h1']:>3} / {h['h2']:>3}"
+                         f"   {h['cpu_ms_per_talker'] if h['cpu_ms_per_talker'] is not None else '':>17}  "
+                         f"{time.strftime('%d %b %H:%M', time.localtime(h.get('started', 0)))}")
     return "\n".join(lines)
+
+
+def compare(result):
+    """The last run of each setting, by talkers per worker then insert."""
+    hist = list(((result or {}).get("history") or {}).values())
+    return sorted(hist, key=lambda h: (h.get("per_worker") or 1, h.get("insert") or ""))

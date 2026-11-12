@@ -1331,6 +1331,12 @@ table.t tr.unused td{color:var(--muted)}
     return row('Engine safety margin', 'How far ahead of the soundcard Sotto Voce\'s engine works. More margin rides out longer hiccups but adds that much delay. If the engine is ever later than this, the talkers play dry and HEARTBEAT stops until you re-arm. The diagnostics file shows how close it gets (\'Native engine margin\').',
       `<select id="f-margin">${opts}</select><button class="btn sm" data-act="marginapply"${+pick === +cur ? ' disabled' : ''}>Apply (restarts the engine)</button>`);
   }
+  function perWorkerRow(e) {
+    const cur = e.per_worker || 1, pick = UI.perPick ?? cur;
+    const opts = [1, 2, 3, 4, 6].map(v => `<option value="${v}"${+v === +pick ? ' selected' : ''}>${v}${v === 1 ? ' (default: a worker each)' : ''}</option>`).join('');
+    return row('Talkers per worker', 'How many Full clean talkers share one processing worker. 1 gives each its own, so every block is done quickest. More runs the speech model on several talkers at once: less CPU per talker, so more talkers fit, but each block takes longer. The load test on the setup page shows which keeps up best on this computer.',
+      `<select id="f-perworker">${opts}</select><button class="btn sm" data-act="perapply"${+pick === +cur ? ' disabled' : ''}>Apply (restarts the engine)</button>`);
+  }
   function dantePortRow() {
     const c = APP && APP.chain;
     if (!c) return '';
@@ -1633,7 +1639,7 @@ table.t tr.unused td{color:var(--muted)}
         row('Device', e.simulate ? 'Quit and choose a soundcard on the setup page to leave the simulation.' : 'Switching restarts the audio engine.', `<span class="fixed">${esc(e.simulate ? 'Simulated Riedel frame (no audio hardware)' : (e.device_name || String(e.device)))}</span>`) +
         (e.simulate ? '' : appDeviceRow(e)) +
         (e.simulate ? '' : appBufferRow(e)) +
-        (e.native ? marginRow(e) : '') +
+        (e.native ? marginRow(e) : '') + perWorkerRow(e) +
         (e.simulate ? '' : dantePortRow()) +
         (e.simulate ? '' : phonesRow(e)) +
         latencyRow(e) +
@@ -1919,6 +1925,7 @@ table.t tr.unused td{color:var(--muted)}
       return;
     }
     if (e.target.id === 'f-margin') { UI.marginPick = +e.target.value; renderSet(); return; }
+    if (e.target.id === 'f-perworker') { UI.perPick = +e.target.value; renderSet(); return; }
     if (e.target.id === 'f-dport') {
       const port = e.target.value;
       api('/cmd', { cmd: 'dante_port', port, source: 'console' }).then(r => { if (r.ok === false) toast(r.error); else { if (APP && APP.chain) APP.chain.port_setting = port; toast(port === 'none' ? 'Network port: not checked' : port === 'auto' ? 'Network port: Sotto Voce finds it' : `Watching ${port}`); } })
@@ -1992,6 +1999,15 @@ table.t tr.unused td{color:var(--muted)}
         api('/api/config', { margin_ms: v }).then(r => {
           if (r.ok === false) { toast(r.error); return; }
           UI.restarting = `a ${v} ms margin`; toast(`Restarting the engine with a ${v} ms safety margin…`); renderSet();
+          (async () => { for (let i = 0; i < 80; i++) { await new Promise(res => setTimeout(res, 500)); try { const st = await api('/api/state'); if (st.t < 30) { location.reload(); return; } } catch (e) {} } toast('Sotto Voce did not come back. Open it again.'); })();
+        }).catch(() => toast('Sotto Voce did not answer'));
+        return;
+      }
+      case 'perapply': {
+        const v = +(($('#f-perworker') || {}).value || 1);
+        api('/api/config', { per_worker: v }).then(r => {
+          if (r.ok === false) { toast(r.error); return; }
+          UI.restarting = `${v} talker${v > 1 ? 's' : ''} per worker`; toast(`Restarting the engine with ${v} talker${v > 1 ? 's' : ''} per worker…`); renderSet();
           (async () => { for (let i = 0; i < 80; i++) { await new Promise(res => setTimeout(res, 500)); try { const st = await api('/api/state'); if (st.t < 30) { location.reload(); return; } } catch (e) {} } toast('Sotto Voce did not come back. Open it again.'); })();
         }).catch(() => toast('Sotto Voce did not answer'));
         return;

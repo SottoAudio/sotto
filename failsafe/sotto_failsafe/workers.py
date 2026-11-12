@@ -55,15 +55,20 @@ def auto_workers(n_talkers, cores=None):
 MODEL_WEIGHT = 3                            # a speech-model talker costs about three echo-only ones
 
 
-def plan_groups(settings, max_workers):
+PER_WORKER = (1, 2, 3, 4, 6)                # speech-model talkers sharing a worker: a choice in Settings
+
+
+def plan_groups(settings, max_workers, per_worker=1):
     """Contiguous groups of talkers for the workers, by weight: a talker on the speech model weighs 3,
-    any other 1, and a group holds 3. So each speech-model talker gets a worker to itself, which keeps
-    every worker's time per block short (it's the slowest worker the engine waits for). With more
-    talkers than workers allow, the groups grow evenly."""
+    any other 1, and a group holds 3 x per_worker. At 1 (the default) each speech-model talker gets a
+    worker to itself, which keeps every worker's time per block short (it's the slowest worker the
+    engine waits for). More per worker runs the speech model on several talkers at once: less CPU
+    per talker, longer per block (the load test on the setup page measures both). With more talkers
+    than workers allow, the groups grow."""
     w = [MODEL_WEIGHT if getattr(s, "mode", "full") == "full" else 1 for s in settings]
     if not w:
         return [[]]
-    cap = MODEL_WEIGHT
+    cap = MODEL_WEIGHT * max(1, int(per_worker or 1))
     while True:
         groups, cur, load = [], [], 0
         for i, x in enumerate(w):
@@ -394,19 +399,22 @@ class _Worker:
 class Pool:
     """The same interface as processing.Processor, with the work in worker processes."""
 
-    def __init__(self, names, settings, model=None, workers=None, track_delay=True, ready_timeout=60.0, headroom=1):
+    def __init__(self, names, settings, model=None, workers=None, track_delay=True, ready_timeout=60.0, headroom=1,
+                 per_worker=1):
         self.names = list(names)
         self.n = len(self.names)
         self.settings = list(settings)
         self.model = model
         self.dfn = model                                 # truthy when the speech model is in use
         self.track_delay = track_delay
+        self.per_worker = 1
         self.ctx = mp.get_context("spawn")
         self.up = self.ctx.Queue()
         if workers:
             groups = split(self.n, workers)
         else:                                            # auto: one speech-model talker per worker
-            groups = plan_groups(self.settings, max(1, (os.cpu_count() or 2) - 3))
+            self.per_worker = max(1, int(per_worker or 1))
+            groups = plan_groups(self.settings, max(1, (os.cpu_count() or 2) - 3), self.per_worker)
         self.workers = [_Worker(self, w, rows) for w, rows in enumerate(groups)]
         self.of = {}                                     # talker -> (worker, row in its group)
         for w in self.workers:

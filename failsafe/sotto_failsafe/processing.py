@@ -447,9 +447,14 @@ class Chains:
         self.close_retired()
 
     def talker_states(self):
+        # Read once: while the speech model runs only some talkers, the processing thread swaps in a
+        # shorter list for a moment (stream_dfn.process_specs), and this runs on another thread.
+        ls = None if self.dfn is None else np.atleast_1d(self.dfn.lsnr)
+        if ls is not None and len(ls) != len(self.chains):
+            ls = None
         return [{
             "name": c.name, "mode": c.s.mode, "erle_db": round(c.erle, 1),
-            "speech_snr_db": None if self.dfn is None else round(float(self.dfn.lsnr[i]), 1),
+            "speech_snr_db": None if ls is None else round(float(ls[i]), 1),
             "delay_ms": None if c.delay_samples is None else round(1000 * c.delay_samples / FS, 1),
             "delay_status": c.delay_status,
             "insert": None if c.plugin is None else {

@@ -134,7 +134,8 @@ class AppTests(unittest.TestCase):
                 b.test_source({"channel": 1, "kind": "pink"})
                 r = b.command({"cmd": "measure_latency"})
                 self.assertTrue(r["ok"], r)
-                self.assertFalse(b.command({"cmd": "measure_latency"})["ok"])     # one at a time
+                # One at a time is checked in MeterTests: here the first measurement can already have
+                # finished on a slow machine (the recording ring catches up in one go), so a second is fine.
                 t0 = time.monotonic()
                 while time.monotonic() - t0 < 15 and b.state()["latency_measure"]["state"] == "measuring":
                     time.sleep(0.2)

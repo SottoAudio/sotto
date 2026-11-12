@@ -35,7 +35,20 @@ class StreamSTFT:
         return out
 
 
+def model_providers(ort):
+    """Where the speech model runs. SOTTO_MODEL_ON=coreml (an experiment, macOS only): Core ML, which
+    can use the Neural Engine and the GPU, with the CPU for anything Core ML can't run. Anything else:
+    the CPU, as always."""
+    want = os.environ.get("SOTTO_MODEL_ON", "cpu").strip().lower()
+    if want == "coreml" and "CoreMLExecutionProvider" in ort.get_available_providers():
+        return [("CoreMLExecutionProvider", {"ModelFormat": "MLProgram", "MLComputeUnits": "ALL"}),
+                "CPUExecutionProvider"]
+    return ["CPUExecutionProvider"]
+
+
 class StreamingDFN:
+    model_on_error = ""
+
     def __init__(self, model_dir, threads=1, share_from=None):
         """share_from: another StreamingDFN whose (stateless) ONNX sessions are reused, so
         several talkers can run without loading the model several times."""
@@ -50,9 +63,19 @@ class StreamingDFN:
             so.intra_op_num_threads = threads
             so.inter_op_num_threads = 1
             so.log_severity_level = 3
-            self.sess = {m: ort.InferenceSession(os.path.join(model_dir, f"{m}.onnx"), so)
-                         for m in ("enc", "erb_dec", "df_dec")}
+            prov = model_providers(ort)
+            try:
+                self.sess = {m: ort.InferenceSession(os.path.join(model_dir, f"{m}.onnx"), so, providers=prov)
+                             for m in ("enc", "erb_dec", "df_dec")}
+            except Exception as e:                       # Core ML refused the model: the CPU, as always
+                if prov == ["CPUExecutionProvider"]:
+                    raise
+                self.model_on_error = repr(e)
+                self.sess = {m: ort.InferenceSession(os.path.join(model_dir, f"{m}.onnx"), so,
+                                                     providers=["CPUExecutionProvider"])
+                             for m in ("enc", "erb_dec", "df_dec")}
         self._out_names = {m: [o.name for o in s.get_outputs()] for m, s in self.sess.items()}
+        self.model_on = "Core ML" if "CoreMLExecutionProvider" in self.sess["enc"].get_providers() else "CPU"
         self.reset()
 
     def _init_cfg(self, model_dir):

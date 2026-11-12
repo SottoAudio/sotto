@@ -506,6 +506,9 @@ def build_report(app=None, setup_config=None, run_speed_test=True):
     if ce is not None and ce.h:
         sec("Engine in C (stage 3): the 10 ms engine on its own real-time thread",
             safe(lambda: {"thread": ce.thread_note(), **ce.stats()}))
+    lm = getattr(app, "latmeter", None) if app is not None else None
+    if lm is not None and lm.state():
+        sec("Measured latency (talker 1's input to the listener feed, through a loop)", safe(lm.state))
     if sh is not None:
         sec("C core (shadow): the fail-safe core in C, compared with the Python one on every block", safe(sh.report))
     sec("Build", {**build_info(), "packages": safe(package_versions)})

@@ -210,6 +210,10 @@ class BenchApp:
         if cfg.pgm_in is not None:
             allowed[cfg.pgm_in] = "PGM"
         self.tests = TestSources(os.path.join(config_dir(), "test-audio"), allowed)
+        from .latency import LatencyMeter
+        self.latmeter = LatencyMeter(cfg.fs)
+        self.latmeter.on_done = self._latency_done
+        self._lat_restore = None
         self.local_phones = LocalPhones()
         self._status = None
         self.coreaudio = None
@@ -229,7 +233,65 @@ class BenchApp:
         self.events_f.flush()
         self.recent = (self.recent + [row])[-60:]
 
+    def measure_latency(self):
+        """Measure latency (latency.py): speech into talker 1 for a few seconds, timed against the
+        listener feed input, which must carry talker 1's return looped back. Disarmed only, as every
+        test source."""
+        cfg = self.cfg
+        if self.core.arm.armed:
+            return {"ok": False, "error": "Disarm Sotto Voce first: the measurement plays a test source."}
+        if self.cengine is None:
+            return {"ok": False, "error": "Measuring latency needs the engine in C."}
+        if cfg.listen_in is None:
+            return {"ok": False, "error": "Set a listener feed input on the setup page first, and loop talker 1's "
+                                          "return back to it."}
+        if not cfg.talker_in:
+            return {"ok": False, "error": "There are no talkers."}
+        ch = cfg.talker_in[0]
+        cols = (0, len(self.cengine.rec_cols) - 1, len(cfg.talker_in) + len(cfg.probe_in))   # in, out, listen
+        pr = self.proc
+        nominal = 10.0 * ((getattr(pr, "headroom", 1) or 0) + 1) if pr is not None else 0.0
+        prev = (self.tests.desc or {}).get(ch)
+        if not self.latmeter.start(cols, nominal):
+            return {"ok": False, "error": "A measurement is already running."}
+        self._lat_restore = (ch, dict(prev) if prev else None)
+        what = None
+        for kind in ("speech", "programme"):             # speech survives every processing mode; the
+            try:                                         # built-in programme if the Mac can't make speech
+                what = self.tests.set(ch, kind, -20.0)["what"]
+                break
+            except Exception as e:
+                err = e
+        if what is None:
+            self.latmeter.cancel(f"couldn't play a test source into talker 1: {err}")
+            return {"ok": False, "error": str(err)}
+        self.log(Event(self.core.t, "latency_measure", f"started: {what} into input {ch + 1}, timed on the listener "
+                                                       f"feed (input {cfg.listen_in + 1})", "console"))
+        return {"ok": True, "state": self.latmeter.state()}
+
+    def _latency_done(self, res):
+        ch, prev = self._lat_restore or (None, None)
+        self._lat_restore = None
+        if ch is not None and not self.core.arm.armed:   # put talker 1's test source back as it was
+            try:
+                if prev:
+                    self.tests.set(ch, prev["kind"], prev.get("level_db", -20.0), prev.get("file"),
+                                   prev.get("bleed_db", -6.0), prev.get("programme_file"))
+                else:
+                    self.tests.off(ch)
+            except Exception:
+                LOG.exception("Couldn't put talker 1's test source back after measuring latency")
+        if res.get("state") == "done":
+            d = (f"{res['total_ms']} ms from talker 1's input to the listener feed: Sotto Voce's processing "
+                 f"{res['processing_ms']} ms{'' if res['processing_measured'] else ' (nominal)'} + out and back "
+                 f"{res['loop_ms']} ms (match {res['confidence']})")
+        else:
+            d = f"failed: {res.get('error')}"
+        self.log(Event(self.core.t, "latency_measured", d, "auto"))
+
     def _drain(self):
+        if self.core.arm.armed and self.latmeter.active is not None:
+            self.latmeter.cancel("Sotto Voce was armed during the measurement")
         if self.core.arm.armed and self.tests.plan:     # arming switches every test source off
             self.tests.off()
             self.tests.switched_off += 1
@@ -287,6 +349,8 @@ class BenchApp:
             with self.lock:
                 core.inject(name, seconds=c.get("seconds"), ms=c.get("ms"))
             return {"ok": True}
+        if cmd == "measure_latency":
+            return self.measure_latency()
         if cmd == "clear_faults":
             with self.lock:
                 core.clear_faults()
@@ -397,6 +461,7 @@ class BenchApp:
                                   if g["delay_max_ms"] else None}}
         s["power"] = getattr(self, "power", {})
         s["tests"] = self.tests.state()
+        s["latency_measure"] = self.latmeter.state()
         s["local_phones"] = self.local_phones.state()
         s["processing"] = self.proc.state() if self.proc is not None else {"on": False, "why": self.proc_note}
         s["chain"] = self.finder.state()
@@ -787,9 +852,14 @@ class BenchApp:
             self.cb_ms_max = max(self.cb_ms_max * 0.999, ms)
             if self.trace is not None:
                 self.trace.block_done(t0, ms, r[2:7], int(r[7]), 0, float(r[8]), float(r[9]))
+        lm = self.latmeter
+        if lm.active is not None and time.time() - lm.active["t0"] > 15:
+            lm.cancel("no audio reached the measurement in 15 s")
         for blk in ce.recording():
             if self.rec.on:
                 self.rec.push(blk)
+            if lm.active is not None:
+                lm.feed(blk)
         if st["rec_dropped"] > getattr(self, "_c_rec_dropped", 0):
             self.log(Event(core.t, "recording_gap", f"{int(st['rec_dropped'] - getattr(self, '_c_rec_dropped', 0))} "
                            "blocks missing from the recording (Sotto Voce was held up)", "auto"))

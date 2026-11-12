@@ -114,8 +114,19 @@ def _ready(pool, j):
     return True
 
 
+MODEL_ON = {"cpu": "CPU", "coreml": "Neural Engine (Core ML)"}
+
+
+def coreml_available():
+    try:
+        import onnxruntime as ort
+        return "CoreMLExecutionProvider" in ort.get_available_providers()
+    except Exception:
+        return False
+
+
 def run_step(n, model, insert=None, mode="full", seconds=MEASURE_S, track_delay=True, cancel=None, workers=None,
-             per_worker=None):
+             per_worker=None, model_on="cpu"):
     """One talker count. Returns the row for the table. per_worker: talkers sharing a worker (the
     speech model runs them together, which costs less per talker but takes longer per block)."""
     from . import processing as P
@@ -123,8 +134,16 @@ def run_step(n, model, insert=None, mode="full", seconds=MEASURE_S, track_delay=
     settings = [P.Settings(mode=mode, insert=dict(insert) if insert else None) for _ in range(n)]
     labels = [f"Load {i + 1}" for i in range(n)]
     t0 = time.monotonic()
-    pool = W.Pool(labels, settings, model=model, workers=workers, track_delay=track_delay, ready_timeout=120.0,
-                  headroom=2, per_worker=per_worker or 1)     # the same plan Sotto Voce makes                    # the workers keep the two newest blocks, as at 30 ms through
+    old = os.environ.get("SOTTO_MODEL_ON")
+    os.environ["SOTTO_MODEL_ON"] = model_on or "cpu"   # the workers read it as they start (stream_dfn)
+    try:
+        pool = W.Pool(labels, settings, model=model, workers=workers, track_delay=track_delay, ready_timeout=120.0,
+                      headroom=2, per_worker=per_worker or 1)     # the same plan Sotto Voce makes
+    finally:
+        if old is None:
+            os.environ.pop("SOTTO_MODEL_ON", None)
+        else:
+            os.environ["SOTTO_MODEL_ON"] = old                    # the workers keep the two newest blocks, as at 30 ms through
     row = {"talkers": n, "workers": len(pool.workers), "groups": [len(w.rows) for w in pool.workers],
            "startup_s": round(time.monotonic() - t0, 1)}
     try:
@@ -171,6 +190,8 @@ def run_step(n, model, insert=None, mode="full", seconds=MEASURE_S, track_delay=
             "slowest_worker_ms": round(max(wall), 2) if wall else None,   # wall time per block, average
             "slowest_worker_max_ms": round(float(st.get("proc_ms_max") or 0), 2),
             "speech_model": bool(st.get("model")),
+            "model_on": ", ".join(st.get("model_on") or []),
+            **({"model_on_error": st["model_on_error"]} if st.get("model_on_error") else {}),
             "errors": sum(int(d.get("errors") or 0) for d in det),
             "restarts": sum(int(d.get("restarts") or 0) for d in det),
             "test_timer_late": driver_late,
@@ -227,7 +248,7 @@ class LoadTest:
         return self.thread is not None and self.thread.is_alive()
 
     def start(self, model, insert=None, max_talkers=64, seconds=MEASURE_S, steps=STEPS, mode="full",
-              track_delay=True, workers=None, per_worker=1):
+              track_delay=True, workers=None, per_worker=1, model_on="cpu"):
         with self.lock:
             if self.running():
                 return False, "The load test is already running."
@@ -237,9 +258,11 @@ class LoadTest:
             self.cancel_ev.clear()
             self.result = {"state": "running", "started": time.time(), "plan": plan, "rows": [], "step": None,
                            "insert": insert_name(insert), "seconds_per_step": seconds, "mode": mode,
-                           "cores": os.cpu_count(), "per_worker": per_worker, "history": dict(self.history)}
+                           "cores": os.cpu_count(), "per_worker": per_worker, "model_on": model_on,
+                           "history": dict(self.history)}
             self.thread = threading.Thread(target=self._run, args=(plan, model, insert, seconds, mode, track_delay,
-                                                                   workers, per_worker), name="load-test", daemon=True)
+                                                                   workers, per_worker, model_on), name="load-test",
+                                           daemon=True)
             self.thread.start()
             return True, ""
 
@@ -250,7 +273,7 @@ class LoadTest:
         with self.lock:
             self.result.update(kw)
 
-    def _run(self, plan, model, insert, seconds, mode, track_delay, workers, per_worker):
+    def _run(self, plan, model, insert, seconds, mode, track_delay, workers, per_worker, model_on="cpu"):
         LOG.info("Load test: %s talkers, %s per worker, %s, %.0f s each", plan, per_worker,
                  f"insert {insert_name(insert)}" if insert else "no insert", seconds)
         rows = []
@@ -267,7 +290,7 @@ class LoadTest:
                     break
                 self._set(step=n)
                 row = run_step(n, model, insert=insert, mode=mode, seconds=seconds, track_delay=track_delay,
-                               cancel=self.cancel_ev, workers=workers, per_worker=per_worker)
+                               cancel=self.cancel_ev, workers=workers, per_worker=per_worker, model_on=model_on)
                 if row.get("cancelled"):
                     state = "cancelled"
                     break
@@ -285,9 +308,10 @@ class LoadTest:
         self._set(state=state, error=why, step=None, rows=rows, summary=summarise(rows), finished=time.time())
         if rows and state != "cancelled":
             sm = summarise(rows)
-            key = f"{per_worker or 1}|{insert_name(insert)}"
+            key = f"{per_worker or 1}|{insert_name(insert)}" + ("" if model_on in (None, "cpu") else f"|{model_on}")
             with self.lock:
                 self.history[key] = {"per_worker": per_worker or 1, "insert": insert_name(insert), "state": state,
+                                     "model_on": MODEL_ON.get(model_on or "cpu", model_on),
                                      "started": self.result["started"], "cpu_ms_per_talker": sm["cpu_ms_per_talker"],
                                      "tried_up_to": sm["tried_up_to"], **{k: sm[k] for k, _ in FITS}}
                 self.result["history"] = dict(self.history)
@@ -331,7 +355,8 @@ def report(result):
              f"State: {result.get('state')}{(' (' + result['error'] + ')') if result.get('error') else ''}; "
              f"insert: {result.get('insert') or 'none'}; {result.get('seconds_per_step')} s per step; "
              f"{result.get('cores')} cores; run {time.strftime('%Y-%m-%d %H:%M', time.localtime(result.get('started', 0)))}",
-             f"Talkers per worker: {result.get('per_worker') or 1}",
+             f"Talkers per worker: {result.get('per_worker') or 1}; speech model on: "
+             f"{MODEL_ON.get(result.get('model_on') or 'cpu', result.get('model_on'))}",
              "",
              "talkers workers  CPU ms/block  per talker  cores busy  slowest worker ms (avg/max)  "
              "late %: same block / 20 ms / 30 ms  (longest run)"]
@@ -344,16 +369,18 @@ def report(result):
                      f"{r['cores_busy']:>10.2f}  {r['slowest_worker_ms']:>13.2f} / {r['slowest_worker_max_ms']:<10.2f}  {lt}"
                      + (f"  timer late {r['test_timer_late']}" if r.get("test_timer_late") else "")
                      + (f"  errors {r['errors']}" if r.get("errors") else "")
-                     + (f"  insert: {r['insert_error']}" if r.get("insert_error") else ""))
+                     + (f"  insert: {r['insert_error']}" if r.get("insert_error") else "")
+                     + (f"  model on {r['model_on']}" if r.get("model_on") not in (None, "", "CPU") else "")
+                     + (f"  Core ML refused: {r['model_on_error'][:120]}" if r.get("model_on_error") else ""))
     lines.append("")
     lines.append("! = doesn't fit (over 0.5 % late, or 3 late in a row). Late is checked where the engine takes "
                  "each block: 8 ms after hand-over (same block), and one and two blocks later.")
     hist = compare(result)
     if hist:
         lines += ["", "Every setting tried (the last run of each):",
-                  "per worker  insert              most talkers at 10 / 20 / 30 ms   CPU ms per talker  run"]
+                  "per worker  model on  insert              most talkers at 10 / 20 / 30 ms   CPU ms per talker  run"]
         for h in hist:
-            lines.append(f"{h['per_worker']:>10}  {(h['insert'] or 'none')[:18]:<18}  {h['same']:>14} / {h['h1']:>3} / {h['h2']:>3}"
+            lines.append(f"{h['per_worker']:>10}  {('Core ML' if 'Core' in (h.get('model_on') or '') else 'CPU'):<8}  {(h['insert'] or 'none')[:18]:<18}  {h['same']:>14} / {h['h1']:>3} / {h['h2']:>3}"
                          f"   {h['cpu_ms_per_talker'] if h['cpu_ms_per_talker'] is not None else '':>17}  "
                          f"{time.strftime('%d %b %H:%M', time.localtime(h.get('started', 0)))}")
     return "\n".join(lines)
@@ -362,4 +389,4 @@ def report(result):
 def compare(result):
     """The last run of each setting, by talkers per worker then insert."""
     hist = list(((result or {}).get("history") or {}).values())
-    return sorted(hist, key=lambda h: (h.get("per_worker") or 1, h.get("insert") or ""))
+    return sorted(hist, key=lambda h: (h.get("model_on") or "CPU", h.get("per_worker") or 1, h.get("insert") or ""))

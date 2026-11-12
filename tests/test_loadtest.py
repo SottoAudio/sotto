@@ -139,11 +139,12 @@ class RunTests(unittest.TestCase):
             self.assertEqual(t.state()["state"], "cancelled")
             self.assertEqual(rs.call_count, 4)
             self.assertEqual(rs.call_args.kwargs["per_worker"], 1)
-            ok, _ = t.start("model", steps=(1, 2), seconds=0.05, per_worker=3)    # another setting
+            ok, _ = t.start("model", steps=(1, 2), seconds=0.05, per_worker=3, model_on="coreml")   # another setting
             t.thread.join(30)
             self.assertEqual(rs.call_args.kwargs["per_worker"], 3)
+            self.assertEqual(rs.call_args.kwargs["model_on"], "coreml")
             cmp = L.compare(t.state())
-            self.assertEqual([h["per_worker"] for h in cmp], [1, 3])            # the cancelled run isn't kept
+            self.assertEqual([(h["per_worker"], h["model_on"]) for h in cmp], [(1, "CPU"), (3, "Neural Engine (Core ML)")])
             self.assertEqual((cmp[0]["h2"], cmp[1]["h2"]), (2, 2))
             self.assertEqual(len(L.compare(L.LoadTest(path).state())), 2)       # kept after a restart
             self.assertIn("Every setting tried", L.report(t.state()))
@@ -184,6 +185,10 @@ class SetupPageTests(unittest.TestCase):
                 self.assertEqual((kw["per_worker"], kw["max_talkers"], L.insert_name(kw["insert"])), (3, 16, "Denoise"))
                 post("/setup/loadtest", {"per_worker": 5})
                 self.assertEqual(busy.start.call_args.kwargs["per_worker"], 1)   # not one of the choices
+                self.assertEqual(busy.start.call_args.kwargs["model_on"], "cpu")
+                post("/setup/loadtest", {"model_on": "coreml"})
+                self.assertEqual(busy.start.call_args.kwargs["model_on"], "coreml")
+                self.assertIn("coreml", json.loads(urllib.request.urlopen(base + "/setup/loadtest", timeout=2).read()))
                 r = post("/setup/start", {"simulate": True})
                 self.assertFalse(r["ok"])
                 self.assertIn("load test", r["error"])
@@ -207,7 +212,9 @@ class PerWorkerSettingTests(unittest.TestCase):
         argv = launcher.argv_from({**cfg, "per_worker": "3"}, False)
         self.assertEqual(argv[argv.index("--per-worker") + 1], "3")
         self.assertEqual(A.parse_args(argv).per_worker, 3)
-        with self.assertRaises(SystemExit):
+        import contextlib
+        import io
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             A.parse_args(["--simulate", "--per-worker", "5"])
 
     def test_console_change_is_checked_and_restarts(self):
@@ -220,3 +227,63 @@ class PerWorkerSettingTests(unittest.TestCase):
             self.assertTrue(b.reconfigure({"per_worker": 3})["ok"])
             self.assertEqual(A.parse_args(b.restart_argv).per_worker, 3)
             self.assertTrue(b.quit_ev.is_set())
+
+
+class ModelOnTests(unittest.TestCase):
+    """The speech model on the Neural Engine (Core ML): an experiment in the load test only."""
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "prototype"))
+
+    def test_providers(self):
+        from cct import stream_dfn as D
+        ort = mock.Mock()
+        ort.get_available_providers.return_value = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+        with mock.patch.dict(os.environ, {"SOTTO_MODEL_ON": "coreml"}):
+            self.assertEqual(D.model_providers(ort)[0][0], "CoreMLExecutionProvider")
+            ort.get_available_providers.return_value = ["CPUExecutionProvider"]          # not on this computer
+            self.assertEqual(D.model_providers(ort), ["CPUExecutionProvider"])
+        with mock.patch.dict(os.environ, {"SOTTO_MODEL_ON": "cpu"}):
+            ort.get_available_providers.return_value = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+            self.assertEqual(D.model_providers(ort), ["CPUExecutionProvider"])        # never unless asked
+
+    def test_core_ml_refusing_the_model_falls_back_to_the_cpu(self):
+        from sotto_failsafe import processing as P
+        from cct import stream_dfn as D
+        model = P.model_dir()
+        if model is None:
+            self.skipTest("speech model not downloaded")
+        import onnxruntime as real
+
+        class Sess:
+            def __init__(self, path, so, providers):
+                if any(isinstance(p, tuple) for p in providers):
+                    raise RuntimeError("Core ML can't run this model")
+                self.s = real.InferenceSession(path, so, providers=["CPUExecutionProvider"])
+
+            def __getattr__(self, k):
+                return getattr(self.s, k)
+        fake = mock.Mock(SessionOptions=real.SessionOptions, InferenceSession=Sess,
+                         get_available_providers=lambda: ["CoreMLExecutionProvider", "CPUExecutionProvider"])
+        with mock.patch.dict(os.environ, {"SOTTO_MODEL_ON": "coreml"}), mock.patch.dict(sys.modules, {"onnxruntime": fake}):
+            d = D.BatchedDFN(model, 2)
+        self.assertEqual(d.model_on, "CPU")
+        self.assertIn("Core ML can't run", d.model_on_error)
+
+    def test_workers_start_with_the_choice_and_it_is_put_back(self):
+        from sotto_failsafe import workers as W
+        seen = []
+
+        class FakePool:
+            def __init__(self, *a, **k):
+                seen.append(os.environ.get("SOTTO_MODEL_ON"))
+                self.workers, self.ok, self.why = [], False, "test"
+
+            def stop(self):
+                pass
+        with mock.patch.object(W, "Pool", FakePool), mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SOTTO_MODEL_ON", None)
+            r = L.run_step(2, "m", model_on="coreml", seconds=0.1)
+            self.assertEqual(seen, ["coreml"])
+            self.assertNotIn("SOTTO_MODEL_ON", os.environ)
+            self.assertEqual(r["error"], "test")

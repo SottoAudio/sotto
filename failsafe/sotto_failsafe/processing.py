@@ -465,7 +465,8 @@ class Chains:
     def timing(self):
         return {"proc_ms": round(self.proc_ms, 2), "proc_ms_max": round(self.proc_ms_max, 2),
                 "cpu_ms": round(self.cpu_ms, 2), "stage_ms": {k: round(v, 2) for k, v in self.stage_ms.items()},
-                "model_rows": int(sum(bool(x) for x in self._dfn_rows)), "thread": self.thread_note, "pgm_db": round(self.ref_db, 1)}
+                "model_rows": int(sum(bool(x) for x in self._dfn_rows)), "thread": self.thread_note, "pgm_db": round(self.ref_db, 1),
+                "model_on": getattr(self.dfn, "model_on", None), "model_on_error": getattr(self.dfn, "model_on_error", "")}
 
 
 class Processor:

@@ -801,6 +801,8 @@ class Pool:
             "proc_ms": num("proc_ms"), "proc_ms_max": num("proc_ms_max"), "cpu_ms": num("cpu_ms"), "stage_ms": stage,
             "model_rows": sum((s.get("model_rows") or 0) for s in ws), "pgm_db": num("pgm_db") if ws else -120,
             "thread": ws[0].get("thread", "") if ws else "",
+            "model_on": sorted({s.get("model_on") for s in ws if s.get("model_on")}),
+            "model_on_error": next((s.get("model_on_error") for s in ws if s.get("model_on_error")), ""),
             "worker_detail": [{"worker": w.wid + 1, "talkers": [i + 1 for i in w.rows], "pid": w.pid, "ready": w.ready,
                                "restarts": w.restarts, "proc_ms": w.state.get("proc_ms"), "cpu_ms": w.state.get("cpu_ms"),
                                "stage_ms": w.state.get("stage_ms"), "errors": w.state.get("errors"),

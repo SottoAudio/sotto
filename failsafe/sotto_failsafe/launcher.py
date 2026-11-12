@@ -125,7 +125,8 @@ def loadtest_state():
     ins = project_insert()
     return {"result": lt.state(), "running": lt.running(), "report": loadtest.report(lt.state()) if lt.state() else "",
             "insert": loadtest.insert_name(ins), "steps": list(loadtest.STEPS), "seconds": loadtest.MEASURE_S,
-            "per_worker": list(loadtest.PER_WORKER), "compare": loadtest.compare(lt.state())}
+            "per_worker": list(loadtest.PER_WORKER), "compare": loadtest.compare(lt.state()),
+            "coreml": loadtest.coreml_available()}
 
 
 def run_setup(open_browser=True, start_error=None):
@@ -210,7 +211,9 @@ def run_setup(open_browser=True, start_error=None):
                     per = 1
                 from . import loadtest
                 per = per if per in loadtest.PER_WORKER else 1
-                ok, why = load_tester().start(processing.model_dir(), insert=ins, max_talkers=most, per_worker=per)
+                on = "coreml" if body.get("model_on") == "coreml" else "cpu"
+                ok, why = load_tester().start(processing.model_dir(), insert=ins, max_talkers=most, per_worker=per,
+                                              model_on=on)
                 return self._send(200, json.dumps({"ok": ok, "error": why}).encode())
             if self.path == "/setup/loadtest/stop":
                 load_tester().cancel()

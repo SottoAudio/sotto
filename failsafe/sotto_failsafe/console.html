@@ -2151,7 +2151,9 @@ table.t tr.unused td{color:var(--muted)}
     applyState(st);
     soloChanged();                                     // solos always start empty
     // One question at a time: the next one waits for the answer (never a pile of requests).
-    (async function pollLoop() { await poll(); setTimeout(pollLoop, 150); })();
+    // A hidden tab (another tab in front, the window minimised) asks once a second instead of
+    // about 7 times: nobody is looking, and the Mac's CPU is better spent on the audio.
+    (async function pollLoop() { await poll(); setTimeout(pollLoop, document.hidden ? 1000 : 150); })();
     toast(st.engine && st.engine.simulate ? 'Connected to Sotto Voce (simulated frame)' : 'Connected to Sotto Voce');
   }
   // The quick file never disturbs the audio. The speed test loads the computer for about 15 s

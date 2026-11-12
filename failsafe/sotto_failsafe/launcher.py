@@ -94,6 +94,37 @@ def argv_from(cfg, simulate):
     return argv
 
 
+_LOADTEST = None
+
+
+def load_tester():
+    """The setup page's processing load test (one for the life of the program)."""
+    global _LOADTEST
+    if _LOADTEST is None:
+        from . import loadtest
+        _LOADTEST = loadtest.LoadTest(loadtest.result_path())
+    return _LOADTEST
+
+
+def project_insert():
+    """The first plugin insert in the saved project, offered for the load test."""
+    from . import loadtest
+    try:
+        with open(os.path.join(config_dir(), "project.json"), encoding="utf-8") as f:
+            return loadtest.first_insert(json.load(f))
+    except (OSError, ValueError):
+        return None
+
+
+def loadtest_state():
+    from . import loadtest
+    lt = load_tester()
+    ins = project_insert()
+    return {"result": lt.state(), "running": lt.running(), "report": loadtest.report(lt.state()) if lt.state() else "",
+            "insert": loadtest.insert_name(ins), "steps": list(loadtest.STEPS), "seconds": loadtest.MEASURE_S,
+            "per_worker": list(loadtest.PER_WORKER), "compare": loadtest.compare(lt.state())}
+
+
 def run_setup(open_browser=True, start_error=None):
     """Serves the setup page until the user starts or quits. Returns bench argv, or None to quit.
     start_error: why the last start failed, shown on the page."""
@@ -141,6 +172,8 @@ def run_setup(open_browser=True, start_error=None):
                 self._send(200, json.dumps({"config": load_config(), "defaults": DEFAULTS, "runs_dir": runs_dir(), "start_error": start_error,
                                             "last_crash": diagnostics.last_crash(),
                                             "log": diagnostics.log_path()}).encode())
+            elif self.path == "/setup/loadtest":
+                self._send(200, json.dumps(loadtest_state()).encode())
             elif self.path.startswith("/setup/diagnostics"):
                 text = diagnostics.build_report(None, setup_config=load_config(), run_speed_test="quick" not in self.path)
                 diagnostics.save_report(text)
@@ -161,6 +194,30 @@ def run_setup(open_browser=True, start_error=None):
                 body = json.loads(self.rfile.read(n) or b"{}")
             except ValueError:
                 body = {}
+            if self.path == "/setup/loadtest":
+                from . import processing
+                ins = project_insert() if body.get("insert") else None
+                try:
+                    most = max(1, min(64, int(body.get("max_talkers") or 64)))
+                except (TypeError, ValueError):
+                    most = 64
+                try:
+                    per = int(body.get("per_worker") or 1)
+                except (TypeError, ValueError):
+                    per = 1
+                from . import loadtest
+                per = per if per in loadtest.PER_WORKER else 1
+                ok, why = load_tester().start(processing.model_dir(), insert=ins, max_talkers=most, per_worker=per)
+                return self._send(200, json.dumps({"ok": ok, "error": why}).encode())
+            if self.path == "/setup/loadtest/stop":
+                load_tester().cancel()
+                return self._send(200, b'{"ok": true}')
+            if self.path in ("/setup/start", "/quit") and _LOADTEST is not None and _LOADTEST.running():
+                if self.path == "/quit":
+                    _LOADTEST.cancel()
+                    _LOADTEST.thread.join(30)
+                else:
+                    return self._send(200, b'{"ok": false, "error": "The load test is still running. Wait for it, or stop it."}')
             if self.path == "/setup/start":
                 # Settings the page doesn't show (the soundcard buffer, set from the console) keep
                 # their saved value.

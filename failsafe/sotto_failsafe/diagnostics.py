@@ -543,6 +543,13 @@ def build_report(app=None, setup_config=None, run_speed_test=True):
                     safe(lambda: tr.csv(10)))
     if speed is not None:
         sec("Speed test (thread CPU ms per 10 ms block; 'background' = efficiency cores)", speed)
+    def _load_test():
+        from . import loadtest
+        r = loadtest.load(loadtest.result_path())
+        return None if r is None else loadtest.report(r)
+    lt = safe(_load_test)
+    if lt:
+        sec("Processing load test (last run, from the setup page)", lt)
     if isinstance(state, dict):
         sec("Fail-safe", {k: state.get(k) for k in ("armed", "heartbeat_on", "reason", "health", "green_for_s",
                                                     "can_arm", "probes", "faults", "talkers", "channels", "rrcs", "frame", "solo")})

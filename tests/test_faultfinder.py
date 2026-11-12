@@ -274,6 +274,25 @@ class ChainTests(unittest.TestCase):
         self.assertEqual(st["root"], "loop")
         self.assertIn("out 62", st["look"])
 
+    def test_two_probe_loops_one_lost(self):
+        """Two PROBE returns (say a cable loop on in 61 and a network loop on in 62): one lost points at
+        that loop alone, since the other proves the network and the PROBE output are fine."""
+        ff = F.FaultFinder()
+        probes = [{"in": 61, "ok": True, "missing_ms": 0}, {"in": 62, "ok": False, "missing_ms": 1500}]
+        run(ff, [(snap(), app(probe_ok=False, probe_missing_ms=1500, probe_in="61, 62", probes=probes))])
+        st = ff.state()
+        self.assertEqual(st["root"], "loop")
+        self.assertIn("in 62", st["headline"])
+        self.assertIn("still comes back on in 61", st["headline"])
+        self.assertIn("That loop alone", st["look"])
+
+    def test_two_probe_loops_both_lost(self):
+        ff = F.FaultFinder()
+        probes = [{"in": 61, "ok": False, "missing_ms": 99000}, {"in": 62, "ok": False, "missing_ms": 99000}]
+        run(ff, [(snap(), app(probe_ok=False, probe_missing_ms=99000, probe_in="61, 62", probes=probes))])
+        st = ff.state()
+        self.assertIn("No PROBE loop is coming back", st["headline"])
+
     def test_rrcs(self):
         ff = F.FaultFinder()
         run(ff, [(snap(), app(rrcs={"configured": True, "ok": False, "url": "http://10.0.0.10:8193",

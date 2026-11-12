@@ -877,6 +877,8 @@ class BenchApp:
                "proc_late": getattr(pr, "misses", None),
                "inputs_silent": silent, "probe_ok": probes_ok, "probe_missing_ms": 1000 * missing,
                "probe_in": ", ".join(str(c + 1) for c in cfg.probe_in), "probe_out": cfg.probe_out + 1,
+               "probes": [{"in": c + 1, "ok": w.ok(t), "missing_ms": 1000 * w.missing_s(t)}
+                          for w, c in zip(core.watch, cfg.probe_in)],
                "starting": t < cfg.startup_grace_s, "rrcs": self.rrcs.status() if self.rrcs else None,
                "power": getattr(self, "power", {}), "channels": (self.coreaudio or {}).get("inputs") or eng.get("n_in"),
                "cycle_ms": 1000.0 * (self.trace.io if self.trace is not None else self.a.block) / cfg.fs,

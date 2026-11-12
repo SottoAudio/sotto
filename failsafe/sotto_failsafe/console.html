@@ -1455,7 +1455,7 @@ table.t tr.unused td{color:var(--muted)}
   const chRange = n => Array.from({ length: n }, (_, k) => k + 1);
   const chLabel = (side, c) => { const n = devCh().names && devCh().names[side] && devCh().names[side][c - 1]; return n ? `${c} · ${n}` : String(c); };
   const SYS = [
-    ['pgm_in', 'PGM input (echo reference)', 'in'], ['probe_in', 'PROBE return input', 'in'], ['listen_in', 'Listener feed input (optional, for timing)', 'in', true],
+    ['pgm_in', 'PGM input (echo reference)', 'in'], ['probe_in', 'PROBE return input', 'in'], ['probe_in2', 'Second PROBE return (optional: another loop)', 'in', true], ['listen_in', 'Listener feed input (optional, for timing)', 'in', true],
     ['probe_out', 'PROBE output', 'out'], ['heartbeat_out', 'HEARTBEAT output (to the VOX)', 'out'], ['mon_l', 'Headphones left (phones bus)', 'out'], ['mon_r', 'Headphones right', 'out'],
   ];
   function chansParse(v) {
@@ -1476,7 +1476,8 @@ table.t tr.unused td{color:var(--muted)}
     const mon = chansParse(cfg.monitor);
     return {
       talkers: tin.map((c, k) => ({ in: c, out: tout[k] ?? c, name: (names[k] || '').trim() })),
-      pgm_in: chansParse(cfg.pgm_in)[0] ?? 62, probe_in: chansParse(cfg.probe_in)[0] ?? 61, listen_in: chansParse(cfg.listen_in)[0] ?? 0,
+      pgm_in: chansParse(cfg.pgm_in)[0] ?? 62, probe_in: chansParse(cfg.probe_in)[0] ?? 61, probe_in2: chansParse(cfg.probe_in)[1] ?? 0,
+      listen_in: chansParse(cfg.listen_in)[0] ?? 0,
       probe_out: chansParse(cfg.probe_out)[0] ?? 62, heartbeat_out: chansParse(cfg.heartbeat_out)[0] ?? 61, mon_l: mon[0] ?? 63, mon_r: mon[1] ?? mon[0] ?? 64,
     };
   }
@@ -1484,7 +1485,8 @@ table.t tr.unused td{color:var(--muted)}
     return {
       talker_in: chansFmt(pt.talkers.map(t => t.in)), talker_out: chansFmt(pt.talkers.map(t => t.out)),
       names: pt.talkers.map((t, k) => (t.name || `Talker ${k + 1}`).replace(/,/g, ' ')).join(','),
-      pgm_in: String(pt.pgm_in), probe_in: String(pt.probe_in), listen_in: pt.listen_in ? String(pt.listen_in) : '',
+      pgm_in: String(pt.pgm_in), probe_in: pt.probe_in2 && +pt.probe_in2 !== +pt.probe_in ? `${pt.probe_in},${pt.probe_in2}` : String(pt.probe_in),
+      listen_in: pt.listen_in ? String(pt.listen_in) : '',
       probe_out: String(pt.probe_out), heartbeat_out: String(pt.heartbeat_out), monitor: `${pt.mon_l},${pt.mon_r}`,
     };
   }
@@ -1498,11 +1500,11 @@ table.t tr.unused td{color:var(--muted)}
         else seen[ch] = [key, what];
       });
     };
-    check('Input', [...pt.talkers.map((t, k) => [`t${k}.in`, t.in, `talker ${k + 1}`]), ['pgm_in', pt.pgm_in, 'PGM'], ['probe_in', pt.probe_in, 'PROBE return'], ['listen_in', pt.listen_in, 'listener feed']]);
+    check('Input', [...pt.talkers.map((t, k) => [`t${k}.in`, t.in, `talker ${k + 1}`]), ['pgm_in', pt.pgm_in, 'PGM'], ['probe_in', pt.probe_in, 'PROBE return'], ['probe_in2', pt.probe_in2, 'second PROBE return'], ['listen_in', pt.listen_in, 'listener feed']]);
     check('Output', [...pt.talkers.map((t, k) => [`t${k}.out`, t.out, `talker ${k + 1}`]), ['probe_out', pt.probe_out, 'PROBE'], ['heartbeat_out', pt.heartbeat_out, 'HEARTBEAT'], ['mon_l', pt.mon_l, 'headphones'], ['mon_r', pt.mon_r, 'headphones']]);
     const d = devCh();
     const over = (side, have, items) => items.forEach(([key, ch, what]) => { if (ch > have) { bad.add(key); msgs.push(`${side} ${ch} (${what}) isn't on ${d.device}, which has ${have} ${side.toLowerCase()}s.`); } });
-    over('Input', d.inputs, [...pt.talkers.map((t, k) => [`t${k}.in`, t.in, `talker ${k + 1}`]), ['pgm_in', pt.pgm_in, 'PGM'], ['probe_in', pt.probe_in, 'PROBE return'], ['listen_in', pt.listen_in, 'listener feed']]);
+    over('Input', d.inputs, [...pt.talkers.map((t, k) => [`t${k}.in`, t.in, `talker ${k + 1}`]), ['pgm_in', pt.pgm_in, 'PGM'], ['probe_in', pt.probe_in, 'PROBE return'], ['probe_in2', pt.probe_in2, 'second PROBE return'], ['listen_in', pt.listen_in, 'listener feed']]);
     over('Output', d.outputs, [...pt.talkers.map((t, k) => [`t${k}.out`, t.out, `talker ${k + 1}`]), ['probe_out', pt.probe_out, 'PROBE'], ['heartbeat_out', pt.heartbeat_out, 'HEARTBEAT'], ['mon_l', pt.mon_l, 'headphones'], ['mon_r', pt.mon_r, 'headphones']]);
     return { bad, msgs };
   }
@@ -1527,7 +1529,7 @@ table.t tr.unused td{color:var(--muted)}
     const trows = pt.talkers.map((t, k) => `<tr><td class="n">${pad(k + 1)}</td>
       <td><input type="text" data-pk="t${k}.name" value="${esc(t.name)}" placeholder="Talker ${k + 1}" aria-label="Name of talker ${k + 1}"></td>
       <td>${chSel(`t${k}.in`, t.in, 'in', bad)}</td><td>${chSel(`t${k}.out`, t.out, 'out', bad)}</td></tr>`).join('');
-    const srows = SYS.map(([key, label, side, optional]) => `<label>${label}${chSel(key, pt[key], side, bad, optional ? [[0, 'Off']] : [])}<small class="muted">default ${key === 'mon_l' ? 63 : key === 'mon_r' ? 64 : (chansParse(UI.cfg.defaults[key])[0] || 'off')}</small></label>`).join('');
+    const srows = SYS.map(([key, label, side, optional]) => `<label>${label}${chSel(key, pt[key], side, bad, optional ? [[0, 'Off']] : [])}<small class="muted">default ${key === 'mon_l' ? 63 : key === 'mon_r' ? 64 : (key === 'probe_in2' ? 'off' : chansParse(UI.cfg.defaults[key])[0] || 'off')}</small></label>`).join('');
     const dc = devCh();
     return box('I/O patch', `Which soundcard channel does each job, numbered as in Dante Controller. Every dropdown lists ${esc(dc.device)}'s channels: inputs 1–${dc.inputs}, outputs 1–${dc.outputs}. The defaults put the system on 61–64. Applying checks the soundcard has the channels, then restarts the engine: HEARTBEAT stops, the frame puts listeners on dry, and Sotto Voce starts again disarmed.`,
       row('Talkers', 'How many people Sotto Voce cleans up. New talkers take the next free input and return.', `<select data-pk="count">${COUNT_CH.map(c => `<option value="${c}"${c === n ? ' selected' : ''}>${c}</option>`).join('')}</select>`) +
@@ -1545,7 +1547,7 @@ table.t tr.unused td{color:var(--muted)}
       while (pt.talkers.length < n) {
         const usedIn = new Set(pt.talkers.map(t => t.in)), usedOut = new Set(pt.talkers.map(t => t.out));
         const k = pt.talkers.length + 1;
-        const sysIn = new Set([pt.pgm_in, pt.probe_in, pt.listen_in]), sysOut = new Set([pt.probe_out, pt.heartbeat_out, pt.mon_l, pt.mon_r]);
+        const sysIn = new Set([pt.pgm_in, pt.probe_in, pt.probe_in2, pt.listen_in]), sysOut = new Set([pt.probe_out, pt.heartbeat_out, pt.mon_l, pt.mon_r]);
         const free = (n, used, sys) => chRange(n).find(c => !used.has(c) && !sys.has(c) && c >= k) || chRange(n).find(c => !used.has(c) && !sys.has(c)) || k;
         const nin = free(devCh().inputs, usedIn, sysIn), nout = free(devCh().outputs, usedOut, sysOut);
         pt.talkers.push({ in: nin, out: nout, name: '' });

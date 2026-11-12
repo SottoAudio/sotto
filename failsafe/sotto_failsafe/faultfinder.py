@@ -514,10 +514,25 @@ class FaultFinder:
             new["loop"] = (OFF, "starting up", "")
         elif app.get("probe_ok") is False:
             ms = app.get("probe_missing_ms")
-            new["loop"] = (FAULT, "PROBE isn't coming back" + (f" (missing {ms / 1000:.1f} s)." if ms and ms < 98000
-                                                              else "."),
-                           f"The loop: Sotto Voce out {app.get('probe_out')} -> Dante -> Riedel -> back to Sotto Voce "
-                           f"in {app.get('probe_in')}. Check those Dante subscriptions, then the frame's PROBE route.")
+            probes = app.get("probes") or []
+            lost = [p for p in probes if not p.get("ok")]
+            if len(probes) > 1 and lost and len(lost) < len(probes):
+                # some loops still come back: the network and Sotto Voce's PROBE output are fine, so
+                # it's that loop's own route
+                p = lost[0]
+                fine = ", ".join(str(q["in"]) for q in probes if q.get("ok"))
+                pm = p.get("missing_ms")
+                new["loop"] = (FAULT, f"PROBE isn't coming back on in {p['in']}" +
+                               (f" (missing {pm / 1000:.1f} s)" if pm and pm < 98000 else "") +
+                               f"; it still comes back on in {fine}.",
+                               f"That loop alone: the Dante subscription to Sotto Voce in {p['in']}, then what loops it "
+                               f"(the frame's PROBE route, or a cable). Sotto Voce's PROBE output {app.get('probe_out')} "
+                               f"and the network are fine, because the other loop works.")
+            else:
+                new["loop"] = (FAULT, ("PROBE isn't coming back" if len(probes) < 2 else "No PROBE loop is coming back") +
+                               (f" (missing {ms / 1000:.1f} s)." if ms and ms < 98000 else "."),
+                               f"The loop: Sotto Voce out {app.get('probe_out')} -> Dante -> Riedel -> back to Sotto Voce "
+                               f"in {app.get('probe_in')}. Check those Dante subscriptions, then the frame's PROBE route.")
         else:
             new["loop"] = (OK, "PROBE coming back.", "")
 

@@ -76,13 +76,17 @@ class InsertTests(unittest.TestCase):
 
 
 class PerWorkerTests(unittest.TestCase):
-    def test_workers_for(self):
-        self.assertIsNone(L.workers_for(8, None))                 # Sotto Voce's own plan
-        self.assertEqual(L.workers_for(8, 1, cores=12), 8)
-        self.assertEqual(L.workers_for(8, 3, cores=12), 3)        # 3 + 3 + 2
-        self.assertEqual(L.workers_for(64, 1, cores=12), 9)       # all the cores but three, then the groups grow
-        self.assertEqual(L.workers_for(1, 4, cores=12), 1)
-        self.assertEqual(L.workers_for(8, 1, cores=2), 1)
+    """The load test plans workers exactly as Sotto Voce does (workers.plan_groups)."""
+
+    def test_plan(self):
+        from sotto_failsafe import processing as P, workers as W
+        full = [P.Settings(mode="full")] * 8
+        self.assertEqual(W.plan_groups(full, 9), [[i] for i in range(8)])            # a worker each
+        self.assertEqual(W.plan_groups(full, 9, 3), [[0, 1, 2], [3, 4, 5], [6, 7]])
+        self.assertLessEqual(len(W.plan_groups([P.Settings(mode="full")] * 64, 9, 1)), 9)  # then the groups grow
+        self.assertEqual(W.plan_groups(full[:1], 9, 4), [[0]])
+        mixed = [P.Settings(mode="aec")] * 3 + [P.Settings(mode="full")] * 2
+        self.assertEqual(W.plan_groups(mixed, 9, 2), [[0, 1, 2, 3], [4]])           # weight 3 + 3 = 6 a group
 
 
 class RunTests(unittest.TestCase):
@@ -98,9 +102,9 @@ class RunTests(unittest.TestCase):
             self.assertEqual(r[k]["blocks"], 100)
 
     def test_talkers_sharing_a_worker(self):
-        r = L.run_step(4, None, mode="aec", seconds=0.5, track_delay=False, per_worker=2)
+        r = L.run_step(4, None, mode="full", seconds=0.5, track_delay=False, per_worker=2)
         self.assertNotIn("error", r, r)
-        self.assertEqual(r["workers"], L.workers_for(4, 2))
+        self.assertEqual(r["groups"], [2, 2] if (os.cpu_count() or 2) >= 5 else [4])
         self.assertEqual(sum(r["groups"]), 4)
 
     def test_runs_in_the_background_and_stops(self):
@@ -191,3 +195,28 @@ class SetupPageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PerWorkerSettingTests(unittest.TestCase):
+    """The choice the load test informs, as a Sotto Voce setting: saved, passed on, checked."""
+
+    def test_setup_choice_becomes_an_option(self):
+        from sotto_failsafe import launcher, app as A
+        cfg = {**launcher.DEFAULTS, "device": "3"}
+        self.assertNotIn("--per-worker", launcher.argv_from(cfg, False))              # 1: the default
+        argv = launcher.argv_from({**cfg, "per_worker": "3"}, False)
+        self.assertEqual(argv[argv.index("--per-worker") + 1], "3")
+        self.assertEqual(A.parse_args(argv).per_worker, 3)
+        with self.assertRaises(SystemExit):
+            A.parse_args(["--simulate", "--per-worker", "5"])
+
+    def test_console_change_is_checked_and_restarts(self):
+        from sotto_failsafe import app as A
+        # ignore_cleanup_errors: Windows won't delete the event log the app still has open
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d, mock.patch.dict(os.environ, {"SOTTO_CONFIG_DIR": d}):
+            a = A.parse_args(["--simulate", "--no-processing", "--port", "0", "--out-dir", d])
+            b = A.BenchApp(a)
+            self.assertFalse(b.reconfigure({"per_worker": 5})["ok"])
+            self.assertTrue(b.reconfigure({"per_worker": 3})["ok"])
+            self.assertEqual(A.parse_args(b.restart_argv).per_worker, 3)
+            self.assertTrue(b.quit_ev.is_set())

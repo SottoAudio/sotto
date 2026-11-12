@@ -507,7 +507,7 @@ class BenchApp:
             from . import workers as W
             n = None if workers in (None, "", "auto") else int(workers)
             self.proc = W.Pool(labels, settings, model=model, workers=n, track_delay=self._track_delay(),
-                               headroom=self.a.headroom)
+                               headroom=self.a.headroom, per_worker=self.a.per_worker)
         self.core.extra_health = self.proc.health
         self.log(Event(0.0, "processing_on", f"speech model {'loaded' if model else 'not found: echo removal only'}; "
                        f"plugin inserts {'available' if self.vst3 else 'not available'}", "auto"))
@@ -1309,6 +1309,7 @@ class BenchApp:
                                     "engine_thread": (self.cengine.thread_note() if self.cengine is not None else
                                                       getattr(self, "engine_thread_note", "")) if self.native else None,
                                     "margin_ms": round(a.margin_ms, 1) if self.native else None,
+                                    "per_worker": a.per_worker,
                                     "added_ms": round(self.native.added_ms, 2) if self.native else None,
                                     "app_nap": self.app_nap, "display_awake": macos.DISPLAY_AWAKE,
                                     "simulate": bool(a.simulate),
@@ -1493,7 +1494,7 @@ class BenchApp:
     # ------------------------------------------------------------ engine settings and the I/O patch
     PATCH_KEYS = ("talker_in", "talker_out", "names", "probe_in", "probe_out", "heartbeat_out", "pgm_in", "monitor",
                   "listen_in")
-    ENGINE_KEYS = ("device", "io_buffer", "rrcs_host", "rrcs_port", "margin_ms")
+    ENGINE_KEYS = ("device", "io_buffer", "rrcs_host", "rrcs_port", "margin_ms", "per_worker")
     MARGINS = (5, 10, 20, 25, 30, 40)
 
     def config(self):
@@ -1529,6 +1530,13 @@ class BenchApp:
                     raise ValueError
             except (TypeError, ValueError):
                 return {"ok": False, "error": f"The safety margin is one of {', '.join(map(str, self.MARGINS))} ms."}
+        if "per_worker" in changes:
+            from .workers import PER_WORKER
+            try:
+                if int(changes["per_worker"]) not in PER_WORKER:
+                    raise ValueError
+            except (TypeError, ValueError):
+                return {"ok": False, "error": f"Talkers per worker is one of {', '.join(map(str, PER_WORKER))}."}
         cfg = L.load_config()
         cfg.update({k: ("" if v is None else str(v).strip()) for k, v in changes.items()})
         # Start from this run's own options (port, folder, processing, ...) and change only what
@@ -1537,7 +1545,7 @@ class BenchApp:
         new = {"--talker-in": cfg["talker_in"], "--talker-out": cfg["talker_out"], "--names": cfg.get("names", ""),
                "--probe-in": cfg["probe_in"], "--probe-out": cfg["probe_out"], "--heartbeat-out": cfg["heartbeat_out"],
                "--pgm-in": cfg.get("pgm_in", ""), "--monitor": cfg.get("monitor", ""), "--listen-in": cfg.get("listen_in", ""),
-               "--margin-ms": str(cfg.get("margin_ms") or 10)}
+               "--margin-ms": str(cfg.get("margin_ms") or 10), "--per-worker": str(cfg.get("per_worker") or 1)}
         if not self.a.simulate:
             new.update({"--device": cfg.get("device", ""), "--io-buffer": str(cfg.get("io_buffer") or 0),
                         "--rrcs-host": cfg.get("rrcs_host", ""), "--rrcs-port": str(cfg.get("rrcs_port") or 8193)})
@@ -2033,6 +2041,9 @@ def build_parser():
     p.add_argument("--no-marker", action="store_true", help="don't add the marker tone to the talker returns")
     p.add_argument("--block", type=int, default=480, help="audio block in samples (480 = 10 ms; processing needs 480)")
     p.add_argument("--no-processing", action="store_true", help="pass the talkers straight through (no echo removal, model or inserts)")
+    p.add_argument("--per-worker", type=int, default=1, choices=[1, 2, 3, 4, 6],
+                   help="Full clean talkers sharing one processing worker (auto workers only). 1: a worker each, "
+                        "the quickest per block; more: less CPU per talker. The setup page's load test compares them")
     p.add_argument("--workers", default="auto",
                    help="processing worker processes: auto (up to 3 talkers each), a number, or 0 for a thread in this process")
     p.add_argument("--io-buffer", type=int, default=0,

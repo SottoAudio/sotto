@@ -20,7 +20,6 @@ per talker. Nothing here touches the soundcard, the network or the fail-safe.
 """
 
 import json
-import math
 import os
 import threading
 import time
@@ -28,6 +27,7 @@ import time
 import numpy as np
 
 from .diagnostics import LOG
+from .workers import PER_WORKER  # noqa: F401  (the choices, for the setup page)
 
 STEPS = (1, 2, 4, 6, 8, 10, 12, 16, 20, 24, 32, 40, 48, 64)
 WARM_S = 1.5                # after the workers are up, before counting: the model's first blocks are slow
@@ -36,7 +36,6 @@ SAME_BLOCK_MS = 8.0         # the engine waits up to this for its own block (eng
 OK_RATE = 0.005             # late blocks allowed: 0.5 %
 RUN_LIMIT = 3               # this many late in a row drops the talker to dry: never allowed
 FITS = (("same", "10 ms through (same block)"), ("h1", "20 ms through"), ("h2", "30 ms through"))
-PER_WORKER = (1, 2, 3, 4, 6)   # talkers sharing one worker: 1 is how Sotto Voce runs Full clean now
 PERIOD = 0.010
 FS = 48000
 HOP = 480
@@ -115,27 +114,17 @@ def _ready(pool, j):
     return True
 
 
-def workers_for(n, per_worker, cores=None):
-    """How many workers for n talkers at per_worker each, with the same limit Sotto Voce has (all
-    the cores but three): past it, the groups grow. None: Sotto Voce's own plan."""
-    if not per_worker:
-        return None
-    cores = cores or os.cpu_count() or 2
-    return max(1, min(math.ceil(n / per_worker), max(1, cores - 3)))
-
-
 def run_step(n, model, insert=None, mode="full", seconds=MEASURE_S, track_delay=True, cancel=None, workers=None,
              per_worker=None):
     """One talker count. Returns the row for the table. per_worker: talkers sharing a worker (the
     speech model runs them together, which costs less per talker but takes longer per block)."""
-    workers = workers or workers_for(n, per_worker)
     from . import processing as P
     from . import workers as W
     settings = [P.Settings(mode=mode, insert=dict(insert) if insert else None) for _ in range(n)]
     labels = [f"Load {i + 1}" for i in range(n)]
     t0 = time.monotonic()
     pool = W.Pool(labels, settings, model=model, workers=workers, track_delay=track_delay, ready_timeout=120.0,
-                  headroom=2)                    # the workers keep the two newest blocks, as at 30 ms through
+                  headroom=2, per_worker=per_worker or 1)     # the same plan Sotto Voce makes                    # the workers keep the two newest blocks, as at 30 ms through
     row = {"talkers": n, "workers": len(pool.workers), "groups": [len(w.rows) for w in pool.workers],
            "startup_s": round(time.monotonic() - t0, 1)}
     try:

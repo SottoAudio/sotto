@@ -66,15 +66,18 @@
     <div class="row" style="margin-top:0"><label for="count" style="margin:0">How many</label><select id="count" style="width:auto"></select>
       <span class="muted" id="chNote">Any channel the soundcard has. New talkers take the next free one.</span></div>
     <div class="scroll"><table class="pt"><thead><tr><th>#</th><th>Name</th><th>Input</th><th>Return (clean)</th></tr></thead><tbody id="talkers"></tbody></table></div>
-    <h3 class="sub">System channels</h3>
-    <div class="grid" id="system" style="grid-template-columns:repeat(auto-fill,minmax(230px,1fr))"></div>
+    <h3 class="sub">System channels: into Sotto Voce</h3>
+    <div class="grid" id="systemIn" style="grid-template-columns:repeat(auto-fill,minmax(230px,1fr))"></div>
+    <h3 class="sub">System channels: out of Sotto Voce</h3>
+    <div class="grid" id="systemOut" style="grid-template-columns:repeat(auto-fill,minmax(230px,1fr))"></div>
+    <p class="muted">One PROBE output feeds every loop: in Dante Controller, subscribe each loop to it. Sotto Voce watches each PROBE return on its own, so if one loop fails the fault finder says which, and that the network and the other loop are fine. A second loop is optional: on the bench, for example, a cable loop through an interface's XLRs on return 1 and a network-only loop on return 2.</p>
     <p class="err" id="clash"></p>
     <h3 class="sub">Riedel frame</h3>
     <div class="grid">
       <div><label for="rrcs_host">RRCS IP address (optional)</label><input id="rrcs_host" placeholder="e.g. 10.0.0.10"></div>
       <div><label for="rrcs_port">RRCS port</label><input id="rrcs_port" placeholder="8193" inputmode="numeric"></div>
     </div>
-    <p class="muted">Channels are numbered as in Dante Controller, and every dropdown lists the channels the chosen soundcard has (an aggregate device's extra channels too, named where macOS gives a name). The defaults put the system on 61–64 (IN 61 PROBE return, IN 62 PGM, OUT 61 HEARTBEAT, OUT 62 PROBE, OUT 63/64 headphones), so Dante Virtual Soundcard needs at least 64 &times; 64 for them. <button type="button" id="patchDefaults" class="link">Back to defaults</button></p>
+    <p class="muted">Channels are numbered as in Dante Controller, and every dropdown lists the channels the chosen soundcard has (an aggregate device's extra channels too, named where macOS gives a name). The defaults put the system on 61–64 (IN 61 PROBE return 1, IN 62 PGM, OUT 61 HEARTBEAT, OUT 62 PROBE, OUT 63/64 headphones; PROBE return 2 off), so Dante Virtual Soundcard needs at least 64 &times; 64 for them. <button type="button" id="patchDefaults" class="link">Back to defaults</button></p>
     <div class="row">
       <label class="check"><input type="checkbox" id="record"> Record the test</label>
     </div>
@@ -101,21 +104,25 @@ let devices = [], dev = null;                    // dev: the chosen soundcard {n
 const nIn = () => dev ? dev.inputs : 64, nOut = () => dev ? dev.outputs : 64;
 const range = n => Array.from({length: n}, (_, k) => k + 1);
 const label = (side, c) => { const n = dev && dev.names && dev.names[side] && dev.names[side][c - 1]; return n ? `${c} · ${n}` : String(c); };
-const SYS = [['pgm_in', 'PGM input (echo reference)'], ['probe_in', 'PROBE return input'], ['listen_in', 'Listener feed input (optional)', true],
-             ['probe_out', 'PROBE output'], ['heartbeat_out', 'HEARTBEAT output (to the VOX)'], ['mon_l', 'Headphones left (phones bus)'], ['mon_r', 'Headphones right']];
+const SYS_IN = [['pgm_in', 'PGM (echo reference)'], ['probe_in', 'PROBE return 1 (the loop through the frame)'],
+                ['probe_in2', 'PROBE return 2 (optional: a second loop)', true], ['listen_in', 'Listener feed (optional, for timing)', true]];
+const SYS_OUT = [['probe_out', 'PROBE (feeds every loop)'], ['heartbeat_out', 'HEARTBEAT (to the VOX)'],
+                 ['mon_l', 'Headphones left (phones bus)'], ['mon_r', 'Headphones right']];
 let patch = null, defaults = null;
 const chansParse = v => { const o = []; String(v || '').split(',').map(x => x.trim()).filter(Boolean).forEach(p => { const m = /^(\d+)\s*-\s*(\d+)$/.exec(p); if (m) { for (let k = +m[1]; k <= +m[2]; k++) o.push(k); } else if (/^\d+$/.test(p)) o.push(+p); }); return o; };
 const chansFmt = a => { const o = []; let k = 0; while (k < a.length) { let j = k; while (j + 1 < a.length && a[j + 1] === a[j] + 1) j++; o.push(j > k + 1 ? `${a[k]}-${a[j]}` : a.slice(k, j + 1).join(',')); k = j + 1; } return o.join(','); };
 function patchFrom(c) {
   const tin = chansParse(c.talker_in), tout = chansParse(c.talker_out), names = String(c.names || '').split(','), mon = chansParse(c.monitor);
   return { talkers: tin.map((ch, k) => ({ in: ch, out: tout[k] ?? ch, name: (names[k] || '').trim() })),
-           pgm_in: chansParse(c.pgm_in)[0] ?? 62, probe_in: chansParse(c.probe_in)[0] ?? 61, listen_in: chansParse(c.listen_in)[0] ?? 0,
+           pgm_in: chansParse(c.pgm_in)[0] ?? 62, probe_in: chansParse(c.probe_in)[0] ?? 61, probe_in2: chansParse(c.probe_in)[1] ?? 0,
+           listen_in: chansParse(c.listen_in)[0] ?? 0,
            probe_out: chansParse(c.probe_out)[0] ?? 62, heartbeat_out: chansParse(c.heartbeat_out)[0] ?? 61, mon_l: mon[0] ?? 63, mon_r: mon[1] ?? mon[0] ?? 64 };
 }
 function patchTo(p) {
   return { talker_in: chansFmt(p.talkers.map(t => t.in)), talker_out: chansFmt(p.talkers.map(t => t.out)),
            names: p.talkers.map((t, k) => (t.name || `Talker ${k + 1}`).replace(/,/g, ' ')).join(','),
-           pgm_in: String(p.pgm_in), probe_in: String(p.probe_in), listen_in: p.listen_in ? String(p.listen_in) : '',
+           pgm_in: String(p.pgm_in), probe_in: p.probe_in2 && +p.probe_in2 !== +p.probe_in ? `${p.probe_in},${p.probe_in2}` : String(p.probe_in),
+           listen_in: p.listen_in ? String(p.listen_in) : '',
            probe_out: String(p.probe_out), heartbeat_out: String(p.heartbeat_out), monitor: `${p.mon_l},${p.mon_r}` };
 }
 function clashes(p) {
@@ -124,7 +131,7 @@ function clashes(p) {
     const have = side === 'Input' ? nIn() : nOut();
     if (ch > have) { bad.add(key); msgs.push(`${side} ${ch} (${what}) isn't on ${dev ? dev.name : 'this soundcard'}, which has ${have} ${side.toLowerCase()}s.`); }
     if (seen[ch] && !(what === 'headphones' && seen[ch][1] === 'headphones')) { bad.add(key); bad.add(seen[ch][0]); msgs.push(`${side} ${ch} is set as both ${seen[ch][1]} and ${what}.`); } else seen[ch] = [key, what]; }); };
-  check('Input', [...p.talkers.map((t, k) => [`t${k}.in`, t.in, `talker ${k + 1}`]), ['pgm_in', p.pgm_in, 'PGM'], ['probe_in', p.probe_in, 'PROBE return'], ['listen_in', p.listen_in, 'listener feed']]);
+  check('Input', [...p.talkers.map((t, k) => [`t${k}.in`, t.in, `talker ${k + 1}`]), ['pgm_in', p.pgm_in, 'PGM'], ['probe_in', p.probe_in, 'PROBE return 1'], ['probe_in2', p.probe_in2, 'PROBE return 2'], ['listen_in', p.listen_in, 'listener feed']]);
   check('Output', [...p.talkers.map((t, k) => [`t${k}.out`, t.out, `talker ${k + 1}`]), ['probe_out', p.probe_out, 'PROBE'], ['heartbeat_out', p.heartbeat_out, 'HEARTBEAT'], ['mon_l', p.mon_l, 'headphones'], ['mon_r', p.mon_r, 'headphones']]);
   return { bad, msgs };
 }
@@ -140,7 +147,9 @@ function renderPatch() {
     <td><input data-pk="t${k}.name" value="${(t.name || '').replace(/[<>&"]/g, '')}" placeholder="Talker ${k + 1}"></td>
     <td><select data-pk="t${k}.in" class="${bad.has(`t${k}.in`) ? 'clash' : ''}">${chOpts('in', t.in)}</select></td>
     <td><select data-pk="t${k}.out" class="${bad.has(`t${k}.out`) ? 'clash' : ''}">${chOpts('out', t.out)}</select></td></tr>`).join('');
-  $('#system').innerHTML = SYS.map(([k, l, optional]) => `<div><label>${l}</label><select data-pk="${k}" class="${bad.has(k) ? 'clash' : ''}">${chOpts(/_in$/.test(k) ? 'in' : 'out', patch[k], optional ? [[0, 'Off']] : [])}</select></div>`).join('');
+  const sysRow = side => ([k, l, optional]) => `<div><label>${l}</label><select data-pk="${k}" class="${bad.has(k) ? 'clash' : ''}">${chOpts(side, patch[k], optional ? [[0, 'Off']] : [])}</select></div>`;
+  $('#systemIn').innerHTML = SYS_IN.map(sysRow('in')).join('');
+  $('#systemOut').innerHTML = SYS_OUT.map(sysRow('out')).join('');
   $('#chNote').textContent = dev ? `${dev.name}: inputs 1–${dev.inputs}, outputs 1–${dev.outputs}. New talkers take the next free channel.` : 'Choose a soundcard to see all its channels. New talkers take the next free channel.';
   $('#clash').textContent = msgs.join(' ');
   $('#devBtn').disabled = msgs.length > 0;
@@ -151,7 +160,7 @@ function patchSet(key, value) {
     while (patch.talkers.length > n) patch.talkers.pop();
     while (patch.talkers.length < n) {
       const ui = new Set(patch.talkers.map(t => t.in)), uo = new Set(patch.talkers.map(t => t.out)), k = patch.talkers.length + 1;
-      const sysIn = new Set([patch.pgm_in, patch.probe_in, patch.listen_in]), sysOut = new Set([patch.probe_out, patch.heartbeat_out, patch.mon_l, patch.mon_r]);
+      const sysIn = new Set([patch.pgm_in, patch.probe_in, patch.probe_in2, patch.listen_in]), sysOut = new Set([patch.probe_out, patch.heartbeat_out, patch.mon_l, patch.mon_r]);
       const free = (n, used, sys) => range(n).find(c => !used.has(c) && !sys.has(c) && c >= k) || range(n).find(c => !used.has(c) && !sys.has(c)) || k;
       patch.talkers.push({ in: free(nIn(), ui, sysIn), out: free(nOut(), uo, sysOut), name: '' });
     }
@@ -208,7 +217,7 @@ async function loadDevices() {
   // PROBE, HEARTBEAT and headphones out). Others are listed, greyed out, so you can see why. Which
   // channels do which job is then picked from that soundcard's own channels below.
   devices = d.devices;
-  const nt = patch.talkers.length, needIn = nt + 2, needOut = nt + 4;
+  const nt = patch.talkers.length, needIn = nt + 2 + (patch.probe_in2 ? 1 : 0), needOut = nt + 4;
   const why = x => x.inputs === 0 ? 'output only' : x.outputs === 0 ? 'input only' : (x.inputs < needIn || x.outputs < needOut) ? `too few channels for ${nt} talker${nt > 1 ? 's' : ''}` : '';
   const list = d.devices.slice().sort((a, b) => (why(a) ? 1 : 0) - (why(b) ? 1 : 0));
   sel.innerHTML = '<option value="">Pick the virtual soundcard…</option>' + list.map(x =>

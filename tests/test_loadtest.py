@@ -212,7 +212,8 @@ class PerWorkerSettingTests(unittest.TestCase):
 
     def test_console_change_is_checked_and_restarts(self):
         from sotto_failsafe import app as A
-        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"SOTTO_CONFIG_DIR": d}):
+        # ignore_cleanup_errors: Windows won't delete the event log the app still has open
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d, mock.patch.dict(os.environ, {"SOTTO_CONFIG_DIR": d}):
             a = A.parse_args(["--simulate", "--no-processing", "--port", "0", "--out-dir", d])
             b = A.BenchApp(a)
             self.assertFalse(b.reconfigure({"per_worker": 5})["ok"])
